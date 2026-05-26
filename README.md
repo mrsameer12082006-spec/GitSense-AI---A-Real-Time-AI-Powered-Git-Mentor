@@ -19,7 +19,7 @@ GitSense AI focuses on repository awareness, helping developers understand Git w
 
 ---
 
-# 🧠 Problem We Solve
+# 🧠 Problem We will Solve
 
 Developers often struggle with Git because traditional tools:
 - expose raw technical outputs
