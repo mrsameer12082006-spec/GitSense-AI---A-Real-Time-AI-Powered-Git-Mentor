@@ -7,7 +7,7 @@ export default function Navbar() {
       <div className="section-container flex items-center justify-between py-4">
 
         {/* Brand Logo */}
-        <a href="#" className="flex items-center gap-3 group flex-shrink-0">
+        <a href="#home" className="flex items-center gap-3 group flex-shrink-0">
           <div className="relative w-8 h-8 flex items-center justify-center">
             <svg viewBox="0 0 100 100" className="w-full h-full transition-transform duration-300 group-hover:rotate-[15deg]">
               <defs>
@@ -49,13 +49,18 @@ export default function Navbar() {
         </nav>
 
         {/* CTAs */}
-        <div className="flex items-center gap-4 flex-shrink-0">
-          <MagneticButton
-            className="btn btn-primary !py-2.5 !px-5 !text-sm"
-            onClick={() => {}}
-          >
-            Sign Up / Login
-          </MagneticButton>
+        <div className="flex items-center gap-5 flex-shrink-0">
+          <a href="#login"
+            className="text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors">
+            Log In
+          </a>
+          <a href="#signup" className="flex items-center">
+            <MagneticButton
+              className="btn btn-primary !py-2.5 !px-5 !text-sm"
+            >
+              Sign Up
+            </MagneticButton>
+          </a>
         </div>
       </div>
     </header>
