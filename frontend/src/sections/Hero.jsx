@@ -63,7 +63,7 @@ export default function Hero() {
                 className="btn btn-primary"
                 onClick={() => document.getElementById('cta')?.scrollIntoView({ behavior: 'smooth' })}
               >
-                Start Free <ArrowRight size={15} />
+                Get Started <ArrowRight size={15} />
               </MagneticButton>
             </motion.div>
 
