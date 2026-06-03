@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Terminal, Cpu, ShieldAlert } from 'lucide-react';
 
@@ -119,6 +119,15 @@ export default function HowItWorks() {
       }, 1100);
     }
   };
+
+  useEffect(() => {
+    let currentStep = 0;
+    const interval = setInterval(() => {
+      handleStepClick(currentStep);
+      currentStep = (currentStep + 1) % 3;
+    }, 2500);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <section id="how-it-works" className="relative py-24 border-t border-white/[0.05] overflow-hidden">
