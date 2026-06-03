@@ -9,11 +9,13 @@ import Features from './sections/Features';
 import HowItWorks from './sections/HowItWorks';
 import Developers from './sections/Developers';
 import AuthPage from './sections/AuthPage';
+import Dashboard from './sections/Dashboard';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState(() => {
     const hash = window.location.hash;
     if (hash === '#login' || hash === '#signup') return 'auth';
+    if (hash === '#dashboard') return 'dashboard';
     return 'home';
   });
 
@@ -30,6 +32,8 @@ export default function App() {
       } else if (hash === '#signup') {
         setCurrentPage('auth');
         setAuthMode('signup');
+      } else if (hash === '#dashboard') {
+        setCurrentPage('dashboard');
       } else if (hash === '#home' || !hash) {
         setCurrentPage('home');
       }
@@ -61,6 +65,8 @@ export default function App() {
               <Developers />
             </main>
           </>
+        ) : currentPage === 'dashboard' ? (
+          <Dashboard />
         ) : (
           <AuthPage initialMode={authMode} />
         )}

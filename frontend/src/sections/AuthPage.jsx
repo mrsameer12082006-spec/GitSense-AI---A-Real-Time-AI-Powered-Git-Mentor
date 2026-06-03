@@ -21,8 +21,8 @@ export default function AuthPage({ initialMode }) {
     setFormSubmitted(true);
     setTimeout(() => {
       setFormSubmitted(false);
-      // Reset form and go to home page
-      window.location.hash = '#home';
+      // Reset form and go to dashboard page
+      window.location.hash = '#dashboard';
     }, 2000);
   };
 
