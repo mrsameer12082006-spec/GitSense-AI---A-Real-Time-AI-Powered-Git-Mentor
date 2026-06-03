@@ -9,7 +9,7 @@ import MergeConflictPreview from './sections/MergeConflictPreview';
 import HealthDashboard from './sections/HealthDashboard';
 import Features from './sections/Features';
 import HowItWorks from './sections/HowItWorks';
-import CTA from './sections/CTA';
+import Developers from './sections/Developers';
 
 export default function App() {
   return (
@@ -33,28 +33,10 @@ export default function App() {
           <HealthDashboard />
           <Features />
           <HowItWorks />
-          <CTA />
+          <Developers />
         </main>
 
-        {/* Footer */}
-        <footer className="border-t border-white/[0.05] bg-[#060913]/80 backdrop-blur-md py-10 px-6">
-          <div className="section-container flex flex-col sm:flex-row items-center justify-between gap-5">
-            {/* Brand */}
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <span className="font-heading font-bold text-slate-400">
-                GitSense<span style={{ color: '#7C5CFF' }}>.AI</span>
-              </span>
-              <span>© {new Date().getFullYear()} Team Delmora — All rights reserved.</span>
-            </div>
-
-            {/* Links */}
-            <nav className="flex items-center gap-6 text-xs text-slate-500">
-              {['Privacy', 'Terms', 'Security', 'GitHub'].map(l => (
-                <a key={l} href="#" className="hover:text-slate-300 transition-colors">{l}</a>
-              ))}
-            </nav>
-          </div>
-        </footer>
+        {/* Footer removed — footer is rendered inside Developers section for a unified look */}
       </div>
     </div>
   );

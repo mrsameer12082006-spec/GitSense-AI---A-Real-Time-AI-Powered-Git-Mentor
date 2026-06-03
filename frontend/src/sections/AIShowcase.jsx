@@ -43,7 +43,7 @@ export default function AIShowcase() {
   const [tab, setTab] = useState('merge');
   const [messages, setMessages] = useState([]);
   const [typing, setTyping] = useState(false);
-  const bottomRef = useRef(null);
+  const chatContainerRef = useRef(null);
 
   useEffect(() => {
     setMessages([{ sender: 'user', ...PRESETS[tab].responses[0], text: PRESETS[tab].question }]);
@@ -63,7 +63,12 @@ export default function AIShowcase() {
   }, [tab]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   }, [messages, typing]);
 
   return (
@@ -135,7 +140,7 @@ export default function AIShowcase() {
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-3">
+              <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-5 flex flex-col gap-3">
                 <AnimatePresence initial={false}>
                   {messages.map((msg, i) => {
                     const isUser = msg.sender === 'user';
@@ -189,7 +194,6 @@ export default function AIShowcase() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div ref={bottomRef} />
               </div>
 
               {/* Input bar */}
