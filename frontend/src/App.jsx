@@ -5,7 +5,7 @@ import Navbar from './sections/Navbar';
 import Hero from './sections/Hero';
 import VisualizerSection from './sections/VisualizerSection';
 import AIShowcase from './sections/AIShowcase';
-import HealthDashboard from './sections/HealthDashboard';
+
 import Features from './sections/Features';
 import HowItWorks from './sections/HowItWorks';
 import CTA from './sections/CTA';
@@ -28,7 +28,7 @@ export default function App() {
           <Hero />
           <VisualizerSection />
           <AIShowcase />
-          <HealthDashboard />
+
           <Features />
           <HowItWorks />
           <CTA />
