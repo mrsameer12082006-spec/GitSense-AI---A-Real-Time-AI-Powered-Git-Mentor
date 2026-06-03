@@ -27,7 +27,7 @@ const STEPS = [
 
 export default function HowItWorks() {
   return (
-    <section className="relative py-24 border-t border-white/[0.05] overflow-hidden">
+    <section id="how-it-works" className="relative py-24 border-t border-white/[0.05] overflow-hidden">
       <div className="glow-blur glow-cyan w-[350px] h-[350px] bottom-0 -right-16 pointer-events-none" />
 
       <div className="section-container relative z-10">

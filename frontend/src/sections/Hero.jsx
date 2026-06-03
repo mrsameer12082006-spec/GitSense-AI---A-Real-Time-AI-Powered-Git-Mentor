@@ -65,14 +65,6 @@ export default function Hero() {
               >
                 Start Free <ArrowRight size={15} />
               </MagneticButton>
-
-              <MagneticButton
-                className="btn btn-secondary"
-                onClick={() => document.getElementById('ai-mentor')?.scrollIntoView({ behavior: 'smooth' })}
-              >
-                <Play size={13} className="text-[#00D4FF] fill-[#00D4FF]" />
-                Watch Demo
-              </MagneticButton>
             </motion.div>
 
             {/* Trust strip */}
