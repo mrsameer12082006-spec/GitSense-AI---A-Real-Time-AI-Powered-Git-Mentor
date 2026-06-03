@@ -3,21 +3,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Mail, Lock, User, CheckCircle2 } from 'lucide-react';
 
 const FLOATING_COMMANDS_CONFIG = [
-  { text: 'git commit -m "feat: init auth"', top: '6%', duration: 10, delay: 0, color: '#A78BFA' }, // Violet-400
-  { text: 'git checkout -b feature/auth', top: '12%', duration: 10, delay: 5, color: '#67E8F9' }, // Cyan-300
-  { text: 'git push origin main', top: '18%', duration: 10, delay: 0, color: '#4ADE80' }, // Green-400
-  { text: 'git pull --rebase origin dev', top: '24%', duration: 10, delay: 5, color: '#FCD34D' }, // Amber-300
-  { text: 'git status', top: '30%', duration: 10, delay: 0, color: '#FFFFFF' }, // White
-  { text: 'git merge feature/auth', top: '36%', duration: 10, delay: 5, color: '#A78BFA' },
-  { text: 'git clone https://github.com/delmora/gitsense', top: '42%', duration: 10, delay: 0, color: '#67E8F9' },
-  { text: 'git stash pop', top: '48%', duration: 10, delay: 5, color: '#4ADE80' },
-  { text: 'git log --oneline -n 5', top: '54%', duration: 10, delay: 0, color: '#FFFFFF' },
-  { text: 'git rebase -i HEAD~3', top: '60%', duration: 10, delay: 5, color: '#FCD34D' },
-  { text: 'git branch -a', top: '66%', duration: 10, delay: 0, color: '#A78BFA' },
-  { text: 'git diff main..feature', top: '72%', duration: 10, delay: 5, color: '#67E8F9' },
-  { text: 'git add .', top: '78%', duration: 10, delay: 0, color: '#4ADE80' },
-  { text: 'git fetch --all', top: '84%', duration: 10, delay: 5, color: '#FCD34D' },
-  { text: 'git reset --hard HEAD~1', top: '90%', duration: 10, delay: 0, color: '#FFFFFF' }
+  { text: 'git commit -m "feat: init auth"', top: '6%', duration: 14, delay: 0, color: '#A78BFA' }, // Violet-400
+  { text: 'git checkout -b feature/auth', top: '12%', duration: 9, delay: 5, color: '#67E8F9' }, // Cyan-300
+  { text: 'git push origin main', top: '18%', duration: 12, delay: 2, color: '#4ADE80' }, // Green-400
+  { text: 'git pull --rebase origin dev', top: '24%', duration: 16, delay: 8, color: '#FCD34D' }, // Amber-300
+  { text: 'git status', top: '30%', duration: 8, delay: 1, color: '#FFFFFF' }, // White
+  { text: 'git merge feature/auth', top: '36%', duration: 11, delay: 6, color: '#A78BFA' },
+  { text: 'git clone https://github.com/delmora/gitsense', top: '42%', duration: 15, delay: 3, color: '#67E8F9' },
+  { text: 'git stash pop', top: '48%', duration: 10, delay: 9, color: '#4ADE80' },
+  { text: 'git log --oneline -n 5', top: '54%', duration: 13, delay: 0, color: '#FFFFFF' },
+  { text: 'git rebase -i HEAD~3', top: '60%', duration: 9, delay: 7, color: '#FCD34D' },
+  { text: 'git branch -a', top: '66%', duration: 12, delay: 4, color: '#A78BFA' },
+  { text: 'git diff main..feature', top: '72%', duration: 16, delay: 11, color: '#67E8F9' },
+  { text: 'git add .', top: '78%', duration: 8, delay: 2, color: '#4ADE80' },
+  { text: 'git fetch --all', top: '84%', duration: 11, delay: 5, color: '#FCD34D' },
+  { text: 'git reset --hard HEAD~1', top: '90%', duration: 14, delay: 10, color: '#FFFFFF' }
 ];
 
 export default function AuthPage({ initialMode }) {
@@ -39,8 +39,8 @@ export default function AuthPage({ initialMode }) {
     setFormSubmitted(true);
     setTimeout(() => {
       setFormSubmitted(false);
-      // Reset form and go to dashboard page
-      window.location.hash = '#dashboard';
+      // Reset form and go to home page
+      window.location.hash = '#home';
     }, 2000);
   };
 
@@ -70,7 +70,7 @@ export default function AuthPage({ initialMode }) {
       <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] rounded-full bg-gradient-to-tr from-[#00D4FF]/18 to-[#EC4899]/10 blur-[135px] pointer-events-none z-0 animate-pulse" style={{ animationDuration: '12s' }} />
       <div className="absolute top-[30%] left-[20%] w-[500px] h-[500px] rounded-full bg-gradient-to-r from-[#7C5CFF]/06 to-[#EC4899]/06 blur-[110px] pointer-events-none z-0" />
 
-      {/* Floating Git Commands (aligned horizontally on 15 distinct, non-overlapping lanes for a clean, low-randomness grid flow) */}
+      {/* Floating Git Commands (aligned horizontally on 15 distinct, non-overlapping lanes with randomized speeds & delays for a natural flow) */}
       <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
         {FLOATING_COMMANDS_CONFIG.map((cmd, idx) => (
           <motion.div
