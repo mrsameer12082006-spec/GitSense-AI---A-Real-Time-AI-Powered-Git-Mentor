@@ -61,7 +61,7 @@ export default function Hero() {
             >
               <MagneticButton
                 className="btn btn-primary"
-                onClick={() => document.getElementById('cta')?.scrollIntoView({ behavior: 'smooth' })}
+                onClick={() => window.location.hash = '#signup'}
               >
                 Start Free <ArrowRight size={15} />
               </MagneticButton>
