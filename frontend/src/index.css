@@ -1,0 +1,292 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/* ===================================================
+   GitSense AI — Core Design System & Global Styles
+   =================================================== */
+
+:root {
+  /* Brand Colors */
+  --bg-color:      #0B1020;
+  --bg-darker:     #060913;
+  --bg-card:       #0f1629;
+  --primary:       #7C5CFF;
+  --secondary:     #00D4FF;
+  --success:       #00E38C;
+  --warning:       #FFB800;
+  --danger:        #FF4B4B;
+
+  /* Text */
+  --text:          #F8FAFC;
+  --text-muted:    #94A3B8;
+  --text-dark:     #64748B;
+
+  /* Borders */
+  --card-border:         rgba(124, 92, 255, 0.15);
+  --card-border-hover:   rgba(0, 212, 255, 0.40);
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+
+  /* Transitions */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast:   0.20s var(--ease-out-expo);
+  --t-medium: 0.40s var(--ease-out-expo);
+  --t-slow:   0.80s var(--ease-out-expo);
+
+  /* Fonts */
+  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: 'Space Grotesk', -apple-system, sans-serif;
+  --font-mono:    'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* ─── Reset ────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  background: var(--bg-color);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-color);
+  color: var(--text);
+  overflow-x: hidden;
+}
+
+/* ─── Scrollbar ─────────────────────────────────────── */
+::-webkit-scrollbar        { width: 8px; }
+::-webkit-scrollbar-track  { background: var(--bg-darker); }
+::-webkit-scrollbar-thumb  {
+  background: rgba(124, 92, 255, 0.35);
+  border-radius: 4px;
+  border: 2px solid var(--bg-darker);
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(124, 92, 255, 0.65); }
+
+/* ─── Typography ────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  margin: 0;
+}
+h1 { font-size: clamp(2.4rem, 5.5vw, 4.5rem); }
+h2 { font-size: clamp(1.9rem, 3.8vw, 3rem); }
+h3 { font-size: clamp(1.3rem, 2.2vw, 1.9rem); }
+h4 { font-size: clamp(1rem, 1.5vw, 1.25rem); }
+
+p { margin: 0; color: var(--text-muted); }
+a { color: inherit; text-decoration: none; transition: color var(--t-fast); }
+
+pre, code {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+::selection {
+  background: rgba(124, 92, 255, 0.3);
+  color: var(--text);
+}
+
+/* ─── Ambient Glow Blobs ─────────────────────────────── */
+.glow-blur {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(130px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+}
+.glow-purple { background: radial-gradient(circle, var(--primary)   0%, transparent 70%); }
+.glow-cyan   { background: radial-gradient(circle, var(--secondary) 0%, transparent 70%); }
+.glow-green  { background: radial-gradient(circle, var(--success)   0%, transparent 70%); }
+
+/* ─── Gradient Text ──────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(
+    135deg,
+    #ffffff    0%,
+    #c8d6f0   55%,
+    var(--primary) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.purple-cyan-text {
+  background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ─── Cards ──────────────────────────────────────────── */
+.gitsense-card {
+  position: relative;
+  background: rgba(15, 22, 41, 0.7);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition: border-color var(--t-medium), transform var(--t-medium), box-shadow var(--t-medium);
+  box-shadow: 0 4px 32px -8px rgba(0, 0, 0, 0.6),
+              0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+}
+.gitsense-card:hover {
+  border-color: var(--card-border-hover);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 40px -10px rgba(0, 0, 0, 0.7),
+              0 0 0 1px rgba(0, 212, 255, 0.05) inset;
+}
+
+/* ─── Spotlight Border ───────────────────────────────── */
+.spotlight-border { position: relative; }
+.spotlight-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    600px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(255, 255, 255, 0.10),
+    transparent 45%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask:         linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ─── Buttons ─────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  line-height: 1;
+  padding: 0.8125rem 1.875rem;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: all var(--t-medium);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(124, 92, 255, 0.40);
+}
+.btn-primary:hover {
+  background: #6a49f5;
+  box-shadow: 0 0 32px rgba(124, 92, 255, 0.65);
+  transform: scale(1.025) translateY(-1px);
+}
+
+.btn-secondary {
+  background: rgba(248, 250, 252, 0.04);
+  border-color: rgba(248, 250, 252, 0.12);
+  color: var(--text);
+}
+.btn-secondary:hover {
+  background: rgba(248, 250, 252, 0.08);
+  border-color: var(--secondary);
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.20);
+  transform: scale(1.025) translateY(-1px);
+}
+
+.btn-cyan {
+  background: var(--secondary);
+  color: #060913;
+  font-weight: 700;
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.30);
+}
+.btn-cyan:hover {
+  background: #00bfdb;
+  box-shadow: 0 0 32px rgba(0, 212, 255, 0.55);
+  transform: scale(1.025) translateY(-1px);
+}
+
+/* ─── Animations ─────────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
+}
+
+@keyframes dash {
+  to { stroke-dashoffset: -1000; }
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.animate-float { animation: float 6s ease-in-out infinite; }
+
+/* ─── Graph Styles ───────────────────────────────────── */
+.node-circle {
+  cursor: pointer;
+  transition: r 0.2s var(--ease-out-expo), stroke-width 0.2s var(--ease-out-expo);
+}
+.node-link {
+  stroke-dasharray: 5 3;
+  animation: dash 25s linear infinite;
+}
+
+/* ─── Section Layout Helpers ─────────────────────────── */
+.section-container {
+  width: 100%;
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+.section-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1rem;
+  max-width: 48rem;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 4rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.375rem 0.875rem;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  border: 1px solid;
+}
