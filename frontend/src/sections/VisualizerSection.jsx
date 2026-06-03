@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { GitBranch, GitPullRequest, RefreshCw, AlertTriangle } from 'lucide-react';
 import GitGraph from '../components/GitGraph';
@@ -26,7 +26,35 @@ const STATES = [
 
 export default function VisualizerSection() {
   const [active, setActive] = useState('normal');
+  const timerRef = useRef(null);
   const current = STATES.find(s => s.id === active);
+
+  const resetTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    timerRef.current = setInterval(() => {
+      setActive((prev) => {
+        const currentIndex = STATES.findIndex(s => s.id === prev);
+        const nextIndex = (currentIndex + 1) % STATES.length;
+        return STATES[nextIndex].id;
+      });
+    }, 4500);
+  };
+
+  useEffect(() => {
+    resetTimer();
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
+  const handleTabClick = (id) => {
+    setActive(id);
+    resetTimer();
+  };
 
   return (
     <section id="visualizer" className="relative py-24 border-t border-white/[0.05] overflow-hidden">
@@ -50,7 +78,7 @@ export default function VisualizerSection() {
             {STATES.map(st => (
               <button
                 key={st.id}
-                onClick={() => setActive(st.id)}
+                onClick={() => handleTabClick(st.id)}
                 className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 text-xs font-heading font-semibold rounded-lg transition-all duration-200
                   ${active === st.id
                     ? 'bg-[#7C5CFF] text-white shadow-md shadow-[#7C5CFF]/30'

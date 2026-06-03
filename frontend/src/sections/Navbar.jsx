@@ -34,11 +34,9 @@ export default function Navbar() {
         {/* Desktop Nav */}
         <nav className="hidden md:flex items-center gap-7">
           {[
-            ['#visualizer',      'Playground'],
-            ['#ai-mentor',       'AI Mentor'],
-            ['#conflict-resolver','Conflicts'],
-            ['#health-dashboard','Health'],
             ['#features',        'Features'],
+            ['#',                'About Us'],
+            ['#how-it-works',    'How It Works'],
           ].map(([href, label]) => (
             <a key={href} href={href}
               className="text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors relative
@@ -52,15 +50,11 @@ export default function Navbar() {
 
         {/* CTAs */}
         <div className="flex items-center gap-4 flex-shrink-0">
-          <a href="#features"
-            className="hidden sm:inline-block text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors">
-            Docs
-          </a>
           <MagneticButton
             className="btn btn-primary !py-2.5 !px-5 !text-sm"
-            onClick={() => document.getElementById('cta')?.scrollIntoView({ behavior: 'smooth' })}
+            onClick={() => {}}
           >
-            Start Free
+            Sign Up / Login
           </MagneticButton>
         </div>
       </div>

@@ -5,8 +5,7 @@ import Navbar from './sections/Navbar';
 import Hero from './sections/Hero';
 import VisualizerSection from './sections/VisualizerSection';
 import AIShowcase from './sections/AIShowcase';
-import MergeConflictPreview from './sections/MergeConflictPreview';
-import HealthDashboard from './sections/HealthDashboard';
+
 import Features from './sections/Features';
 import HowItWorks from './sections/HowItWorks';
 import Developers from './sections/Developers';
@@ -29,8 +28,7 @@ export default function App() {
           <Hero />
           <VisualizerSection />
           <AIShowcase />
-          <MergeConflictPreview />
-          <HealthDashboard />
+
           <Features />
           <HowItWorks />
           <Developers />
