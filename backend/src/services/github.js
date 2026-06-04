@@ -386,6 +386,156 @@ class GitHubService {
     if (days < 30) return `${days}d ago`;
     return `${Math.floor(days / 30)}mo ago`;
   }
+
+  /**
+   * Get dynamic repository health analysis.
+   * Scans remote branches, PR conflicts, and failed workflows.
+   */
+  async getRepoHealth(owner, repo, token = null) {
+    try {
+      // 1. Get branches
+      const branches = await this.getBranches(owner, repo, token);
+      
+      const staleBranches = [];
+      const now = Date.now();
+      const ninetyDaysInMs = 90 * 24 * 60 * 60 * 1000;
+
+      // Fetch branch commit details for top 5 branches to avoid aggressive rate limits
+      const branchDetailsPromises = branches.slice(0, 5).map(async (b) => {
+        try {
+          const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits/${b.sha}`, {
+            headers: this._headers(token),
+          });
+          const dateStr = data.commit?.committer?.date || data.commit?.author?.date;
+          if (dateStr) {
+            const commitTime = new Date(dateStr).getTime();
+            const ageInMs = now - commitTime;
+            if (ageInMs > ninetyDaysInMs) {
+              staleBranches.push({
+                name: b.name,
+                sha: b.sha,
+                lastCommitDate: dateStr,
+                ageDays: Math.floor(ageInMs / (24 * 60 * 60 * 1000))
+              });
+            }
+          }
+        } catch (err) {
+          // Rate limit or missing permissions, continue
+        }
+      });
+      await Promise.allSettled(branchDetailsPromises);
+
+      // 2. Fetch Pull Requests and check for conflicts
+      const prs = await this.getPullRequests(owner, repo, token);
+      const conflictPRs = [];
+
+      // For the first 3 open PRs, fetch details to see if mergeable is false
+      const prDetailsPromises = prs.slice(0, 3).map(async (pr) => {
+        try {
+          const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${pr.number}`, {
+            headers: this._headers(token),
+          });
+          if (data.mergeable === false || data.mergeable_state === 'dirty') {
+            conflictPRs.push({
+              number: pr.number,
+              title: pr.title,
+              author: pr.author,
+              headBranch: pr.headBranch,
+              baseBranch: pr.baseBranch,
+              url: pr.url
+            });
+          }
+        } catch (err) {
+          // Silently continue
+        }
+      });
+      await Promise.allSettled(prDetailsPromises);
+
+      // 3. Fetch workflows and check for CI/CD failures
+      const workflowRuns = await this.getWorkflowRuns(owner, repo, token);
+      const failedWorkflows = workflowRuns.filter(run => run.status === 'Failed' || run.status === 'failure');
+
+      // 4. Calculate Health Score
+      let score = 100;
+      const issues = [];
+
+      // Add issues for Stale Branches
+      staleBranches.forEach(b => {
+        score -= 5;
+        issues.push({
+          id: `stale-branch-${b.name}`,
+          type: 'stale_branch',
+          title: `Stale branch: ${b.name}`,
+          description: `This branch has not had any updates in ${b.ageDays} days. Consider deleting or archiving it.`,
+          severity: 'low',
+          safeToFix: true,
+          fixAction: 'prune_branch',
+          payload: { branchName: b.name },
+          command: `git push origin --delete ${b.name}`
+        });
+      });
+
+      // Add issues for Merge Conflicts
+      conflictPRs.forEach(pr => {
+        score -= 15;
+        issues.push({
+          id: `conflict-pr-${pr.number}`,
+          type: 'merge_conflict',
+          title: `Merge Conflict in PR #${pr.number}`,
+          description: `Pull request #${pr.number} "${pr.title}" has merge conflicts between '${pr.headBranch}' and '${pr.baseBranch}'.`,
+          severity: 'high',
+          safeToFix: false,
+          fixAction: 'resolve_conflict',
+          payload: { prNumber: pr.number, headBranch: pr.headBranch, baseBranch: pr.baseBranch },
+          command: `git checkout ${pr.headBranch}\ngit merge ${pr.baseBranch}`
+        });
+      });
+
+      // Add issues for CI/CD Failures
+      failedWorkflows.forEach(run => {
+        score -= 10;
+        issues.push({
+          id: `failed-ci-${run.name.replace(/\s+/g, '-').toLowerCase()}`,
+          type: 'ci_failure',
+          title: `CI/CD Build Failure: ${run.name}`,
+          description: `The latest workflow run on branch '${run.branch}' failed. Inspect logs for details.`,
+          severity: 'medium',
+          safeToFix: false,
+          fixAction: 'view_ci_logs',
+          payload: { runUrl: run.url },
+          command: `git log -n 5`
+        });
+      });
+
+      score = Math.max(0, Math.min(100, score));
+
+      let status = 'Clean Repository';
+      if (score < 70) {
+        status = 'Repository Requires Attention';
+      } else if (score < 100) {
+        status = 'Repository Requires Attention';
+      }
+
+      return {
+        score,
+        status,
+        issues,
+        staleBranches,
+        conflictPRs,
+        failedWorkflows
+      };
+    } catch (err) {
+      console.error('[GitHub] getRepoHealth error:', err.message);
+      return {
+        score: 100,
+        status: 'Clean Repository',
+        issues: [],
+        staleBranches: [],
+        conflictPRs: [],
+        failedWorkflows: []
+      };
+    }
+  }
 }
 
 // Singleton export

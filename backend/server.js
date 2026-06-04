@@ -12,6 +12,7 @@ import repoRoutes from './src/routes/repositories.js';
 import chatRoutes from './src/routes/chat.js';
 import conversationRoutes from './src/routes/conversations.js';
 import activityRoutes from './src/routes/activity.js';
+import kbRoutes from './src/routes/kb.js';
 import aiService from './src/services/ai.js';
 
 const app = express();
@@ -103,6 +104,7 @@ app.use('/api/repos', repoRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/kb', kbRoutes);
 
 // ── 404 handler ──
 app.use('/api', (_req, res) => {
