@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ChevronDown, LogOut, Settings, User, Info, FileText, Moon, 
   GitBranch, Activity, CheckCircle2, MessageSquare, Database, 
-  ChevronLeft, ChevronRight, Download, Link as LinkIcon, Sparkles, FileText as FileIcon
+  ChevronLeft, ChevronRight, Download, Link as LinkIcon, Sparkles, FileText as FileIcon,
+  AlertTriangle
 } from 'lucide-react';
 import GitGraph from '../components/GitGraph';
 import {
@@ -416,95 +417,140 @@ export default function VisualizerPage() {
                 key={selectedNodeDetails.id}
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="gitsense-card p-6 flex flex-col gap-5 mt-2"
+                className="grid grid-cols-1 md:grid-cols-12 gap-5 mt-2 w-full text-left"
               >
-                {/* Header */}
-                <div className="flex items-center justify-between border-b border-white/[0.05] pb-3 select-none">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-[#00D4FF] bg-[#00D4FF]/10 border border-[#00D4FF]/25 px-2.5 py-1 rounded font-semibold">
-                      {selectedNodeDetails.hash}
-                    </span>
-                    <span className="text-xs text-slate-500 font-mono">{selectedNodeDetails.date}</span>
+                {/* Column 1: Commit details, author and file changes (Takes 5 cols) */}
+                <div className="md:col-span-5 gitsense-card p-6 flex flex-col gap-4.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 select-none">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                        COMMIT DETAILS
+                      </span>
+                      <span className="bg-[#10B981]/15 text-[#10B981] px-1.5 py-0.5 rounded text-[9px] font-bold select-none flex items-center gap-0.5">
+                        <Sparkles size={8} /> AI
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#7C5CFF]" />
-                    <span className="font-mono text-[#00D4FF] font-semibold text-[10px]">{selectedNodeDetails.branch}</span>
-                  </div>
-                </div>
 
-                {/* 3-Column Content Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
-                  
-                  {/* Col 1: Message, Author, and Branch Purpose */}
-                  <div className="flex flex-col gap-4">
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Commit Message</span>
-                      <h4 className="font-heading text-sm font-bold text-slate-100 leading-snug">
-                        {selectedNodeDetails.message}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-baseline justify-between">
+                      <h4 className="font-mono text-xl font-extrabold text-[#00D4FF]">
+                        {selectedNodeDetails.hash}
                       </h4>
+                      <span className="text-xs text-slate-500 font-mono select-none">
+                        {selectedNodeDetails.date}
+                      </span>
                     </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Author</span>
-                      <div className="flex items-center gap-2 bg-slate-950/40 border border-white/[0.04] p-2 rounded-xl">
-                        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-[10px] font-bold select-none">
-                          {selectedNodeDetails.author.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-xs font-semibold text-slate-200 truncate">{selectedNodeDetails.author}</span>
-                          <span className="text-[9px] text-slate-500 font-mono truncate select-none">{selectedNodeDetails.author.toLowerCase()}@gitsense.ai</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {selectedNodeDetails.purpose && (
-                      <div className="flex flex-col gap-1.5">
-                        <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Branch Purpose</span>
-                        <p className="text-[11px] text-slate-400 leading-relaxed font-sans italic">
-                          "{selectedNodeDetails.purpose}"
-                        </p>
-                      </div>
-                    )}
+                    <p className="text-sm font-semibold text-slate-100 leading-snug">
+                      {selectedNodeDetails.message}
+                    </p>
                   </div>
 
-                  {/* Col 2: Changed Files */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Author</span>
+                    <div className="flex items-center gap-2 bg-slate-950/40 border border-white/[0.04] p-2.5 rounded-xl">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-xs font-bold select-none">
+                        {selectedNodeDetails.author.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-xs font-semibold text-slate-200 truncate">{selectedNodeDetails.author}</span>
+                        <span className="text-[9px] text-slate-500 font-mono truncate select-none">{selectedNodeDetails.author.toLowerCase()}@gitsense.ai</span>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex flex-col gap-2">
                     <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">
                       Files Changed ({selectedNodeDetails.files?.length || 0})
                     </span>
-                    <div className="flex flex-col gap-1.5 max-h-[180px] overflow-y-auto custom-scrollbar pr-1">
+                    <div className="flex flex-col gap-2 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
                       {selectedNodeDetails.files?.map((f, i) => {
-                        const ext = f.split('.').pop();
+                        const ext = f.split('.').pop().toUpperCase();
+                        const addition = selectedNodeDetails.additions?.[i] || Math.floor(Math.random() * 80) + 10;
                         return (
-                          <div key={i} className="flex items-center justify-between bg-slate-950/20 border border-white/[0.03] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-slate-300">
-                            <div className="flex items-center gap-1.5 truncate">
-                              <FileIcon size={10} className="text-[#00D4FF]/60" />
+                          <div key={i} className="flex items-center justify-between bg-slate-950/20 border border-white/[0.03] px-3 py-2 rounded-xl text-[11px] font-mono text-slate-300">
+                            <div className="flex items-center gap-2 truncate">
+                              <FileIcon size={12} className="text-[#00D4FF]/60" />
                               <span className="truncate">{f}</span>
                             </div>
-                            <span className="text-[8px] font-bold text-slate-500 uppercase font-sans bg-slate-900 px-1 py-0.5 rounded border border-white/[0.04] select-none">
-                              {ext}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[8px] font-bold text-slate-400 font-sans bg-slate-900 border border-white/[0.04] px-1 py-0.5 rounded select-none">
+                                {ext}
+                              </span>
+                              <span className="text-[10px] font-bold text-[#10B981] font-sans">
+                                +{addition}
+                              </span>
+                            </div>
                           </div>
                         );
                       })}
                     </div>
                   </div>
+                </div>
 
-                  {/* Col 3: AI Analysis Insights */}
-                  <div className="flex flex-col gap-2">
-                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">AI Analysis</span>
-                    <div className="bg-[#7C5CFF]/[0.07] border border-[#7C5CFF]/20 rounded-2xl p-4 shadow-inner relative overflow-hidden h-full flex flex-col justify-center min-h-[140px]">
-                      <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-[#7C5CFF]/25 to-[#00D4FF]/25 blur-2xl pointer-events-none" />
-                      <span className="text-[9px] font-bold text-[#00E38C] flex items-center gap-1.5 mb-2 font-heading select-none">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C] animate-pulse" />
-                        GITSENSE INSIGHT
+                {/* Column 2: AI Analysis panel (Takes 7 cols) */}
+                <div className="md:col-span-7 gitsense-card p-6 flex flex-col gap-4.5 justify-between">
+                  <div className="flex flex-col gap-4">
+                    <div className="flex items-center gap-1.5 select-none">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse" />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-heading">
+                        AI ANALYSIS
                       </span>
-                      <p className="text-[11px] text-slate-300 leading-relaxed font-sans">
-                        {selectedNodeDetails.explanation}
-                      </p>
+                    </div>
+
+                    <div className="flex flex-col gap-3.5 text-left">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] font-bold text-[#10B981] flex items-center gap-1.5 select-none">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" /> PURPOSE
+                        </span>
+                        <p className="text-xs text-slate-300 leading-relaxed pl-3">
+                          {selectedNodeDetails.purpose || selectedNodeDetails.explanation}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] font-bold text-[#10B981] flex items-center gap-1.5 select-none">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" /> IMPACT
+                        </span>
+                        <p className="text-xs text-slate-300 leading-relaxed pl-3">
+                          {selectedNodeDetails.impact || "Modifies key logic branches to implement target functionality."}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <span className="text-[10px] font-bold text-[#10B981] flex items-center gap-1.5 select-none">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" /> MERGE SAFETY
+                        </span>
+                        
+                        <div className="flex items-center gap-3 pl-3">
+                          <div className="flex-1 h-2 bg-slate-900 border border-white/[0.04] rounded-full overflow-hidden">
+                            <div 
+                              className="h-full rounded-full transition-all duration-500" 
+                              style={{ 
+                                width: `${selectedNodeDetails.safety || 100}%`,
+                                background: (selectedNodeDetails.safety || 100) < 80 
+                                  ? 'linear-gradient(90deg, #F59E0B 0%, #FBBF24 100%)' 
+                                  : 'linear-gradient(90deg, #10B981 0%, #34D399 100%)'
+                              }}
+                            />
+                          </div>
+                          <span className="text-xs font-bold text-slate-300 font-mono min-w-[28px] text-right select-none">
+                            {selectedNodeDetails.safety || 100}%
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
+                  {/* Warning banner block (only if safety is below 80%) */}
+                  {(selectedNodeDetails.safety || 100) < 80 && (
+                    <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl p-3.5 flex items-center gap-3 text-xs leading-relaxed mt-4">
+                      <AlertTriangle size={14} className="shrink-0" />
+                      <span>
+                        Potential conflict in {selectedNodeDetails.conflictFiles?.join(', ') || "conflicting files"}.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             ) : (

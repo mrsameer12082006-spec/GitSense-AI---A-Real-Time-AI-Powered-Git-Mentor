@@ -1,220 +1,670 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Plus, Minus, RotateCcw, Maximize2, HelpCircle 
+} from 'lucide-react';
 
 /* ─────────────────────────────────────────────────────────
-   Commit data for each workflow state
+   Commit data for the new 5-branch repository timeline
+   (Main, feature/auth, feature/cart, develop, hotfix/bug)
 ───────────────────────────────────────────────────────── */
-const WORKFLOWS = {
-  normal: [
-    { id:'1', hash:'e39da01', author:'Sameer',  message:'init: setup express server',      branch:'main',         x:80,  y:150, status:'synced', date:'2m ago',  files:['package.json','server.js'],       explanation:'Initial repository structure and Express server setup. Verified and clean.', purpose: 'Establish base production server and application setup.' },
-    { id:'2', hash:'fb7299a', author:'Kartik',  message:'feat: add database schema',       branch:'main',         x:200, y:150, status:'synced', date:'5m ago',  files:['models/User.js','db.js'],         explanation:'MongoDB user schema and authentication model definitions. Connectivity confirmed.', purpose: 'Define database schemas for data storage and modeling.' },
-    { id:'3', hash:'a12bc8f', author:'Ayesh',   message:'feat: auth middleware base',      branch:'feature/auth', x:320, y:250, status:'synced', date:'10m ago', files:['middleware/auth.js'],              explanation:'JWT verification scaffold. Route protection layer initialised.', purpose: 'Scaffold middleware components for route safety and tokens.' },
-    { id:'4', hash:'92cd99b', author:'Manik',   message:'fix: login router logic',         branch:'feature/auth', x:440, y:250, status:'synced', date:'12m ago', files:['routes/auth.js'],                  explanation:'Fixed validation bugs in the login route. Tested against edge cases.', purpose: 'Fix authentication router endpoints and error handling.' },
-    { id:'5', hash:'7c3b28d', author:'Sameer',  message:'docs: update readme guidelines',  branch:'main',         x:360, y:150, status:'synced', date:'15m ago', files:['README.md'],                       explanation:'Documentation update: project layout and dev environment notes.', purpose: 'Provide installation, configuration, and API docs.' },
-    { id:'6', hash:'9dfa002', author:'Ayesh',   message:'merge branch feature/auth',       branch:'main',         x:560, y:150, status:'synced', date:'18m ago', files:['server.js','routes/auth.js'],     explanation:'Authentication branch merged cleanly. All protected routes verified.', purpose: 'Merge feature/auth back into production-ready main branch.' },
-  ],
-  diverged: [
-    { id:'1', hash:'e39da01', author:'Sameer',           message:'init: setup express server',     branch:'main',        x:80,  y:150, status:'synced', date:'30m ago', files:['package.json','server.js'],    explanation:'Base setup with config files.', purpose: 'Establish base production server and application setup.' },
-    { id:'2', hash:'fb7299a', author:'Kartik',           message:'feat: add database schema',      branch:'main',        x:200, y:150, status:'synced', date:'25m ago', files:['models/User.js'],              explanation:'Mongoose model setup.', purpose: 'Define database schemas for data storage and modeling.' },
-    { id:'3', hash:'c90b021', author:'Origin Developer', message:'feat: add rate limiting',        branch:'origin/main', x:350, y:80,  status:'remote', date:'10m ago', files:['middleware/rateLimit.js'],     explanation:'Rate limiting added remotely. Not yet pulled locally.', purpose: 'Scaffold API request limits to secure host resources.' },
-    { id:'4', hash:'d71a990', author:'Origin Developer', message:'fix: cors whitelist update',     branch:'origin/main', x:480, y:80,  status:'remote', date:'8m ago',  files:['config/cors.js'],              explanation:'CORS credentials updated on GitHub. Overlaps with local config.', purpose: 'Patch CORS configurations for production domains.' },
-    { id:'5', hash:'a12bc8f', author:'Ayesh',            message:'feat: auth middleware base',     branch:'main',        x:350, y:150, status:'local',  date:'5m ago',  files:['middleware/auth.js'],          explanation:'Your local commit. Needs remote sync before pushing.', purpose: 'Implement middleware endpoints for secure paths.' },
-    { id:'6', hash:'92cd99b', author:'Manik',            message:'fix: login router logic',        branch:'main',        x:480, y:150, status:'local',  date:'2m ago',  files:['routes/auth.js'],              explanation:'Your local patch. Safe to push once origin merges.', purpose: 'Implement verification logic and routes.' },
-  ],
-  conflict: [
-    { id:'1', hash:'e39da01', author:'Sameer',           message:'init: setup express server',     branch:'main',        x:80,  y:150, status:'synced', date:'1h ago',  files:['package.json'],    explanation:'Baseline setup.', purpose: 'Establish base production server and application setup.' },
-    { id:'2', hash:'fb7299a', author:'Kartik',           message:'feat: add database schema',      branch:'main',        x:200, y:150, status:'synced', date:'50m ago', files:['models/User.js'],  explanation:'User models established.', purpose: 'Define database schemas for data storage and modeling.' },
-    { id:'3', hash:'f44bb01', author:'Origin Developer', message:'feat: update jwt key configs',   branch:'origin/main', x:350, y:85,  status:'remote', date:'10m ago', files:['config.js'],       explanation:'Origin updated config.js to use process.env. Not yet locally merged.', purpose: 'Refactor configuration variables to environment variables.' },
-    { id:'4', hash:'a12bc8f', author:'Ayesh',            message:'feat: add session timeout',      branch:'main',        x:350, y:215, status:'local',  date:'5m ago',  files:['config.js'],       explanation:'⚠️ Conflict: both branches edited config.js at the same lines.', purpose: 'Set idle timeout thresholds for token refresh keys.' },
-  ],
-};
+const ALL_COMMITS = [
+  // ── Main Branch Commits
+  { 
+    id: '1', hash: 'a1b2c3d', author: 'Sameer', date: '2d ago',
+    message: 'init: setup express server and core configuration',
+    branch: 'main', x: 140, y: 180,
+    files: ['package.json', 'server.js', '.env.example'], additions: [45, 82, 15],
+    safety: 100, purpose: 'Scaffold application base package and configurations.',
+    explanation: 'Created foundational express scaffold with base server structure.',
+    color: '#7C5CFF'
+  },
+  { 
+    id: '2', hash: 'd4e5f6a', author: 'Kartik', date: '1d ago',
+    message: 'feat: base layout routing and dynamic viewports',
+    branch: 'main', x: 220, y: 180,
+    files: ['src/App.jsx', 'src/routes.jsx'], additions: [110, 55],
+    safety: 100, purpose: 'Establish client-side route paths and lazy loading wrappers.',
+    explanation: 'Auth and Dashboard layout routing completed. Validated.',
+    annotation: '3 commits ago\nBranch point',
+    color: '#7C5CFF'
+  },
+  { 
+    id: '3', hash: 'f7g8h9i', author: 'Sameer', date: '18h ago',
+    message: 'docs: update install instructions and local setup scripts',
+    branch: 'main', x: 300, y: 180,
+    files: ['README.md', 'scripts/setup.sh'], additions: [30, 24],
+    safety: 100, purpose: 'Maintain repository setup documentation.',
+    explanation: 'Clarifies CLI startup instructions and local node version constraints.',
+    color: '#7C5CFF'
+  },
 
-/* ─────────────────────────────────────────────────────────
-   Legend definitions per state
-───────────────────────────────────────────────────────── */
-const LEGENDS = {
-  normal:   [{ color:'#7C5CFF', label:'main' }, { color:'#00D4FF', label:'feature/auth' }],
-  diverged: [{ color:'#7C5CFF', label:'local (main)' }, { color:'#00D4FF', label:'origin/main', dashed:true }],
-  conflict: [{ color:'#7C5CFF', label:'local (main)' }, { color:'#FF4B4B', label:'origin/main ⚠' }],
-};
+  // ── feature/auth Branch Commits
+  { 
+    id: '4', hash: 'a12bc8f', author: 'Ayesh', date: '8h ago',
+    message: 'feat: scaffold passport local strategy and middlewares',
+    branch: 'feature/auth', x: 560, y: 100,
+    files: ['config/passport.js', 'server.js'], additions: [85, 12],
+    safety: 95, purpose: 'Scaffold authentication middleware helper modules.',
+    explanation: 'Introduced local username/password checks using passport helper hook.',
+    color: '#00D4FF'
+  },
+  { 
+    id: '5', hash: 'b34de9a', author: 'Ayesh', date: '6h ago',
+    message: 'feat: create authentication endpoints and test suites',
+    branch: 'feature/auth', x: 640, y: 100,
+    files: ['routes/auth.js', 'controllers/auth.js'], additions: [140, 95],
+    safety: 90, purpose: 'Expose login/signup controller actions.',
+    explanation: 'Enables credential validation against standard password hashes.',
+    color: '#00D4FF'
+  },
+  { 
+    id: '6', hash: 'c56fg2b', author: 'Ayesh', date: '4h ago',
+    message: 'fix: cookie parsing configurations and session storage',
+    branch: 'feature/auth', x: 720, y: 100,
+    files: ['server.js', 'middleware/cookies.js'], additions: [22, 48],
+    safety: 98, purpose: 'Configure secure, HttpOnly cookie flags.',
+    explanation: 'Hardens authentication session cookies against client-side script inspection.',
+    color: '#00D4FF'
+  },
+  { 
+    id: '7', hash: 'd9fa002', author: 'Ayesh', date: '18m ago',
+    message: 'Add JWT authentication & protected routes',
+    branch: 'feature/auth', x: 800, y: 100, head: true,
+    files: ['server.js', 'auth.js', 'middleware.js'], additions: [120, 98, 75],
+    safety: 72, purpose: 'Implements JWT auth, login, and protected route middleware.',
+    explanation: 'Restricts user dashboard access unless a valid signed token is supplied.',
+    conflictFiles: ['auth.js', 'middleware.js'],
+    color: '#00D4FF'
+  },
 
-/* ─────────────────────────────────────────────────────────
-   Path builder
-───────────────────────────────────────────────────────── */
-function Paths({ state }) {
-  if (state === 'normal') return (
-    <>
-      <line x1={80} y1={150} x2={560} y2={150} stroke="url(#lineGrad)" strokeWidth={3.5} className="node-link" />
-      <path d="M 200 150 C 260 150, 260 250, 320 250 L 440 250 C 500 250, 500 150, 560 150"
-        fill="none" stroke="url(#cyanGrad)" strokeWidth={2.5} className="node-link" />
-    </>
-  );
-  if (state === 'diverged') return (
-    <>
-      <line x1={80} y1={150} x2={480} y2={150} stroke="#7C5CFF" strokeWidth={3.5} />
-      <path d="M 200 150 C 265 150, 285 80, 350 80 L 480 80"
-        fill="none" stroke="#00D4FF" strokeWidth={2.5} className="node-link" opacity={0.7} />
-    </>
-  );
-  if (state === 'conflict') return (
-    <>
-      <line x1={80} y1={150} x2={200} y2={150} stroke="#7C5CFF" strokeWidth={3.5} />
-      <path d="M 200 150 C 265 150, 285 215, 350 215"
-        fill="none" stroke="#7C5CFF" strokeWidth={3.5} />
-      <path d="M 200 150 C 265 150, 285 85, 350 85"
-        fill="none" stroke="#FF4B4B" strokeWidth={2.5} className="node-link" opacity={0.8} />
-    </>
-  );
-  return null;
-}
+  // ── feature/cart Branch Commits
+  { 
+    id: '8', hash: 'e11aa22', author: 'Manik', date: '7h ago',
+    message: 'feat: add cart reducer actions and store slice mapping',
+    branch: 'feature/cart', x: 550, y: 230,
+    files: ['src/store/cartSlice.js'], additions: [75],
+    safety: 100, purpose: 'Setup global state slice for shopping cart items.',
+    explanation: 'Implements actions for adding, removing, and clearing item maps.',
+    color: '#10B981'
+  },
+  { 
+    id: '9', hash: 'f33bb44', author: 'Manik', date: '5h ago',
+    message: 'feat: implement add-to-cart layout cards and drawer lists',
+    branch: 'feature/cart', x: 630, y: 230,
+    files: ['src/components/Cart.jsx', 'src/components/ProductCard.jsx'], additions: [130, 45],
+    safety: 100, purpose: 'Design checkout list drawer and add-to-cart triggers.',
+    explanation: 'Renders sliding side cart widget with real-time price totals.',
+    color: '#10B981'
+  },
+  { 
+    id: '10', hash: 'a55cc66', author: 'Manik', date: '3h ago',
+    message: 'fix: persistent cart storage state cache',
+    branch: 'feature/cart', x: 710, y: 230,
+    files: ['src/store/cartSlice.js', 'src/utils/cache.js'], additions: [35, 18],
+    safety: 98, purpose: 'Sync active shopping cart records to localStorage cache.',
+    explanation: 'Avoids cart empties on sudden browser page refreshes.',
+    color: '#10B981'
+  },
 
-/* ─────────────────────────────────────────────────────────
-   Main component
-───────────────────────────────────────────────────────── */
+  // ── develop Branch Commits
+  { 
+    id: '11', hash: 'b1c2d3e', author: 'Kartik', date: '6h ago',
+    message: 'feat: add pipeline configure files for continuous builds',
+    branch: 'develop', x: 550, y: 280,
+    files: ['.github/workflows/ci.yml'], additions: [64],
+    safety: 100, purpose: 'Integrate automatic testing check commands on GitHub push events.',
+    explanation: 'Adds validation runner workflows that run npm install and test.',
+    color: '#F59E0B'
+  },
+  { 
+    id: '12', hash: 'c3d4e5f', author: 'Kartik', date: '4h ago',
+    message: 'fix: resolve console warnings and ESLint line alerts',
+    branch: 'develop', x: 630, y: 280,
+    files: ['src/components/Cart.jsx', 'server.js'], additions: [15, 8],
+    safety: 100, purpose: 'Fix JSX bracket placements and missing semicolon markers.',
+    explanation: 'Polishes code formatting across pages. All lint tests now pass.',
+    color: '#F59E0B'
+  },
+  { 
+    id: '13', hash: 'd5e6f7g', author: 'Kartik', date: '2h ago',
+    message: 'chore: upgrade vulnerable sub-dependencies in lockfile',
+    branch: 'develop', x: 710, y: 280,
+    files: ['package.json'], additions: [12],
+    safety: 95, purpose: 'Update package versions to eliminate external warning flags.',
+    explanation: 'Safely upgrades underlying system dependencies. Compiles correctly.',
+    color: '#F59E0B'
+  },
+
+  // ── hotfix/bug Branch Commits
+  { 
+    id: '14', hash: 'h1i2j3k', author: 'Sameer', date: '5h ago',
+    message: 'fix: socket memory leak in connection session timeout handlers',
+    branch: 'hotfix/bug', x: 550, y: 330,
+    files: ['server.js'], additions: [42],
+    safety: 85, purpose: 'Clear stale connection channels when socket connections drop.',
+    explanation: 'Prevents heap exhaustion on client timeouts. Tested under load.',
+    color: '#EF4444'
+  },
+  { 
+    id: '15', hash: 'j4k516m', author: 'Sameer', date: '3h ago',
+    message: 'fix: configure connection pools to prevent database exhausts',
+    branch: 'hotfix/bug', x: 630, y: 330,
+    files: ['db.js'], additions: [28],
+    safety: 90, purpose: 'Scale connection pool size limits dynamically based on queries.',
+    explanation: 'Patches DB pool depletion errors under sudden front-end traffic spikes.',
+    color: '#EF4444'
+  },
+
+  // ── Merge point Commit
+  { 
+    id: '16', hash: 'z9y8x7w', author: 'Sameer', date: '5m ago',
+    message: 'merge feature/auth & feature/cart to production main',
+    branch: 'main', x: 900, y: 180,
+    files: ['server.js', 'package.json'], additions: [25, 4],
+    safety: 100, purpose: 'Integrate and deploy the completed authorization and cart features.',
+    explanation: 'Consolidates develop branches. Production build validated.',
+    color: '#7C5CFF'
+  }
+];
+
+const BRANCH_TYPES = [
+  { name: 'main', color: '#7C5CFF' },
+  { name: 'feature/auth', color: '#00D4FF' },
+  { name: 'feature/cart', color: '#10B981' },
+  { name: 'develop', color: '#F59E0B' },
+  { name: 'hotfix/bug', color: '#EF4444' }
+];
+
 export default function GitGraph({ state = 'normal', onNodeSelect }) {
-  const commits = WORKFLOWS[state] || WORKFLOWS.normal;
+  const [selectedNode, setSelectedNode] = useState(null);
+  
+  // Interactive Pan and Zoom States
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  
+  const svgRef = useRef(null);
 
-  // Reset selected node whenever state changes
-  const [selectedNode, setSelectedNode] = useState(commits[commits.length - 1]);
+  // Set default selected commit on load and when workflow state toggles
   useEffect(() => {
-    const latestNode = commits[commits.length - 1];
-    setSelectedNode(latestNode);
-    onNodeSelect?.(latestNode);
-  }, [state]);   // eslint-disable-line react-hooks/exhaustive-deps
+    // Default to the branch HEAD tip (d9fa002) for high fidelity
+    const defaultNode = ALL_COMMITS.find(c => c.hash === 'd9fa002') || ALL_COMMITS[ALL_COMMITS.length - 1];
+    setSelectedNode(defaultNode);
+    onNodeSelect?.(defaultNode);
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleClick = (node) => {
+  const handleNodeClick = (node) => {
+    // Custom state modifications depending on workflow selection
+    let modifiedNode = { ...node };
+    if (state === 'conflict' && node.hash === 'z9y8x7w') {
+      modifiedNode.safety = 35;
+      modifiedNode.conflictFiles = ['auth.js', 'middleware.js'];
+      modifiedNode.explanation = '⚠️ Conflict detected: auth.js and middleware.js were modified simultaneously on origin and local main branch. Manual resolution required.';
+    } else if (state === 'diverged' && node.branch === 'feature/auth') {
+      modifiedNode.explanation = '🔗 Commit belongs to origin/feature/auth. Needs a pull and rebase to merge safely.';
+    }
+    
     setSelectedNode(node);
-    onNodeSelect?.(node);
+    onNodeSelect?.(modifiedNode);
   };
 
-  const legend = LEGENDS[state] ?? LEGENDS.normal;
+  // Dragging event handlers for panning
+  const handleMouseDown = (e) => {
+    // Only drag on left click
+    if (e.button !== 0) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    setPan({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleFitView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  // Paths rendering builder based on active workspace state
+  const renderPaths = () => {
+    const isDiverged = state === 'diverged';
+    const isConflict = state === 'conflict';
+
+    // Decide if auth branch lines are animated (dotted) based on state
+    const authLinkClass = isDiverged ? "node-link" : "";
+    const authLinkStroke = isDiverged ? "#00D4FF" : "#00D4FF";
+    
+    // Decide if merge lines into final node are conflicted
+    const mergeStroke = isConflict ? "#EF4444" : "#7C5CFF";
+    const mergeLinkClass = isConflict ? "node-link" : "";
+
+    return (
+      <g>
+        {/* ── main branch line (purple) */}
+        {/* start segment (before first node) */}
+        <line x1={100} y1={180} x2={140} y2={180} stroke="#7C5CFF" strokeWidth={3.5} className="node-link" />
+        {/* rest of main */}
+        <line x1={140} y1={180} x2={900} y2={180} stroke="#7C5CFF" strokeWidth={3.5} />
+
+        {/* ── feature/auth curve (cyan) */}
+        {/* branch split curve (before label) */}
+        <path 
+          d="M 300 180 C 350 180, 390 100, 440 100 L 460 100" 
+          fill="none" 
+          stroke={authLinkStroke} 
+          strokeWidth={2.5} 
+          className="node-link" 
+          opacity={0.9} 
+        />
+        {/* straight line (after label) */}
+        <path 
+          d="M 460 100 L 800 100" 
+          fill="none" 
+          stroke="#00D4FF" 
+          strokeWidth={2.5} 
+          opacity={0.9} 
+        />
+        {/* merge curve back to main */}
+        <path 
+          d="M 800 100 C 840 100, 870 180, 900 180" 
+          fill="none" 
+          stroke={isDiverged ? "#00D4FF" : mergeStroke} 
+          strokeWidth={isDiverged ? 2.5 : 3.5} 
+          className={isDiverged ? "node-link" : mergeLinkClass} 
+          opacity={isDiverged ? 0.6 : 0.9}
+        />
+
+        {/* ── feature/cart curve (green) */}
+        {/* branch split curve (before label) */}
+        <path 
+          d="M 300 180 C 350 180, 390 230, 440 230 L 460 230" 
+          fill="none" 
+          stroke="#10B981" 
+          strokeWidth={2.5} 
+          className="node-link" 
+          opacity={0.9} 
+        />
+        {/* straight line (after label) */}
+        <path 
+          d="M 460 230 L 710 230" 
+          fill="none" 
+          stroke="#10B981" 
+          strokeWidth={2.5} 
+          opacity={0.9} 
+        />
+        {/* merge curve back to main */}
+        <path 
+          d="M 710 230 C 770 230, 840 180, 900 180" 
+          fill="none" 
+          stroke={mergeStroke} 
+          strokeWidth={3.5} 
+          className={mergeLinkClass}
+          opacity={0.9} 
+        />
+
+        {/* ── develop curve (yellow) */}
+        {/* branch split curve (before label - always dotted) */}
+        <path 
+          d="M 300 180 C 345 180, 370 280, 440 280 L 460 280" 
+          fill="none" 
+          stroke="#F59E0B" 
+          strokeWidth={2.5} 
+          className="node-link"
+          opacity={0.9} 
+        />
+        {/* straight line (after label) */}
+        <path 
+          d="M 460 280 L 710 280" 
+          fill="none" 
+          stroke="#F59E0B" 
+          strokeWidth={2.5} 
+          opacity={0.9} 
+        />
+        {/* merge curve back to main */}
+        <path 
+          d="M 710 280 C 770 280, 840 180, 900 180" 
+          fill="none" 
+          stroke={mergeStroke} 
+          strokeWidth={3.5} 
+          className={mergeLinkClass}
+          opacity={0.9} 
+        />
+
+        {/* ── hotfix/bug curve (red) */}
+        {/* branch split curve (before label - always dotted) */}
+        <path 
+          d="M 300 180 C 340 180, 360 330, 440 330 L 460 330" 
+          fill="none" 
+          stroke="#EF4444" 
+          strokeWidth={2.5} 
+          className="node-link"
+          opacity={0.9} 
+        />
+        {/* straight line (after label) */}
+        <path 
+          d="M 460 330 L 630 330" 
+          fill="none" 
+          stroke="#EF4444" 
+          strokeWidth={2.5} 
+          opacity={0.9} 
+        />
+        {/* merge curve back to main */}
+        <path 
+          d="M 630 330 C 720 330, 840 180, 900 180" 
+          fill="none" 
+          stroke={mergeStroke} 
+          strokeWidth={3.5} 
+          className={mergeLinkClass}
+          opacity={0.9} 
+        />
+      </g>
+    );
+  };
 
   return (
-    <div className="w-full gitgraph-card rounded-2xl p-4 min-h-[280px] relative overflow-hidden flex items-center justify-center shadow-lg shadow-black/25 backdrop-blur-sm transition-all duration-300">
+    <div className={`w-full gitgraph-card rounded-2xl p-5 border border-white/[0.06] backdrop-blur-sm transition-all duration-300 relative ${
+      isFullscreen ? 'fixed inset-0 z-50 bg-[#060913]/98 p-8 flex flex-col justify-between' : 'flex flex-col'
+    }`}>
       
-      {/* Legend badge */}
-      <div className="absolute top-3 left-3 flex gap-3 text-[10px] font-mono gitgraph-legend backdrop-blur px-3 py-1.5 rounded-lg z-10">
-        {legend.map(({ color, label, dashed }) => (
-          <div key={label} className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full flex-shrink-0 ${dashed ? 'border border-dashed border-current' : ''}`}
-              style={{ background: dashed ? 'transparent' : color, borderColor: color }}
-            />
-            <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      {/* ── Header control bar inside the graph card */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.06] pb-4.5 mb-4.5 select-none">
+        <div className="flex flex-col gap-1.5 text-left">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold tracking-wider text-slate-100 font-heading">
+              BRANCH RELATIONSHIP GRAPH
+            </span>
+            <HelpCircle size={14} className="text-slate-500 cursor-pointer hover:text-slate-300 transition-colors" />
           </div>
-        ))}
+          
+          {/* Legend Pills */}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-400">
+            {BRANCH_TYPES.map(branch => (
+              <div key={branch.name} className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
+                <span>{branch.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* View Controls */}
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <button
+            onClick={handleFitView}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-white/[0.08] rounded-xl text-xs font-semibold text-slate-300 hover:text-white transition-all cursor-pointer"
+          >
+            <RotateCcw size={12} />
+            <span>Fit View</span>
+          </button>
+          
+          <div className="flex items-center bg-slate-900 border border-white/[0.08] rounded-xl p-0.5">
+            <button
+              onClick={() => setZoom(z => Math.max(z - 0.15, 0.5))}
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-all cursor-pointer"
+              title="Zoom Out"
+            >
+              <Minus size={13} />
+            </button>
+            <span className="px-2 text-[10px] font-mono text-slate-400 select-none min-w-[36px] text-center">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom(z => Math.min(z + 0.15, 2.0))}
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-all cursor-pointer"
+              title="Zoom In"
+            >
+              <Plus size={13} />
+            </button>
+          </div>
+
+          <button
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-white/[0.08] rounded-xl text-slate-400 hover:text-white transition-all cursor-pointer"
+            title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+          >
+            <Maximize2 size={13} />
+          </button>
+        </div>
       </div>
 
-      <svg
-        viewBox="0 0 640 300"
-        preserveAspectRatio="xMidYMid meet"
-        className="w-full select-none"
-        style={{ maxHeight: '280px' }}
+      {/* ── SVG Canvas Viewport */}
+      <div 
+        className="w-full relative overflow-hidden bg-slate-950/20 border border-white/[0.03] rounded-xl cursor-grab active:cursor-grabbing flex-1 min-h-[300px]"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        ref={svgRef}
       >
-        <defs>
-          <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stopColor="#7C5CFF" />
-            <stop offset="100%" stopColor="#00D4FF" />
-          </linearGradient>
-          <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stopColor="#00D4FF" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="#7C5CFF" stopOpacity="0.85" />
-          </linearGradient>
-          <filter id="glowFilter" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
+        <svg
+          viewBox="0 0 960 380"
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full h-full select-none"
+          style={{ minHeight: '340px' }}
+        >
+          <defs>
+            {/* Dotted Grid Pattern */}
+            <pattern id="dotGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <circle cx="20" cy="20" r="1.2" fill="var(--graph-grid, rgba(255, 255, 255, 0.12))" />
+            </pattern>
+            {/* Node Outer Glow filter */}
+            <filter id="glowFilter" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
 
-        {/* Subtle grid */}
-        <g stroke="var(--graph-grid)" strokeWidth={1}>
-          {[50,100,150,200,250].map(y => <line key={`h${y}`} x1={0}   y1={y} x2={640} y2={y} />)}
-          {[100,200,300,400,500,600].map(x => <line key={`v${x}`} x1={x} y1={0}   x2={x} y2={300} />)}
-        </g>
+          {/* Grid Background */}
+          <rect width="100%" height="100%" fill="url(#dotGrid)" className="pointer-events-none" />
 
-        <Paths state={state} />
-
-        {commits.map((node) => {
-          const isSelected = selectedNode?.id === node.id;
-          const isTip      = node.id === commits[commits.length - 1].id;
-
-          let fill = '#7C5CFF';
-          if (node.branch.includes('feature'))           fill = '#00D4FF';
-          if (node.status === 'remote')                  fill = '#00D4FF';
-          if (node.status === 'local')                   fill = '#7C5CFF';
-          if (state === 'conflict' && node.status === 'remote') fill = '#FF4B4B';
-
-          return (
-            <g key={node.id} className="cursor-pointer">
-              {/* Pulse ring on latest tip */}
-              {isTip && (
-                <circle
-                  key="tip-pulse"
-                  cx={node.x}
-                  cy={node.y}
-                  r={12}
-                  fill="none"
-                  stroke={fill}
-                  strokeWidth={1.5}
-                  opacity={0.4}
-                >
-                  <animate attributeName="r"       values="8;20;8"   dur="2.8s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.6;0;0.6" dur="2.8s" repeatCount="indefinite" />
-                </circle>
-              )}
-
-              {/* Selected glow */}
-              {isSelected && (
-                <circle
-                  key="selected-glow"
-                  cx={node.x}
-                  cy={node.y}
-                  r={15}
-                  fill={fill}
-                  opacity={0.18}
-                  filter="url(#glowFilter)"
-                  className="pointer-events-none"
-                />
-              )}
-
-              {/* Hover backdrop glow */}
-              <circle
-                key="hover-backdrop"
-                cx={node.x}
-                cy={node.y}
-                r={16}
-                fill="transparent"
-                className="hover:fill-white/[0.04] transition-colors duration-200"
-                onClick={() => handleClick(node)}
-              />
-
-              {/* Main node */}
-              <circle
-                key="main-node"
-                cx={node.x}
-                cy={node.y}
-                r={isSelected ? 9 : 6.5}
-                fill={fill}
-                stroke={isSelected ? 'var(--graph-node-selected-stroke)' : 'var(--graph-node-stroke)'}
-                strokeWidth={isSelected ? 2.5 : 2}
-                className="node-circle hover:scale-125 transition-transform duration-200"
-                onClick={() => handleClick(node)}
-              />
-
-              {/* Hash label */}
-              <text
-                x={node.x} y={node.y - 16}
-                fill="#64748B" fontSize="8.5"
-                fontFamily="'Fira Code', monospace"
-                textAnchor="middle"
-                className="pointer-events-none font-medium"
-              >
-                {node.hash}
-              </text>
+          {/* Wrapper Group for Pan & Zoom */}
+          <g 
+            transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}
+            style={{ 
+              transformOrigin: 'center',
+              transition: isDragging ? 'none' : 'transform 0.15s ease-out' 
+            }}
+          >
+            
+            {/* ── BRANCH ANNOTATIONS (3 commits ago / Branch point) */}
+            <line x1={220} y1={105} x2={220} y2={170} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3 3" />
+            <g>
+              <rect x={170} y={55} width={100} height={42} rx={6} fill="#060913" fillOpacity={0.85} stroke="rgba(255,255,255,0.1)" strokeWidth={1} />
+              <text x={220} y={72} fill="#94a3b8" fontSize={9.5} textAnchor="middle" fontFamily="sans-serif">3 commits ago</text>
+              <text x={220} y={87} fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="sans-serif">Branch point</text>
             </g>
-          );
-        })}
-      </svg>
+
+            {/* ── PATH LINES */}
+            {renderPaths()}
+
+            {/* ── BRANCH PILLS OVERLAY */}
+            {/* main label */}
+            <g transform="translate(30, 168)" className="pointer-events-none">
+              <rect width={56} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+              <rect width={56} height={24} rx={6} fill="rgba(124, 92, 255, 0.12)" stroke="#7C5CFF" strokeWidth={1.2} />
+              <text x={28} y={15} fill="#7C5CFF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">main</text>
+            </g>
+            {/* feature/auth label */}
+            <g transform="translate(420, 88)" className="pointer-events-none">
+              <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+              <rect width={84} height={24} rx={6} fill="rgba(0, 212, 255, 0.12)" stroke="#00D4FF" strokeWidth={1.2} />
+              <text x={42} y={15} fill="#00D4FF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/auth</text>
+            </g>
+            {/* feature/cart label */}
+            <g transform="translate(420, 218)" className="pointer-events-none">
+              <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+              <rect width={84} height={24} rx={6} fill="rgba(16, 185, 129, 0.12)" stroke="#10B981" strokeWidth={1.2} />
+              <text x={42} y={15} fill="#10B981" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/cart</text>
+            </g>
+            {/* develop label */}
+            <g transform="translate(424, 268)" className="pointer-events-none">
+              <rect width={68} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+              <rect width={68} height={24} rx={6} fill="rgba(245, 158, 11, 0.12)" stroke="#F59E0B" strokeWidth={1.2} />
+              <text x={34} y={15} fill="#F59E0B" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">develop</text>
+            </g>
+            {/* hotfix/bug label */}
+            <g transform="translate(420, 318)" className="pointer-events-none">
+              <rect width={80} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+              <rect width={80} height={24} rx={6} fill="rgba(239, 68, 68, 0.12)" stroke="#EF4444" strokeWidth={1.2} />
+              <text x={40} y={15} fill="#EF4444" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">hotfix/bug</text>
+            </g>
+
+            {/* ── NODES */}
+            {ALL_COMMITS.map((node) => {
+              const isSelected = selectedNode?.id === node.id;
+              const isConflictStateMerge = state === 'conflict' && node.hash === 'z9y8x7w';
+              
+              let fill = node.color;
+              if (isConflictStateMerge) {
+                fill = '#EF4444'; // Red conflict dot
+              }
+
+              return (
+                <g key={node.id} onClick={() => handleNodeClick(node)}>
+                  
+                  {/* HEAD Banner badge */}
+                  {node.head && (
+                    <g key="head-banner" className="pointer-events-none">
+                      <rect
+                        x={node.x - 20}
+                        y={node.y - 45}
+                        width={40}
+                        height={18}
+                        rx={4}
+                        fill="#00D4FF"
+                      />
+                      <text
+                        x={node.x}
+                        y={node.y - 32}
+                        fill="#060913"
+                        fontSize={9}
+                        fontWeight="bold"
+                        textAnchor="middle"
+                        fontFamily="sans-serif"
+                      >
+                        HEAD
+                      </text>
+                      <line
+                        x1={node.x}
+                        y1={node.y - 27}
+                        x2={node.x}
+                        y2={node.y - 12}
+                        stroke="#00D4FF"
+                        strokeWidth={1.5}
+                      />
+                    </g>
+                  )}
+
+                  {/* tip pulse ring */}
+                  {node.head && (
+                    <circle
+                      key="head-pulse"
+                      cx={node.x}
+                      cy={node.y}
+                      r={14}
+                      fill="none"
+                      stroke="#00D4FF"
+                      strokeWidth={1.5}
+                      opacity={0.5}
+                    >
+                      <animate attributeName="r" values="9;24;9" dur="2.5s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.7;0;0.7" dur="2.5s" repeatCount="indefinite" />
+                    </circle>
+                  )}
+
+                  {/* Conflict alert ring */}
+                  {isConflictStateMerge && (
+                    <circle
+                      key="conflict-pulse"
+                      cx={node.x}
+                      cy={node.y}
+                      r={14}
+                      fill="none"
+                      stroke="#EF4444"
+                      strokeWidth={1.5}
+                      opacity={0.5}
+                    >
+                      <animate attributeName="r" values="9;22;9" dur="2s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.8;0;0.8" dur="2s" repeatCount="indefinite" />
+                    </circle>
+                  )}
+
+                  {/* Glow ring when selected */}
+                  {isSelected && (
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={18}
+                      fill={fill}
+                      opacity={0.22}
+                      filter="url(#glowFilter)"
+                      className="pointer-events-none animate-pulse"
+                    />
+                  )}
+
+                  {/* Click trigger area */}
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={20}
+                    fill="transparent"
+                    className="cursor-pointer"
+                  />
+
+                  {/* Outer circle layout */}
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={isSelected ? 10 : 7}
+                    fill={isSelected ? 'transparent' : fill}
+                    stroke={isSelected ? fill : 'var(--graph-node-stroke)'}
+                    strokeWidth={isSelected ? 4 : 2}
+                    className="node-circle transition-all duration-200"
+                  />
+
+                  {/* Inner selected dot */}
+                  {isSelected && (
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={4.5}
+                      fill={fill}
+                      className="pointer-events-none"
+                    />
+                  )}
+
+                  {/* Hash ID text under node */}
+                  <text
+                    x={node.x}
+                    y={node.y + 24}
+                    fill={isSelected ? fill : '#64748B'}
+                    fontSize="9.5"
+                    fontFamily="monospace"
+                    fontWeight={isSelected ? 'bold' : 'normal'}
+                    textAnchor="middle"
+                    className="pointer-events-none select-none transition-colors duration-200"
+                  >
+                    {node.hash}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+      </div>
     </div>
   );
 }

@@ -9,6 +9,7 @@
   /* Brand Colors */
   --bg-color:      #0B1020;
   --bg-darker:     #060913;
+  --graph-pill-bg: #060913;
   --bg-card:       #0f1629;
   --primary:       #7C5CFF;
   --secondary:     #00D4FF;
@@ -407,6 +408,7 @@ html.light {
   --graph-grid:          rgba(0, 0, 0, 0.05);
   --graph-node-stroke:   #FFFFFF;
   --graph-node-selected-stroke: #7C5CFF;
+  --graph-pill-bg:       #FFFFFF;
 }
 
 /* Light mode adjustments for visual components */
