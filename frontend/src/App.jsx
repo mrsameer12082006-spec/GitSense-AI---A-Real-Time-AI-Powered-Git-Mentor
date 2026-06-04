@@ -20,7 +20,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(() => {
     const hash = window.location.hash;
     if (hash === '#login' || hash === '#signup') return 'auth';
-    if (hash === '#dashboard') return 'dashboard';
+    if (hash === '#dashboard' || hash.startsWith('#dashboard')) return 'dashboard';
     if (hash === '#visualizer-page') return 'visualizer';
     if (hash === '#profile') return 'profile';
     if (hash === '#settings') return 'settings';
@@ -30,10 +30,36 @@ export default function App() {
   });
 
   const [authMode, setAuthMode] = useState(() => {
-    return window.location.hash === '#signup' ? 'signup' : 'login';
+    const hash = window.location.hash;
+    return hash.startsWith('#signup') ? 'signup' : 'login';
   });
 
   useEffect(() => {
+    // Check if token exists in URL (e.g., #dashboard?token=xyz or /?token=xyz)
+    const hash = window.location.hash;
+    const search = window.location.search;
+    
+    let token = null;
+    if (hash.includes('token=')) {
+      const match = hash.match(/token=([^&]+)/);
+      if (match && match[1]) token = match[1];
+    } else if (search.includes('token=')) {
+      const match = search.match(/token=([^&]+)/);
+      if (match && match[1]) token = match[1];
+    }
+    
+    if (token) {
+      if (window.opener) {
+        // We are in the OAuth popup window
+        window.opener.postMessage({ type: 'GITSENSE_OAUTH_TOKEN', token }, '*');
+        window.close();
+      } else {
+        // Direct link / redirect in main window
+        localStorage.setItem('gitsense_token', token);
+        window.location.hash = '#dashboard';
+      }
+    }
+
     const handleHashChange = () => {
       const hash = window.location.hash;
       if (hash === '#login') {
@@ -42,7 +68,7 @@ export default function App() {
       } else if (hash === '#signup') {
         setCurrentPage('auth');
         setAuthMode('signup');
-      } else if (hash === '#dashboard') {
+      } else if (hash === '#dashboard' || hash.startsWith('#dashboard')) {
         setCurrentPage('dashboard');
       } else if (hash === '#visualizer-page') {
         setCurrentPage('visualizer');

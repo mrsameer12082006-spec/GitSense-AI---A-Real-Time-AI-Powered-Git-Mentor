@@ -48,39 +48,50 @@ export default function AuthPage({ initialMode }) {
     github: '',
     password: '',
   });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    // Save login/signup credentials into localStorage
-    if (isSignUp) {
-      localStorage.setItem('gitsense_profile_name', formData.name);
-      localStorage.setItem('gitsense_profile_email', formData.email);
-      let githubLink = formData.github.trim();
-      if (githubLink && !githubLink.startsWith('http://') && !githubLink.startsWith('https://')) {
-        githubLink = `https://github.com/${githubLink}`;
-      }
-      localStorage.setItem('gitsense_profile_github', githubLink || `https://github.com/${formData.name.toLowerCase().trim().replace(/\s+/g, '-')}`);
-    } else {
-      localStorage.setItem('gitsense_profile_email', formData.email);
-      // Extract a display name from the email address
-      const localPart = formData.email.split('@')[0];
-      const displayName = localPart.charAt(0).toUpperCase() + localPart.slice(1);
-      localStorage.setItem('gitsense_profile_name', displayName);
-      localStorage.setItem('gitsense_profile_github', `https://github.com/${localPart.toLowerCase()}`);
-    }
+    setError('');
+    setLoading(true);
 
-    setFormSubmitted(true);
-    setTimeout(() => {
-      setFormSubmitted(false);
-      // Reset form and redirect to dashboard page
-      window.location.hash = '#dashboard';
-    }, 2000);
+    try {
+      const endpoint = isSignUp ? '/api/auth/register' : '/api/auth/login';
+      const payload = isSignUp 
+        ? { name: formData.name, email: formData.email, password: formData.password, github: formData.github }
+        : { email: formData.email, password: formData.password };
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Authentication failed. Please try again.');
+      }
+
+      // Store JWT token
+      localStorage.setItem('gitsense_token', data.token);
+
+      setFormSubmitted(true);
+      setTimeout(() => {
+        setFormSubmitted(false);
+        // Reset form and redirect to dashboard page
+        window.location.hash = '#dashboard';
+      }, 2000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Animation variants for the sliding overlay panel
@@ -237,11 +248,18 @@ export default function AuthPage({ initialMode }) {
               </button>
             </div>
 
+            {error && !isSignUp && (
+              <div className="text-xs text-red-400 bg-red-950/30 border border-red-500/30 px-3 py-2 rounded-lg text-center font-semibold">
+                {error}
+              </div>
+            )}
+
             <button
               type="submit"
-              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer"
+              disabled={loading}
+              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Log In
+              {loading ? 'Logging In...' : 'Log In'}
             </button>
           </form>
         </motion.div>
@@ -332,11 +350,18 @@ export default function AuthPage({ initialMode }) {
               </button>
             </div>
 
+            {error && isSignUp && (
+              <div className="text-xs text-red-400 bg-red-950/30 border border-red-500/30 px-3 py-2 rounded-lg text-center font-semibold">
+                {error}
+              </div>
+            )}
+
             <button
               type="submit"
-              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer"
+              disabled={loading}
+              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign Up
+              {loading ? 'Signing Up...' : 'Sign Up'}
             </button>
           </form>
         </motion.div>

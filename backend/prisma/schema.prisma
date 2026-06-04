@@ -1,0 +1,87 @@
+// ─────────────────────────────────────────────────────────────
+// GitSense AI — Database Schema
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users ──────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  name         String
+  githubId     String?  @unique
+  githubToken  String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  repositories  Repository[]
+  conversations Conversation[]
+}
+
+// ── Repositories ──────────────────────────────────────────
+model Repository {
+  id               String   @id @default(cuid())
+  userId           String
+  name             String
+  owner            String
+  fullName         String
+  url              String
+  defaultBranch    String   @default("main")
+  isConnected      Boolean  @default(true)
+  connectionMethod String   @default("url") // "oauth" | "url"
+  metadata         String?  // JSON string for extra data
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  activities    Activity[]
+
+  @@unique([userId, fullName])
+}
+
+// ── Conversations ─────────────────────────────────────────
+model Conversation {
+  id           String   @id @default(cuid())
+  userId       String
+  repositoryId String?
+  title        String   @default("New Conversation")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository Repository? @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  messages   Message[]
+}
+
+// ── Messages ──────────────────────────────────────────────
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String   // "user" | "assistant"
+  content        String
+  metadata       String?  // JSON string for code blocks, diffs, commands, insights
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+// ── Activity Feed ─────────────────────────────────────────
+model Activity {
+  id           String   @id @default(cuid())
+  repositoryId String
+  type         String   // "commit" | "pr" | "issue" | "branch" | "ci"
+  payload      String   // JSON string
+  timestamp    DateTime @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+}

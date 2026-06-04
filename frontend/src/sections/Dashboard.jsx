@@ -1,23 +1,38 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Search, ChevronDown, LogOut, Settings, User, Info, FileText, Sun, Moon, 
   GitBranch, Send, Paperclip, Mic, Activity, Users, CheckCircle2, AlertTriangle, 
   RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
   Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
-  ChevronLeft, ChevronRight, Download, Link as LinkIcon
+  ChevronLeft, ChevronRight, Download, Link as LinkIcon, Trash2, Loader2, MicOff,
+  ExternalLink
 } from 'lucide-react';
 import {
-  currentUser,
-  isRepositoryConnected,
-  connectedRepository,
   githubImportOptions,
-  repositoryInsights,
-  sidebarEmptyStateText,
-  chatInputPlaceholder,
-  welcomeSubtitle,
   getGreeting
 } from '../data/mockDashboardData';
+
+// ── API Helper ──
+const API_BASE = '/api';
+const getToken = () => localStorage.getItem('gitsense_token');
+const apiFetch = async (path, options = {}) => {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('gitsense_token');
+    window.location.hash = '#login';
+    throw new Error('Session expired');
+  }
+  return res;
+};
 
 export default function Dashboard() {
   const [isAvatarDropdownOpen, setIsAvatarDropdownOpen] = useState(false);
@@ -50,6 +65,114 @@ export default function Dashboard() {
   }, []);
   
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(true);
+
+  // ── Auth & User State ──
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('gitsense_user');
+      return saved ? JSON.parse(saved) : { name: 'User', email: '', avatarInitial: 'U' };
+    } catch { return { name: 'User', email: '', avatarInitial: 'U' }; }
+  });
+
+  // ── Repository State ──
+  const [connectedRepo, setConnectedRepo] = useState(null);
+  const [repoInsights, setRepoInsights] = useState(null);
+  const [isRepoLoading, setIsRepoLoading] = useState(false);
+
+  // ── Chat History State ──
+  const [chatHistory, setChatHistory] = useState({ today: [], week: [], month: [], older: [] });
+  const [activeConversationId, setActiveConversationId] = useState(null);
+  const [historySearch, setHistorySearch] = useState('');
+
+  // ── Modal States ──
+  const [showPasteUrlModal, setShowPasteUrlModal] = useState(false);
+  const [pasteUrlValue, setPasteUrlValue] = useState('');
+  const [pasteUrlLoading, setPasteUrlLoading] = useState(false);
+  const [pasteUrlError, setPasteUrlError] = useState('');
+  const [showConnectSuccess, setShowConnectSuccess] = useState(false);
+
+  // ── Voice Modal State ──
+  const [showVoiceModal, setShowVoiceModal] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const recognitionRef = useRef(null);
+  const chatInputRef = useRef(null);
+
+  // ── Load user profile on mount ──
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    apiFetch('/auth/me').then(r => r.json()).then(data => {
+      if (data.user) {
+        const u = { ...data.user, avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U' };
+        setCurrentUser(u);
+        localStorage.setItem('gitsense_user', JSON.stringify(u));
+      }
+    }).catch(() => {});
+  }, []);
+
+  // ── Handle OAuth callback message from popup ──
+  useEffect(() => {
+    const handleOAuthMessage = (event) => {
+      if (event.data && event.data.type === 'GITSENSE_OAUTH_TOKEN') {
+        const token = event.data.token;
+        localStorage.setItem('gitsense_token', token);
+        window.location.reload();
+      }
+    };
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, []);
+
+  // ── Load connected repo on mount ──
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    apiFetch('/repos/current').then(r => r.json()).then(data => {
+      if (data.connected && data.repository) {
+        setConnectedRepo(data.repository);
+        // Fetch insights
+        apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
+          if (ins.insights) setRepoInsights(ins.insights);
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
+
+  // ── Auto focus after repository connection ──
+  useEffect(() => {
+    if (connectedRepo) {
+      chatInputRef.current?.focus();
+    }
+  }, [connectedRepo]);
+
+  // ── Load chat history ──
+  const loadChatHistory = useCallback(async () => {
+    try {
+      const r = await apiFetch(`/conversations${historySearch ? `?search=${encodeURIComponent(historySearch)}` : ''}`);
+      const data = await r.json();
+      if (data.conversations) setChatHistory(data.conversations);
+    } catch {}
+  }, [historySearch]);
+
+  useEffect(() => { loadChatHistory(); }, [loadChatHistory]);
+
+  // ── Refresh insights periodically ──
+  useEffect(() => {
+    if (!connectedRepo) return;
+    const interval = setInterval(() => {
+      apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
+        if (ins.insights) setRepoInsights(ins.insights);
+      }).catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [connectedRepo]);
+
+  // Derived values
+  const isRepositoryConnected = !!connectedRepo;
+  const repositoryInsights = repoInsights || { commits: 0, openPRs: 0, issues: 0, contributors: 0, securityStatus: 'N/A', latestCommits: [], activePRs: [], pipelines: [] };
+  const sidebarEmptyStateText = 'No conversations yet. Start a new chat.';
+  const chatInputPlaceholder = isRepositoryConnected ? 'Ask about your connected repository...' : 'Connect a repository to start chatting...';
+  const welcomeSubtitle = isRepositoryConnected ? 'Ask me anything about your repository.' : 'Connect a GitHub repository to get started.';
 
   // Collapsible Sidebars State
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
@@ -111,43 +234,63 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  const submitUserMessage = (text) => {
+  const submitUserMessage = async (text) => {
     if (!text.trim()) return;
 
     const userMsg = { sender: 'user', text };
     setMessages(prev => [...prev, userMsg]);
     setInputVal('');
     setIsAiTyping(true);
-
     setTimeout(() => {
-      let aiMsg = { sender: 'ai', text: '' };
-      const query = text.toLowerCase();
-      
-      if (query.includes('merge')) {
-        aiMsg.text = 'Analyzing merge readiness for `feature/login` into `main`...';
-        aiMsg.insight = 'Main branch has advanced by 2 commits since your feature branch split. No direct merge conflicts were found with `main`, but branch health is rated 94% safe.';
-        aiMsg.recommendation = 'It is recommended to run a merge check locally or rebase before pushing to origin.';
-        aiMsg.commandBlock = `git checkout main\ngit pull origin main\ngit checkout feature/login\ngit merge main\n# Verify build\nnpm run test`;
-      } else if (query.includes('explain') || query.includes('code change')) {
-        aiMsg.text = 'Here is the summary explanation of the changes in the latest commit on `feature/login`:';
-        aiMsg.insight = 'This commit introduces authentication state persistence and updates the login route callback to handle session storage securely.';
-        aiMsg.codeBlock = `// src/sections/AuthPage.jsx\nconst handleSubmit = (e) => {\n  e.preventDefault();\n  setFormSubmitted(true);\n  setTimeout(() => {\n    setFormSubmitted(false);\n    window.location.hash = '#dashboard';\n  }, 2000);\n};`;
-      } else if (query.includes('diff')) {
-        aiMsg.text = 'Generating file differences between your local branch and origin/main:';
-        aiMsg.diff = `--- a/frontend/src/sections/AuthPage.jsx\n+++ b/frontend/src/sections/AuthPage.jsx\n@@ -25,2 +25,2 @@\n-      // Reset form and go to home page\n-      window.location.hash = '#home';\n+      // Redirect to the newly generated AI Dashboard\n+      window.location.hash = '#dashboard';`;
-        aiMsg.insight = '1 file changed, 2 insertions, 2 deletions. Successfully updated redirection path to dashboard.';
-      } else if (query.includes('ci') || query.includes('failing')) {
-        aiMsg.text = 'Scanning latest workflow logs from Github Actions (CI Pipeline #10842):';
-        aiMsg.insight = 'The job "Build & Deploy" failed at the linting step. The linter flagged an unused import in `src/sections/AIShowcase.jsx` and a missing key in a map inside `src/sections/HealthDashboard.jsx`.';
-        aiMsg.recommendation = 'Run "npm run lint" locally and resolve the imports before pushing your next commit.';
-        aiMsg.commandBlock = `npm run lint\n# or manually clean imports in AIShowcase.jsx`;
-      } else {
-        aiMsg.text = `Understood. I have scanned the repository files and found no immediate blockages. What specific aspect of your git state or workspace would you like me to inspect?`;
+      chatInputRef.current?.focus();
+    }, 30);
+
+    try {
+      const res = await apiFetch('/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          message: text,
+          conversationId: activeConversationId,
+          repositoryId: connectedRepo?.id,
+        }),
+      });
+
+      let data;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        throw new Error(`Failed to parse server response as JSON (Status: ${res.status} ${res.statusText})`);
       }
 
-      setMessages(prev => [...prev, aiMsg]);
+      if (!res.ok) {
+        throw new Error(data.error || `Request failed with status ${res.status}`);
+      }
+
+      if (data.response) {
+        setMessages(prev => [...prev, data.response]);
+      } else {
+        throw new Error('Server returned an empty response');
+      }
+
+      // Update conversation ID for subsequent messages
+      if (data.conversationId) {
+        setActiveConversationId(data.conversationId);
+      }
+
+      // Refresh chat history
+      loadChatHistory();
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `⚠️ AI Chat Error: ${err.message}`,
+        insight: 'Please verify the backend server is running on port 3001 and your GROQ_API_KEY is configured in backend/.env',
+      }]);
+    } finally {
       setIsAiTyping(false);
-    }, 1500);
+      setTimeout(() => {
+        chatInputRef.current?.focus();
+      }, 30);
+    }
   };
 
   const copyToClipboard = (text, index) => {
@@ -157,18 +300,68 @@ export default function Dashboard() {
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       submitUserMessage(inputVal);
     }
   };
 
   const toggleRecording = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
     if (isRecording) {
+      // Stop recording
+      recognitionRef.current?.stop();
       setIsRecording(false);
-      setInputVal('Can I merge this branch?');
-    } else {
-      setIsRecording(true);
+      setShowVoiceModal(false);
+      return;
     }
+
+    if (!SpeechRecognition) {
+      alert('Voice input is not supported in this browser. Please use Chrome.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognitionRef.current = recognition;
+
+    setIsRecording(true);
+    setShowVoiceModal(true);
+    setVoiceTranscript('');
+
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setVoiceTranscript(transcript);
+      setInputVal(transcript);
+    };
+
+    recognition.onerror = (event) => {
+      console.error('[Voice] Error:', event.error);
+      setIsRecording(false);
+      setShowVoiceModal(false);
+      if (event.error === 'not-allowed') {
+        alert('Microphone permission denied. Please allow microphone access in your browser settings.');
+      } else if (event.error === 'audio-capture') {
+        alert('No microphone was found. Please ensure a microphone is plugged in and enabled.');
+      } else if (event.error === 'no-speech') {
+        alert('No speech was detected. Please try speaking again.');
+      } else {
+        alert(`Speech recognition error: ${event.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      setShowVoiceModal(false);
+    };
+
+    recognition.start();
   };
 
   const handleFileAttach = () => {
@@ -250,60 +443,85 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {/* Your Repository Section */}
-          <div className="px-4 py-2.5 border-t border-white/[0.05] mt-2 text-left">
-            <button
-              onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
-              className="w-full flex items-center justify-between text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider py-1.5 hover:text-slate-300 transition-colors duration-200 cursor-pointer"
-            >
-              <span>Your Repository</span>
-              <ChevronDown 
-                size={12} 
-                className={`transition-transform duration-200 ${isRepoDropdownOpen ? '' : '-rotate-90'}`} 
+          {/* Chat History Section */}
+          <div className="px-3 py-2 border-t border-white/[0.05] mt-2">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider">Chat History</span>
+              <button
+                onClick={() => { setActiveConversationId(null); setMessages([]); }}
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                title="New Chat"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
+            <div className="relative mb-2">
+              <span className="absolute left-2.5 top-2 text-slate-500"><Search size={12} /></span>
+              <input
+                type="text"
+                placeholder="Search chats..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="w-full bg-slate-900/80 border border-white/[0.06] rounded-lg pl-7 pr-3 py-1.5 text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none focus:border-[#7C5CFF]/50 transition-all"
               />
-            </button>
-
-            {isRepoDropdownOpen && (
-              <div className="mt-1.5 flex flex-col gap-1.5">
-                {isRepositoryConnected && connectedRepository ? (
-                  <a
-                    href={connectedRepository.url || "https://github.com"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex flex-col gap-1 bg-slate-950/40 hover:bg-slate-900 border border-white/[0.04] hover:border-white/[0.08] p-2.5 rounded-xl transition-all duration-200 cursor-pointer text-left min-w-0"
-                  >
-                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-200 truncate">
-                      <GitBranch size={12} className="text-[#00D4FF] shrink-0" />
-                      <span className="truncate">{connectedRepository.name}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
-                      <span className="truncate">active: {connectedRepository.branch}</span>
-                    </div>
-                  </a>
-                ) : (
-                  <div className="bg-slate-950/20 border border-white/[0.03] p-2.5 rounded-xl text-[11px] text-slate-500 text-center flex flex-col gap-2">
-                    <span>No repository connected</span>
-                    <button
-                      onClick={() => {
-                        setIsGithubDropdownOpen(true);
-                      }}
-                      className="px-2.5 py-1 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#7C5CFF] hover:bg-[#7C5CFF]/25 hover:text-white rounded-lg text-[10px] font-semibold transition-all cursor-pointer"
-                    >
-                      Connect Now
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+            </div>
           </div>
 
-          {/* Chat History Placeholder */}
-          <div className="flex-1 overflow-y-auto px-3 py-6 flex flex-col gap-4 custom-scrollbar text-center justify-center">
-             <div className="text-slate-500 text-xs px-4 flex flex-col items-center gap-3">
-               <MessageSquare size={20} className="opacity-40" />
-               <p>{sidebarEmptyStateText}</p>
-             </div>
+          <div className="flex-1 overflow-y-auto px-3 py-1 flex flex-col gap-3 custom-scrollbar">
+            {[['today', 'Today'], ['week', 'Previous 7 Days'], ['month', 'Previous 30 Days'], ['older', 'Older']].map(([key, label]) => {
+              const items = chatHistory[key] || [];
+              if (items.length === 0) return null;
+              return (
+                <div key={key} className="flex flex-col gap-1">
+                  <span className="text-[9px] font-heading font-bold tracking-wider text-slate-500 uppercase px-2 mb-0.5">{label}</span>
+                  {items.map((conv) => (
+                    <button
+                      key={conv.id}
+                      onClick={async () => {
+                        setActiveConversationId(conv.id);
+                        try {
+                          const r = await apiFetch(`/conversations/${conv.id}`);
+                          const data = await r.json();
+                          if (data.messages) {
+                            setMessages(data.messages.map(m => ({
+                              sender: m.role === 'user' ? 'user' : 'ai',
+                              text: m.content,
+                              ...(m.metadata || {}),
+                            })));
+                          }
+                        } catch {}
+                      }}
+                      className={`w-full text-left px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all cursor-pointer truncate flex items-center gap-2 group ${
+                        activeConversationId === conv.id
+                          ? 'bg-slate-800/80 text-white border-l-2 border-[#7C5CFF]'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 border-l-2 border-transparent'
+                      }`}
+                    >
+                      <MessageSquare size={11} className="opacity-50 flex-shrink-0 group-hover:text-[#00D4FF]" />
+                      <span className="truncate flex-1">{conv.title}</span>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await apiFetch(`/conversations/${conv.id}`, { method: 'DELETE' });
+                          if (activeConversationId === conv.id) { setActiveConversationId(null); setMessages([]); }
+                          loadChatHistory();
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-rose-400 transition-all cursor-pointer"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
+
+            {Object.values(chatHistory).every(arr => arr.length === 0) && (
+              <div className="text-slate-500 text-xs px-4 flex flex-col items-center gap-3 mt-8 text-center">
+                <MessageSquare size={20} className="opacity-40" />
+                <p>{sidebarEmptyStateText}</p>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -341,7 +559,7 @@ export default function Dashboard() {
               className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 border border-white/[0.08] rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-200 transition-all cursor-pointer group"
             >
               <GitBranch size={14} className="text-slate-400 group-hover:text-white transition-colors" />
-              <span>{isRepositoryConnected && connectedRepository ? `${connectedRepository.name} (${connectedRepository.branch})` : 'Connect / Import GitHub Repo'}</span>
+              <span>{isRepositoryConnected && connectedRepo ? `${connectedRepo.name} (${connectedRepo.defaultBranch})` : 'Connect / Import GitHub Repo'}</span>
               <ChevronDown size={12} className={`opacity-60 transition-transform ${isGithubDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
@@ -361,7 +579,17 @@ export default function Dashboard() {
                         key={option.id}
                         onClick={() => {
                           setIsGithubDropdownOpen(false);
-                          alert(`Placeholder: ${option.label} clicked.`);
+                          if (option.id === 'connect') {
+                            // GitHub OAuth flow
+                            apiFetch('/auth/github').then(r => r.json()).then(data => {
+                              if (data.url) window.open(data.url, '_blank', 'width=600,height=700');
+                              else alert('GitHub OAuth not configured. Add GITHUB_CLIENT_ID to backend/.env');
+                            }).catch(() => alert('Backend not running. Start with: cd backend && npm run dev'));
+                          } else if (option.id === 'paste') {
+                            setShowPasteUrlModal(true);
+                            setPasteUrlValue('');
+                            setPasteUrlError('');
+                          }
                         }}
                         className="w-full text-left px-3 py-2.5 rounded-lg text-xs font-medium transition-all flex items-center gap-3 text-slate-300 hover:text-white hover:bg-slate-900 cursor-pointer"
                       >
@@ -633,7 +861,7 @@ export default function Dashboard() {
             </div>
 
             {/* Bottom Chat Input Bar */}
-            <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md select-none flex-shrink-0">
+            <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md flex-shrink-0">
               <div className="max-w-[800px] mx-auto flex flex-col gap-2">
                 
                 {/* Active file attachment indicator */}
@@ -661,15 +889,15 @@ export default function Dashboard() {
                     <Paperclip size={16} />
                   </button>
 
-                  {/* Chat Text Input */}
-                  <input
-                    type="text"
-                    placeholder={isRecording ? 'Listening for prompt...' : chatInputPlaceholder}
+                  {/* Chat Text Area Input */}
+                  <textarea
+                    ref={chatInputRef}
+                    rows={1}
+                    placeholder={isRecording ? 'Listening for prompt...' : 'Ask about your connected repository...'}
                     value={inputVal}
                     onChange={(e) => setInputVal(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    disabled={isRecording || !isRepositoryConnected}
-                    className="flex-1 bg-transparent border-none outline-none px-3 text-sm text-slate-100 placeholder-slate-500 disabled:opacity-50"
+                    className="flex-1 bg-transparent border-none outline-none px-3 py-1 text-sm text-slate-100 placeholder-slate-500 resize-none h-7 max-h-32 overflow-y-auto select-text"
                   />
 
                   {/* Microphone / Waveform */}
@@ -689,8 +917,7 @@ export default function Dashboard() {
 
                     <button
                       onClick={toggleRecording}
-                      disabled={!isRepositoryConnected}
-                      className={`p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                      className={`p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer ${
                         isRecording 
                           ? 'text-rose-400 bg-rose-500/10 animate-pulse' 
                           : 'text-slate-400 hover:text-white'
@@ -703,7 +930,7 @@ export default function Dashboard() {
                     {/* Send Button */}
                     <button
                       onClick={() => submitUserMessage(inputVal)}
-                      disabled={(!inputVal.trim() && !isRecording) || !isRepositoryConnected}
+                      disabled={!inputVal.trim()}
                       className="p-2 rounded-lg bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white disabled:opacity-40 disabled:hover:bg-[#7C5CFF] transition-all cursor-pointer flex items-center justify-center"
                     >
                       <Send size={15} />
@@ -881,6 +1108,131 @@ export default function Dashboard() {
 
         </div>
       </aside>
+
+      {/* ── PASTE URL MODAL ── */}
+      <AnimatePresence>
+        {showPasteUrlModal && (
+          <>
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50" onClick={() => setShowPasteUrlModal(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            >
+              {showConnectSuccess ? (
+                <div className="bg-slate-950 border border-[#00E38C]/30 rounded-2xl p-8 w-full max-w-md text-center flex flex-col items-center gap-4">
+                  <div className="w-14 h-14 rounded-full bg-[#00E38C]/15 border border-[#00E38C]/30 flex items-center justify-center text-[#00E38C]">
+                    <CheckCircle2 size={28} />
+                  </div>
+                  <h3 className="text-lg font-bold font-heading text-white">Repository Connected!</h3>
+                  <p className="text-sm text-slate-400">Your repository has been successfully linked to GitSense AI.</p>
+                  <button
+                    onClick={() => { setShowPasteUrlModal(false); setShowConnectSuccess(false); }}
+                    className="mt-2 px-6 py-2 bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white rounded-xl text-sm font-semibold transition-all cursor-pointer"
+                  >
+                    Start Chatting
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-slate-950 border border-white/[0.08] rounded-2xl p-6 w-full max-w-md flex flex-col gap-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold font-heading text-white flex items-center gap-2">
+                      <LinkIcon size={16} className="text-[#00D4FF]" /> Paste Repository URL
+                    </h3>
+                    <button onClick={() => setShowPasteUrlModal(false)} className="text-slate-400 hover:text-white cursor-pointer"><X size={16} /></button>
+                  </div>
+                  <p className="text-xs text-slate-400">Enter a public GitHub repository URL to connect it.</p>
+                  <input
+                    type="text"
+                    placeholder="https://github.com/owner/repo"
+                    value={pasteUrlValue}
+                    onChange={(e) => { setPasteUrlValue(e.target.value); setPasteUrlError(''); }}
+                    className="w-full bg-slate-900 border border-white/[0.08] rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#7C5CFF]/60 transition-all font-mono"
+                    autoFocus
+                  />
+                  {pasteUrlError && <p className="text-xs text-rose-400">{pasteUrlError}</p>}
+                  <button
+                    onClick={async () => {
+                      if (!pasteUrlValue.trim()) { setPasteUrlError('Please enter a URL.'); return; }
+                      setPasteUrlLoading(true);
+                      setPasteUrlError('');
+                      try {
+                        const res = await apiFetch('/repos/connect-url', {
+                          method: 'POST',
+                          body: JSON.stringify({ url: pasteUrlValue }),
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.repository) {
+                          setConnectedRepo(data.repository);
+                          setShowConnectSuccess(true);
+                          // Fetch insights
+                          apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
+                            if (ins.insights) setRepoInsights(ins.insights);
+                          }).catch(() => {});
+                        } else {
+                          setPasteUrlError(data.error || 'Failed to connect.');
+                        }
+                      } catch {
+                        setPasteUrlError('Backend not running. Start with: cd backend && npm run dev');
+                      } finally {
+                        setPasteUrlLoading(false);
+                      }
+                    }}
+                    disabled={pasteUrlLoading}
+                    className="w-full py-3 bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white rounded-xl text-sm font-semibold transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {pasteUrlLoading ? <><Loader2 size={14} className="animate-spin" /> Connecting...</> : 'Connect Repository'}
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ── VOICE INPUT MODAL ── */}
+      <AnimatePresence>
+        {showVoiceModal && (
+          <>
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50" onClick={toggleRecording} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            >
+              <div className="bg-slate-950 border border-white/[0.08] rounded-2xl p-8 w-full max-w-sm text-center flex flex-col items-center gap-4">
+                <div className="w-16 h-16 rounded-full bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 flex items-center justify-center text-[#7C5CFF] animate-pulse">
+                  <Mic size={28} />
+                </div>
+                <h3 className="text-base font-bold font-heading text-white">Listening...</h3>
+                <p className="text-xs text-slate-400">Speak your question about the repository</p>
+                
+                {/* Waveform */}
+                <div className="flex items-center gap-[2px] h-8 my-2">
+                  {audioWave.map((h, i) => (
+                    <motion.div key={i} animate={{ height: h }} className="w-[3px] bg-[#7C5CFF] rounded-full" style={{ minHeight: '3px', maxHeight: '30px' }} />
+                  ))}
+                </div>
+
+                {voiceTranscript && (
+                  <div className="w-full bg-slate-900 border border-white/[0.06] rounded-xl p-3 text-sm text-slate-200 text-left font-mono min-h-[40px]">
+                    {voiceTranscript}
+                  </div>
+                )}
+
+                <button
+                  onClick={toggleRecording}
+                  className="mt-2 px-6 py-2 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-xl text-sm font-semibold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-2"
+                >
+                  <MicOff size={14} /> Stop Listening
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
     </div>
   );
