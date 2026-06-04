@@ -80,8 +80,8 @@ export default function AuthPage({ initialMode }) {
       }
 
       // Store JWT token and user object in localStorage
-      localStorage.setItem('token', data.token);
-      localStorage.setItem('user', JSON.stringify(data.user));
+      localStorage.setItem('gitsense_token', data.token);
+      localStorage.setItem('gitsense_user', JSON.stringify(data.user));
 
       setFormSubmitted(true);
       setTimeout(() => {
