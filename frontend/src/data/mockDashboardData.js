@@ -14,9 +14,22 @@
 // ── User ────────────────────────────────────────────────────────
 // TODO: Replace this with backend/API data later
 export const currentUser = {
-  name: 'Kartik',
-  avatarInitial: 'K',
-  email: 'kartik@gitsense.ai',
+  get name() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem('gitsense_profile_name') || 'Kartik Sharma';
+    }
+    return 'Kartik Sharma';
+  },
+  get email() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem('gitsense_profile_email') || 'kartik.s1280@gmail.com';
+    }
+    return 'kartik.s1280@gmail.com';
+  },
+  get avatarInitial() {
+    const n = this.name;
+    return n.trim().charAt(0).toUpperCase() || 'K';
+  }
 };
 
 // ── Repository Connection State ─────────────────────────────────

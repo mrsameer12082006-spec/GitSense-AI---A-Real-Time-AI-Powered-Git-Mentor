@@ -10,12 +10,22 @@ import HowItWorks from './sections/HowItWorks';
 import Developers from './sections/Developers';
 import AuthPage from './sections/AuthPage';
 import Dashboard from './sections/Dashboard';
+import VisualizerPage from './sections/VisualizerPage';
+import ProfilePage from './sections/ProfilePage';
+import SettingsPage from './sections/SettingsPage';
+import AboutUsPage from './sections/AboutUsPage';
+import PrivacyPage from './sections/PrivacyPage';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState(() => {
     const hash = window.location.hash;
     if (hash === '#login' || hash === '#signup') return 'auth';
     if (hash === '#dashboard') return 'dashboard';
+    if (hash === '#visualizer-page') return 'visualizer';
+    if (hash === '#profile') return 'profile';
+    if (hash === '#settings') return 'settings';
+    if (hash === '#about-us') return 'about';
+    if (hash === '#terms') return 'terms';
     return 'home';
   });
 
@@ -34,16 +44,35 @@ export default function App() {
         setAuthMode('signup');
       } else if (hash === '#dashboard') {
         setCurrentPage('dashboard');
+      } else if (hash === '#visualizer-page') {
+        setCurrentPage('visualizer');
+      } else if (hash === '#profile') {
+        setCurrentPage('profile');
+      } else if (hash === '#settings') {
+        setCurrentPage('settings');
+      } else if (hash === '#about-us') {
+        setCurrentPage('about');
+      } else if (hash === '#terms') {
+        setCurrentPage('terms');
       } else if (hash === '#home' || !hash) {
         setCurrentPage('home');
       }
     };
     window.addEventListener('hashchange', handleHashChange);
+    
+    // Initial theme load
+    const savedTheme = localStorage.getItem('gitsense_theme');
+    if (savedTheme === 'light') {
+      document.documentElement.classList.add('light');
+    } else {
+      document.documentElement.classList.remove('light');
+    }
+
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#0B1020] text-[#F8FAFC] relative overflow-x-hidden">
+    <div className="min-h-screen bg-[var(--bg-color)] text-[var(--text)] relative overflow-x-hidden">
 
       {/* Layer 0 — fixed canvas background */}
       <ParticleCanvas />
@@ -67,6 +96,16 @@ export default function App() {
           </>
         ) : currentPage === 'dashboard' ? (
           <Dashboard />
+        ) : currentPage === 'visualizer' ? (
+          <VisualizerPage />
+        ) : currentPage === 'profile' ? (
+          <ProfilePage />
+        ) : currentPage === 'settings' ? (
+          <SettingsPage />
+        ) : currentPage === 'about' ? (
+          <AboutUsPage />
+        ) : currentPage === 'terms' ? (
+          <PrivacyPage />
         ) : (
           <AuthPage key={authMode} initialMode={authMode} />
         )}

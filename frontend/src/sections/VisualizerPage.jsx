@@ -1,25 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  Search, ChevronDown, LogOut, Settings, User, Info, FileText, Sun, Moon, 
-  GitBranch, Send, Paperclip, Mic, Activity, Users, CheckCircle2, AlertTriangle, 
-  RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
-  Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
-  ChevronLeft, ChevronRight, Download, Link as LinkIcon
+  ChevronDown, LogOut, Settings, User, Info, FileText, Moon, 
+  GitBranch, Activity, CheckCircle2, MessageSquare, Database, 
+  ChevronLeft, ChevronRight, Download, Link as LinkIcon, Sparkles, FileText as FileIcon
 } from 'lucide-react';
+import GitGraph from '../components/GitGraph';
 import {
   currentUser,
   isRepositoryConnected,
   connectedRepository,
   githubImportOptions,
   repositoryInsights,
-  sidebarEmptyStateText,
-  chatInputPlaceholder,
-  welcomeSubtitle,
-  getGreeting
+  sidebarEmptyStateText
 } from '../data/mockDashboardData';
 
-export default function Dashboard() {
+export default function VisualizerPage() {
   const [isAvatarDropdownOpen, setIsAvatarDropdownOpen] = useState(false);
   const [isGithubDropdownOpen, setIsGithubDropdownOpen] = useState(false);
   const [isDarkTheme, setIsDarkTheme] = useState(() => {
@@ -68,7 +64,6 @@ export default function Dashboard() {
       }
     };
     window.addEventListener('resize', handleResize);
-    // Initial check
     handleResize();
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -81,101 +76,9 @@ export default function Dashboard() {
     localStorage.setItem('gitsense_right_sidebar', JSON.stringify(isRightSidebarOpen));
   }, [isRightSidebarOpen]);
 
-  // Current active conversation messages (placeholder logic kept)
-  const [messages, setMessages] = useState([]);
-  const [inputVal, setInputVal] = useState('');
-  const [isAiTyping, setIsAiTyping] = useState(false);
-  
-  // Custom states
-  const [copiedIndex, setCopiedIndex] = useState(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [audioWave, setAudioWave] = useState([10, 15, 8, 24, 18, 12, 30, 20, 14, 25, 9, 16]);
-  const [attachedFile, setAttachedFile] = useState(null);
-  const messagesEndRef = useRef(null);
-
-  // Auto-scroll chat to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // Audio wave animation simulation
-  useEffect(() => {
-    let interval;
-    if (isRecording) {
-      interval = setInterval(() => {
-        setAudioWave(prev => prev.map(() => Math.floor(Math.random() * 26) + 4));
-      }, 100);
-    }
-    return () => clearInterval(interval);
-  }, [isRecording]);
-
-  const submitUserMessage = (text) => {
-    if (!text.trim()) return;
-
-    const userMsg = { sender: 'user', text };
-    setMessages(prev => [...prev, userMsg]);
-    setInputVal('');
-    setIsAiTyping(true);
-
-    setTimeout(() => {
-      let aiMsg = { sender: 'ai', text: '' };
-      const query = text.toLowerCase();
-      
-      if (query.includes('merge')) {
-        aiMsg.text = 'Analyzing merge readiness for `feature/login` into `main`...';
-        aiMsg.insight = 'Main branch has advanced by 2 commits since your feature branch split. No direct merge conflicts were found with `main`, but branch health is rated 94% safe.';
-        aiMsg.recommendation = 'It is recommended to run a merge check locally or rebase before pushing to origin.';
-        aiMsg.commandBlock = `git checkout main\ngit pull origin main\ngit checkout feature/login\ngit merge main\n# Verify build\nnpm run test`;
-      } else if (query.includes('explain') || query.includes('code change')) {
-        aiMsg.text = 'Here is the summary explanation of the changes in the latest commit on `feature/login`:';
-        aiMsg.insight = 'This commit introduces authentication state persistence and updates the login route callback to handle session storage securely.';
-        aiMsg.codeBlock = `// src/sections/AuthPage.jsx\nconst handleSubmit = (e) => {\n  e.preventDefault();\n  setFormSubmitted(true);\n  setTimeout(() => {\n    setFormSubmitted(false);\n    window.location.hash = '#dashboard';\n  }, 2000);\n};`;
-      } else if (query.includes('diff')) {
-        aiMsg.text = 'Generating file differences between your local branch and origin/main:';
-        aiMsg.diff = `--- a/frontend/src/sections/AuthPage.jsx\n+++ b/frontend/src/sections/AuthPage.jsx\n@@ -25,2 +25,2 @@\n-      // Reset form and go to home page\n-      window.location.hash = '#home';\n+      // Redirect to the newly generated AI Dashboard\n+      window.location.hash = '#dashboard';`;
-        aiMsg.insight = '1 file changed, 2 insertions, 2 deletions. Successfully updated redirection path to dashboard.';
-      } else if (query.includes('ci') || query.includes('failing')) {
-        aiMsg.text = 'Scanning latest workflow logs from Github Actions (CI Pipeline #10842):';
-        aiMsg.insight = 'The job "Build & Deploy" failed at the linting step. The linter flagged an unused import in `src/sections/AIShowcase.jsx` and a missing key in a map inside `src/sections/HealthDashboard.jsx`.';
-        aiMsg.recommendation = 'Run "npm run lint" locally and resolve the imports before pushing your next commit.';
-        aiMsg.commandBlock = `npm run lint\n# or manually clean imports in AIShowcase.jsx`;
-      } else {
-        aiMsg.text = `Understood. I have scanned the repository files and found no immediate blockages. What specific aspect of your git state or workspace would you like me to inspect?`;
-      }
-
-      setMessages(prev => [...prev, aiMsg]);
-      setIsAiTyping(false);
-    }, 1500);
-  };
-
-  const copyToClipboard = (text, index) => {
-    navigator.clipboard.writeText(text);
-    setCopiedIndex(index);
-    setTimeout(() => setCopiedIndex(null), 2000);
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      submitUserMessage(inputVal);
-    }
-  };
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      setInputVal('Can I merge this branch?');
-    } else {
-      setIsRecording(true);
-    }
-  };
-
-  const handleFileAttach = () => {
-    if (attachedFile) {
-      setAttachedFile(null);
-    } else {
-      setAttachedFile({ name: 'auth.js', size: '2.4 KB' });
-    }
-  };
+  // Visualizer page state
+  const [graphState, setGraphState] = useState('normal'); // normal, diverged, conflict
+  const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
 
   return (
     <div className="h-screen w-screen bg-[var(--bg-color)] text-[var(--text)] flex overflow-hidden font-sans relative">
@@ -226,22 +129,22 @@ export default function Dashboard() {
           <div className="p-3 flex flex-col gap-1">
             <button
               onClick={() => window.location.hash = '#dashboard'}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#F8FAFC]"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
             >
-              <Sparkles size={16} className="text-[#7C5CFF]" />
+              <Sparkles size={16} className="text-slate-400" />
               <span>Git Assistant</span>
             </button>
 
             <button
               onClick={() => window.location.hash = '#visualizer-page'}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#F8FAFC]"
             >
-              <Activity size={16} className="text-slate-400" />
+              <Activity size={16} className="text-[#7C5CFF]" />
               <span>Visualization Graph</span>
             </button>
           </div>
 
-          {/* Chat History Placeholder */}
+          {/* Sidebar Empty State / Bottom Area */}
           <div className="flex-1 overflow-y-auto px-3 py-6 flex flex-col gap-4 custom-scrollbar text-center justify-center">
              <div className="text-slate-500 text-xs px-4 flex flex-col items-center gap-3">
                <MessageSquare size={20} className="opacity-40" />
@@ -340,7 +243,6 @@ export default function Dashboard() {
                     exit={{ opacity: 0, y: 8, scale: 0.95 }}
                     className="absolute right-0 mt-3 w-[220px] bg-slate-950/95 border border-white/[0.08] rounded-xl shadow-2xl backdrop-blur-xl z-50 p-2 overflow-hidden"
                   >
-                    {/* Header info */}
                     <div className="px-3 py-2.5 border-b border-white/[0.06] mb-1 flex flex-col">
                       <span className="text-xs font-semibold text-slate-100">{currentUser.name}</span>
                       <span className="text-[10px] text-slate-500 font-mono">{currentUser.email}</span>
@@ -397,268 +299,121 @@ export default function Dashboard() {
 
         </header>
 
-        {/* ── CENTRAL MAIN WORKSPACE PANELS ── */}
-        <div className="flex-1 flex overflow-hidden min-w-0">
-
-          {/* GIT ASSISTANT CHAT INTERFACE */}
-          <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
-            
-            {/* Chat Messages List */}
-            <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
-              
-              {messages.length === 0 ? (
-                /* Welcome Area Empty State */
-                <div className="flex-1 flex flex-col items-center justify-center text-center max-w-[580px] mx-auto select-none mt-12 md:mt-24">
-                  <motion.div
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] p-[1.5px] flex items-center justify-center mb-6 shadow-2xl shadow-[#7C5CFF]/20"
-                  >
-                    <div className="w-full h-full bg-[#060913] rounded-[15px] flex items-center justify-center">
-                      <Sparkles size={24} className="text-[#00D4FF] animate-pulse" />
-                    </div>
-                  </motion.div>
-                  
-                  <h3 className="text-3xl font-bold font-heading text-slate-100 mb-3">
-                    {getGreeting(currentUser.name)}
-                  </h3>
-                  <p className="text-slate-400 text-base mb-8 leading-relaxed">
-                    {welcomeSubtitle}
-                  </p>
+        {/* Central main visualizer workspace */}
+        <div className="flex-1 overflow-y-auto px-6 py-6 bg-[var(--bg-color)] custom-scrollbar flex flex-col gap-6">
+          <div className="max-w-[900px] mx-auto w-full flex flex-col gap-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <div className="badge self-start bg-[#00D4FF]/10 border-[#00D4FF]/30 text-[#00D4FF] flex items-center gap-1.5">
+                  <Activity size={12} /> COMMIT MAP VISUALIZER
                 </div>
-              ) : (
-                /* Conversation flow */
-                <div className="max-w-[800px] mx-auto w-full flex flex-col gap-6">
-                  {messages.map((msg, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex gap-4 ${
-                        msg.sender === 'user' ? 'justify-end' : 'justify-start'
-                      }`}
-                    >
-                      {/* Avatar */}
-                      {msg.sender === 'ai' && (
-                        <div className="w-8 h-8 rounded-lg bg-slate-900 border border-white/[0.1] flex items-center justify-center text-slate-300 flex-shrink-0">
-                          <Sparkles size={14} className="text-[#7C5CFF]" />
-                        </div>
-                      )}
+                <h3 className="text-2xl font-bold font-heading text-slate-100">
+                  Branch Relationship Graph
+                </h3>
+              </div>
 
-                      {/* Bubble */}
-                      <div
-                        className={`max-w-[90%] rounded-2xl px-5 py-4 border ${
-                          msg.sender === 'user'
-                            ? 'bg-slate-900 border-white/[0.08] text-slate-200'
-                            : 'bg-slate-950/60 border-[#7C5CFF]/15 text-slate-300'
-                        }`}
-                      >
-                        <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">
-                          {msg.text}
-                        </p>
-                      {/* Render Diff Block if exists */}
-                      {msg.diff && (
-                        <div className="mt-3 rounded-lg overflow-hidden border border-white/[0.08] bg-[#060913]">
-                          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-                            <span>git diff view</span>
-                            <button
-                              onClick={() => copyToClipboard(msg.diff, `diff-${idx}`)}
-                              className="hover:text-white transition-colors cursor-pointer"
-                            >
-                              {copiedIndex === `diff-${idx}` ? 'Copied' : <Copy size={11} />}
-                            </button>
-                          </div>
-                          <pre className="p-3 text-[11px] font-mono text-left overflow-x-auto leading-relaxed bg-[#030712] text-slate-400 select-all">
-                            {msg.diff.split('\n').map((line, lIdx) => {
-                              let cls = '';
-                              if (line.startsWith('+')) cls = 'text-[#00E38C] bg-[#00E38C]/5 px-1';
-                              if (line.startsWith('-')) cls = 'text-rose-400 bg-rose-500/5 px-1';
-                              if (line.startsWith('@@')) cls = 'text-cyan-400 font-bold';
-                              return (
-                                <div key={lIdx} className={cls}>
-                                  {line}
-                                </div>
-                              );
-                            })}
-                          </pre>
-                        </div>
-                      )}
-
-                      {/* Render Code Block if exists */}
-                      {msg.codeBlock && (
-                        <div className="mt-3 rounded-lg overflow-hidden border border-white/[0.08] bg-[#060913]">
-                          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-                            <span>javascript</span>
-                            <button
-                              onClick={() => copyToClipboard(msg.codeBlock, `code-${idx}`)}
-                              className="hover:text-white transition-colors cursor-pointer"
-                            >
-                              {copiedIndex === `code-${idx}` ? 'Copied' : <Copy size={11} />}
-                            </button>
-                          </div>
-                          <pre className="p-3 text-[11px] font-mono text-left overflow-x-auto leading-relaxed bg-[#030712] text-slate-300 select-all">
-                            <code>{msg.codeBlock}</code>
-                          </pre>
-                        </div>
-                      )}
-
-                      {/* Render Command Block if exists */}
-                      {msg.commandBlock && (
-                        <div className="mt-3 rounded-lg overflow-hidden border border-white/[0.08] bg-[#060913]">
-                          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-                            <span>Git Commands</span>
-                            <button
-                              onClick={() => copyToClipboard(msg.commandBlock, `cmd-${idx}`)}
-                              className="hover:text-white transition-colors cursor-pointer"
-                            >
-                              {copiedIndex === `cmd-${idx}` ? 'Copied' : <Copy size={11} />}
-                            </button>
-                          </div>
-                          <pre className="p-3 text-[11px] font-mono text-left overflow-x-auto leading-relaxed bg-[#010409] text-[#00D4FF] select-all flex items-start gap-2">
-                            <Terminal size={12} className="mt-0.5 text-slate-500" />
-                            <code>{msg.commandBlock}</code>
-                          </pre>
-                        </div>
-                      )}
-
-                      {/* Insights section */}
-                      {msg.insight && (
-                        <div className="mt-3 pt-3 border-t border-white/[0.05] flex flex-col gap-1.5">
-                          <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                            <Info size={12} className="text-[#00D4FF]" /> GitSense Insights
-                          </span>
-                          <p className="text-xs text-slate-400 leading-relaxed">
-                            {msg.insight}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Recommendation section */}
-                      {msg.recommendation && (
-                        <div className="mt-2 pt-2 border-t border-white/[0.05] flex flex-col gap-1">
-                          <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                            <CheckCircle2 size={12} className="text-[#00E38C]" /> Recommended Action
-                          </span>
-                          <p className="text-xs text-slate-400 leading-relaxed">
-                            {msg.recommendation}
-                          </p>
-                        </div>
-                      )}
-                      </div>
-
-                      {/* User Avatar */}
-                      {msg.sender === 'user' && (
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-xs font-heading font-bold flex-shrink-0">
-                          {currentUser.avatarInitial}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  {/* AI Typing Indicator */}
-                  {isAiTyping && (
-                    <div className="flex gap-4 justify-start">
-                      <div className="w-8 h-8 rounded-lg bg-slate-900 border border-white/[0.1] flex items-center justify-center text-slate-300 flex-shrink-0">
-                        <Sparkles size={14} className="text-[#7C5CFF] animate-pulse" />
-                      </div>
-                      <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl px-5 py-4 text-slate-400 flex items-center gap-2">
-                        <span className="text-xs">Analyzing commits...</span>
-                        <span className="flex gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce" style={{ animationDelay: '0s' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce" style={{ animationDelay: '0.2s' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-bounce" style={{ animationDelay: '0.4s' }} />
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  
-                  <div ref={messagesEndRef} />
-                </div>
-              )}
-            </div>
-
-            {/* Bottom Chat Input Bar */}
-            <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md select-none flex-shrink-0">
-              <div className="max-w-[800px] mx-auto flex flex-col gap-2">
-                
-                {/* Active file attachment indicator */}
-                {attachedFile && (
-                  <div className="flex items-center justify-between self-start px-2.5 py-1 bg-slate-900 border border-white/[0.08] rounded-lg text-xs font-mono text-[#00D4FF] gap-2">
-                    <div className="flex items-center gap-1.5">
-                      <FileText size={12} />
-                      <span>{attachedFile.name} ({attachedFile.size})</span>
-                    </div>
-                    <button onClick={() => setAttachedFile(null)} className="hover:text-white cursor-pointer">
-                      <X size={12} />
-                    </button>
-                  </div>
-                )}
-
-                {/* Input container */}
-                <div className="relative flex items-center bg-slate-900/90 border border-white/[0.08] hover:border-white/[0.15] focus-within:border-[#7C5CFF]/60 rounded-xl px-3 py-2.5 transition-all">
-                  
-                  {/* Attach File Button */}
+              {/* Workflow State Selector Buttons */}
+              <div className="flex bg-slate-950 p-1 rounded-xl border border-white/[0.06] self-start">
+                {[
+                  { key: 'normal', label: 'Clean Branch' },
+                  { key: 'diverged', label: 'Diverged Heads' },
+                  { key: 'conflict', label: 'Merge Conflict' }
+                ].map((stateOpt) => (
                   <button
-                    onClick={handleFileAttach}
-                    className={`p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer ${attachedFile ? 'text-[#00D4FF] bg-slate-850' : ''}`}
-                    title="Attach Repository File"
+                    key={stateOpt.key}
+                    onClick={() => {
+                      setGraphState(stateOpt.key);
+                      setSelectedNodeDetails(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                      graphState === stateOpt.key
+                        ? 'bg-[#7C5CFF] text-white shadow-lg shadow-[#7C5CFF]/20'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
                   >
-                    <Paperclip size={16} />
+                    {stateOpt.label}
                   </button>
-
-                  {/* Chat Text Input */}
-                  <input
-                    type="text"
-                    placeholder={isRecording ? 'Listening for prompt...' : chatInputPlaceholder}
-                    value={inputVal}
-                    onChange={(e) => setInputVal(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    disabled={isRecording || !isRepositoryConnected}
-                    className="flex-1 bg-transparent border-none outline-none px-3 text-sm text-slate-100 placeholder-slate-500 disabled:opacity-50"
-                  />
-
-                  {/* Microphone / Waveform */}
-                  <div className="flex items-center gap-2">
-                    {isRecording && (
-                      <div className="flex items-center gap-[2px] px-2">
-                        {audioWave.map((h, i) => (
-                          <motion.div
-                            key={i}
-                            animate={{ height: h }}
-                            className="w-[2px] bg-[#7C5CFF] rounded-full"
-                            style={{ minHeight: '3px', maxHeight: '30px' }}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    <button
-                      onClick={toggleRecording}
-                      disabled={!isRepositoryConnected}
-                      className={`p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                        isRecording 
-                          ? 'text-rose-400 bg-rose-500/10 animate-pulse' 
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                      title="Voice Input"
-                    >
-                      <Mic size={16} />
-                    </button>
-
-                    {/* Send Button */}
-                    <button
-                      onClick={() => submitUserMessage(inputVal)}
-                      disabled={(!inputVal.trim() && !isRecording) || !isRepositoryConnected}
-                      className="p-2 rounded-lg bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white disabled:opacity-40 disabled:hover:bg-[#7C5CFF] transition-all cursor-pointer flex items-center justify-center"
-                    >
-                      <Send size={15} />
-                    </button>
-                  </div>
-
-                </div>
+                ))}
               </div>
             </div>
 
-          </div>
+            <p className="text-slate-400 text-sm">
+              Click on any node in the SVG commit map to inspect metadata, file changes, and validation recommendations.
+            </p>
 
+            {/* GitGraph container wrapper */}
+            <div className="mt-2 bg-slate-950/40 border border-white/[0.06] rounded-2xl p-4">
+              <GitGraph 
+                state={graphState} 
+                onNodeSelect={(node) => setSelectedNodeDetails(node)} 
+              />
+            </div>
+
+            {/* Detailed Commit Info Drawer */}
+            {selectedNodeDetails ? (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="gitsense-card p-6 text-left flex flex-col gap-4 mt-2 border-[#7C5CFF]/30"
+              >
+                <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-xs text-[#00D4FF] bg-[#00D4FF]/10 border border-[#00D4FF]/20 px-2 py-0.5 rounded">
+                      {selectedNodeDetails.hash}
+                    </span>
+                    <h4 className="font-heading font-bold text-sm text-slate-100">
+                      {selectedNodeDetails.message}
+                    </h4>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    {selectedNodeDetails.date}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
+                  <div>
+                    <span className="text-slate-500 block mb-1">Author</span>
+                    <span className="font-medium text-slate-200">{selectedNodeDetails.author}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block mb-1">Branch</span>
+                    <span className="font-mono font-medium text-[#7C5CFF]">{selectedNodeDetails.branch}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block mb-1">Status</span>
+                    <span className={`font-semibold capitalize ${
+                      selectedNodeDetails.status === 'synced' ? 'text-[#00E38C]' :
+                      selectedNodeDetails.status === 'remote' ? 'text-[#00D4FF]' : 'text-[#7C5CFF]'
+                    }`}>{selectedNodeDetails.status}</span>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-white/[0.05] flex flex-col gap-2">
+                  <span className="text-xs font-bold text-slate-300">Modified Files:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedNodeDetails.files?.map((f, i) => (
+                      <div key={i} className="flex items-center gap-1.5 bg-slate-900 border border-white/[0.06] px-2.5 py-1 rounded-lg text-[10px] font-mono text-slate-300">
+                        <FileIcon size={10} className="text-slate-500" />
+                        <span>{f}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-white/[0.05]">
+                  <span className="text-xs font-bold text-slate-300 block mb-1">GitSense Explanation:</span>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    {selectedNodeDetails.explanation}
+                  </p>
+                </div>
+              </motion.div>
+            ) : (
+              <div className="text-center py-12 text-slate-500 text-xs border border-dashed border-white/[0.06] rounded-xl bg-slate-950/20">
+                Select a node from the commit tree to view full metadata details.
+              </div>
+            )}
+
+          </div>
         </div>
 
       </div>
