@@ -53,7 +53,7 @@ function Paths({ state }) {
     <>
       <line x1={80} y1={150} x2={480} y2={150} stroke="#7C5CFF" strokeWidth={3.5} />
       <path d="M 200 150 C 265 150, 285 80, 350 80 L 480 80"
-        fill="none" stroke="#00D4FF" strokeWidth={2.5} strokeDasharray="5 3" opacity={0.7} />
+        fill="none" stroke="#00D4FF" strokeWidth={2.5} className="node-link" opacity={0.7} />
     </>
   );
   if (state === 'conflict') return (
@@ -62,7 +62,7 @@ function Paths({ state }) {
       <path d="M 200 150 C 265 150, 285 215, 350 215"
         fill="none" stroke="#7C5CFF" strokeWidth={3.5} />
       <path d="M 200 150 C 265 150, 285 85, 350 85"
-        fill="none" stroke="#FF4B4B" strokeWidth={2.5} strokeDasharray="5 3" opacity={0.8} />
+        fill="none" stroke="#FF4B4B" strokeWidth={2.5} className="node-link" opacity={0.8} />
     </>
   );
   return null;
