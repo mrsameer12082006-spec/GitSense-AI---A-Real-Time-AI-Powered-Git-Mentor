@@ -62,9 +62,10 @@ export default function AuthPage({ initialMode }) {
     setLoading(true);
 
     try {
-      const endpoint = isSignUp ? '/api/auth/register' : '/api/auth/login';
-      const payload = isSignUp 
-        ? { name: formData.name, email: formData.email, password: formData.password, github: formData.github }
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const endpoint = isSignUp ? `${API_URL}/api/auth/signup` : `${API_URL}/api/auth/login`;
+      const payload = isSignUp
+        ? { name: formData.name, email: formData.email, password: formData.password, githubLink: formData.github }
         : { email: formData.email, password: formData.password };
 
       const response = await fetch(endpoint, {
@@ -78,8 +79,9 @@ export default function AuthPage({ initialMode }) {
         throw new Error(data.error || 'Authentication failed. Please try again.');
       }
 
-      // Store JWT token
-      localStorage.setItem('gitsense_token', data.token);
+      // Store JWT token and user object in localStorage
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
 
       setFormSubmitted(true);
       setTimeout(() => {

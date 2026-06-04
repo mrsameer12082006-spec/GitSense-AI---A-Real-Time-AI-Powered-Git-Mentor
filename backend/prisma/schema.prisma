@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// GitSense AI — Database Schema
+// GitSense AI — Database Schema (Neon PostgreSQL)
 // ─────────────────────────────────────────────────────────────
 
 generator client {
@@ -7,19 +7,17 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 // ── Users ──────────────────────────────────────────────────
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String?
+  id           String   @id @default(uuid())
   name         String
-  githubId     String?  @unique
-  githubToken  String?
-  avatarUrl    String?
+  email        String   @unique
+  githubLink   String   @default("")
+  passwordHash String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -29,7 +27,7 @@ model User {
 
 // ── Repositories ──────────────────────────────────────────
 model Repository {
-  id               String   @id @default(cuid())
+  id               String   @id @default(uuid())
   userId           String
   name             String
   owner            String
@@ -37,8 +35,8 @@ model Repository {
   url              String
   defaultBranch    String   @default("main")
   isConnected      Boolean  @default(true)
-  connectionMethod String   @default("url") // "oauth" | "url"
-  metadata         String?  // JSON string for extra data
+  connectionMethod String   @default("url")
+  metadata         String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -51,7 +49,7 @@ model Repository {
 
 // ── Conversations ─────────────────────────────────────────
 model Conversation {
-  id           String   @id @default(cuid())
+  id           String   @id @default(uuid())
   userId       String
   repositoryId String?
   title        String   @default("New Conversation")
@@ -65,11 +63,11 @@ model Conversation {
 
 // ── Messages ──────────────────────────────────────────────
 model Message {
-  id             String   @id @default(cuid())
+  id             String   @id @default(uuid())
   conversationId String
-  role           String   // "user" | "assistant"
+  role           String
   content        String
-  metadata       String?  // JSON string for code blocks, diffs, commands, insights
+  metadata       String?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -77,10 +75,10 @@ model Message {
 
 // ── Activity Feed ─────────────────────────────────────────
 model Activity {
-  id           String   @id @default(cuid())
+  id           String   @id @default(uuid())
   repositoryId String
-  type         String   // "commit" | "pr" | "issue" | "branch" | "ci"
-  payload      String   // JSON string
+  type         String
+  payload      String
   timestamp    DateTime @default(now())
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)

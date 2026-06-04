@@ -1,15 +1,20 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'gitsense-dev-jwt-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
 
-/**
- * JWT authentication middleware.
- * Extracts token from Authorization header, verifies it,
- * and attaches decoded user payload to req.user.
- */
+function ensureSecret(res) {
+  if (!JWT_SECRET) {
+    console.error('[Auth] JWT_SECRET is not set in environment');
+    if (res) res.status(500).json({ error: 'Server configuration error: JWT_SECRET not set' });
+    return false;
+  }
+  return true;
+}
+
 export function authenticate(req, res, next) {
-  const authHeader = req.headers.authorization;
+  if (!ensureSecret(res)) return;
 
+  const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Authentication required. Please provide a valid token.' });
   }
@@ -28,15 +33,9 @@ export function authenticate(req, res, next) {
   }
 }
 
-/**
- * Generate a JWT for a given user.
- * @param {{ id: string, email: string, name: string }} user
- * @returns {string}
- */
 export function generateToken(user) {
-  return jwt.sign(
-    { id: user.id, email: user.email, name: user.name },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
+  if (!ensureSecret()) {
+    throw new Error('JWT_SECRET is not configured');
+  }
+  return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '7d' });
 }
