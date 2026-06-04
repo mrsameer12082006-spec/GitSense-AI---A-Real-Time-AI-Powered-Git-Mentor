@@ -40,6 +40,16 @@
   --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-heading: 'Space Grotesk', -apple-system, sans-serif;
   --font-mono:    'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Graph Specific styling */
+  --graph-bg:            rgba(15, 22, 41, 0.35);
+  --graph-wrapper-bg:    rgba(2, 6, 23, 0.4);
+  --graph-border:         rgba(255, 255, 255, 0.07);
+  --graph-border-hover:   rgba(255, 255, 255, 0.12);
+  --graph-legend-bg:     rgba(6, 9, 19, 0.8);
+  --graph-grid:          rgba(255, 255, 255, 0.025);
+  --graph-node-stroke:   #0B1020;
+  --graph-node-selected-stroke: #F8FAFC;
 }
 
 /* ─── Reset ────────────────────────────────────────── */
@@ -249,7 +259,9 @@ pre, code {
 /* ─── Graph Styles ───────────────────────────────────── */
 .node-circle {
   cursor: pointer;
-  transition: r 0.2s var(--ease-out-expo), stroke-width 0.2s var(--ease-out-expo);
+  transition: r 0.2s var(--ease-out-expo), stroke-width 0.2s var(--ease-out-expo), transform 0.2s var(--ease-out-expo);
+  transform-origin: center;
+  transform-box: fill-box;
 }
 .node-link {
   stroke-dasharray: 5 3;
@@ -385,6 +397,16 @@ html.light {
   
   --card-border:         rgba(99, 102, 241, 0.15);
   --card-border-hover:   rgba(14, 165, 233, 0.40);
+
+  /* Graph Specific styling */
+  --graph-bg:            rgba(255, 255, 255, 0.8);
+  --graph-wrapper-bg:    rgba(255, 255, 255, 0.95);
+  --graph-border:         rgba(0, 0, 0, 0.08);
+  --graph-border-hover:   rgba(0, 0, 0, 0.15);
+  --graph-legend-bg:     rgba(255, 255, 255, 0.9);
+  --graph-grid:          rgba(0, 0, 0, 0.05);
+  --graph-node-stroke:   #FFFFFF;
+  --graph-node-selected-stroke: #7C5CFF;
 }
 
 /* Light mode adjustments for visual components */
@@ -584,14 +606,6 @@ html.light p {
   color: #4B5563 !important;
 }
 
-html.light .node-circle {
-  stroke: #FFFFFF !important;
-}
-
-html.light svg g[stroke] {
-  stroke: rgba(0, 0, 0, 0.05) !important;
-}
-
 html.light svg text {
   fill: #4B5563 !important;
 }
@@ -602,3 +616,42 @@ html.light ::-webkit-scrollbar-thumb  {
   border-color: #F3F4F6;
 }
 html.light ::-webkit-scrollbar-thumb:hover { background: rgba(99, 102, 241, 0.65); }
+
+/* GitGraph custom helper classes */
+.gitgraph-card {
+  background-color: var(--graph-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+.gitgraph-card:hover {
+  border-color: var(--graph-border-hover) !important;
+}
+.gitgraph-legend {
+  background-color: var(--graph-legend-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+.gitgraph-wrapper {
+  background-color: var(--graph-wrapper-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+
+/* Autofill style overrides to prevent browser autofill from washing out dark/light inputs */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #060913 inset !important;
+  -webkit-text-fill-color: #F8FAFC !important;
+  caret-color: #F8FAFC !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+html.light input:-webkit-autofill,
+html.light input:-webkit-autofill:hover, 
+html.light input:-webkit-autofill:focus, 
+html.light input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #FFFFFF inset !important;
+  -webkit-text-fill-color: #111827 !important;
+  caret-color: #111827 !important;
+}
+
+

@@ -45,6 +45,8 @@ export default function VisualizerPage() {
     };
   }, []);
   
+  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(true);
+
   // Collapsible Sidebars State
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
     const saved = localStorage.getItem('gitsense_left_sidebar');
@@ -79,6 +81,10 @@ export default function VisualizerPage() {
   // Visualizer page state
   const [graphState, setGraphState] = useState('normal'); // normal, diverged, conflict
   const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
+
+  const handleNodeSelect = (node) => {
+    setSelectedNodeDetails(node);
+  };
 
   return (
     <div className="h-screen w-screen bg-[var(--bg-color)] text-[var(--text)] flex overflow-hidden font-sans relative">
@@ -123,6 +129,13 @@ export default function VisualizerPage() {
                 GitSense<span className="text-[#7C5CFF]">.AI</span>
               </span>
             </a>
+            <button 
+              onClick={() => setIsLeftSidebarOpen(false)}
+              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              title="Collapse Sidebar"
+            >
+              <ChevronLeft size={16} />
+            </button>
           </div>
 
           {/* Sidebar Navigation */}
@@ -142,6 +155,54 @@ export default function VisualizerPage() {
               <Activity size={16} className="text-[#7C5CFF]" />
               <span>Visualization Graph</span>
             </button>
+          </div>
+
+          {/* Your Repository Section */}
+          <div className="px-4 py-2.5 border-t border-white/[0.05] mt-2 text-left">
+            <button
+              onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
+              className="w-full flex items-center justify-between text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider py-1.5 hover:text-slate-300 transition-colors duration-200 cursor-pointer"
+            >
+              <span>Your Repository</span>
+              <ChevronDown 
+                size={12} 
+                className={`transition-transform duration-200 ${isRepoDropdownOpen ? '' : '-rotate-90'}`} 
+              />
+            </button>
+
+            {isRepoDropdownOpen && (
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                {isRepositoryConnected && connectedRepository ? (
+                  <a
+                    href={connectedRepository.url || "https://github.com"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex flex-col gap-1 bg-slate-950/40 hover:bg-slate-900 border border-white/[0.04] hover:border-white/[0.08] p-2.5 rounded-xl transition-all duration-200 cursor-pointer text-left min-w-0"
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-200 truncate">
+                      <GitBranch size={12} className="text-[#00D4FF] shrink-0" />
+                      <span className="truncate">{connectedRepository.name}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
+                      <span className="truncate">active: {connectedRepository.branch}</span>
+                    </div>
+                  </a>
+                ) : (
+                  <div className="bg-slate-950/20 border border-white/[0.03] p-2.5 rounded-xl text-[11px] text-slate-500 text-center flex flex-col gap-2">
+                    <span>No repository connected</span>
+                    <button
+                      onClick={() => {
+                        setIsGithubDropdownOpen(true);
+                      }}
+                      className="px-2.5 py-1 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#7C5CFF] hover:bg-[#7C5CFF]/25 hover:text-white rounded-lg text-[10px] font-semibold transition-all cursor-pointer"
+                    >
+                      Connect Now
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Sidebar Empty State / Bottom Area */}
@@ -328,7 +389,7 @@ export default function VisualizerPage() {
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                       graphState === stateOpt.key
                         ? 'bg-[#7C5CFF] text-white shadow-lg shadow-[#7C5CFF]/20'
-                        : 'text-slate-400 hover:text-white'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text)]'
                     }`}
                   >
                     {stateOpt.label}
@@ -342,74 +403,116 @@ export default function VisualizerPage() {
             </p>
 
             {/* GitGraph container wrapper */}
-            <div className="mt-2 bg-slate-950/40 border border-white/[0.06] rounded-2xl p-4">
+            <div className="mt-2 gitgraph-wrapper rounded-2xl p-4">
               <GitGraph 
                 state={graphState} 
-                onNodeSelect={(node) => setSelectedNodeDetails(node)} 
+                onNodeSelect={handleNodeSelect} 
               />
             </div>
 
-            {/* Detailed Commit Info Drawer */}
+            {/* Bottom Commit Inspector Details Panel */}
             {selectedNodeDetails ? (
               <motion.div
+                key={selectedNodeDetails.id}
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="gitsense-card p-6 text-left flex flex-col gap-4 mt-2 border-[#7C5CFF]/30"
+                className="gitsense-card p-6 flex flex-col gap-5 mt-2"
               >
-                <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-xs text-[#00D4FF] bg-[#00D4FF]/10 border border-[#00D4FF]/20 px-2 py-0.5 rounded">
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-white/[0.05] pb-3 select-none">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-[#00D4FF] bg-[#00D4FF]/10 border border-[#00D4FF]/25 px-2.5 py-1 rounded font-semibold">
                       {selectedNodeDetails.hash}
                     </span>
-                    <h4 className="font-heading font-bold text-sm text-slate-100">
-                      {selectedNodeDetails.message}
-                    </h4>
+                    <span className="text-xs text-slate-500 font-mono">{selectedNodeDetails.date}</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    {selectedNodeDetails.date}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
-                  <div>
-                    <span className="text-slate-500 block mb-1">Author</span>
-                    <span className="font-medium text-slate-200">{selectedNodeDetails.author}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block mb-1">Branch</span>
-                    <span className="font-mono font-medium text-[#7C5CFF]">{selectedNodeDetails.branch}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block mb-1">Status</span>
-                    <span className={`font-semibold capitalize ${
-                      selectedNodeDetails.status === 'synced' ? 'text-[#00E38C]' :
-                      selectedNodeDetails.status === 'remote' ? 'text-[#00D4FF]' : 'text-[#7C5CFF]'
-                    }`}>{selectedNodeDetails.status}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#7C5CFF]" />
+                    <span className="font-mono text-[#00D4FF] font-semibold text-[10px]">{selectedNodeDetails.branch}</span>
                   </div>
                 </div>
 
-                <div className="pt-3 border-t border-white/[0.05] flex flex-col gap-2">
-                  <span className="text-xs font-bold text-slate-300">Modified Files:</span>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedNodeDetails.files?.map((f, i) => (
-                      <div key={i} className="flex items-center gap-1.5 bg-slate-900 border border-white/[0.06] px-2.5 py-1 rounded-lg text-[10px] font-mono text-slate-300">
-                        <FileIcon size={10} className="text-slate-500" />
-                        <span>{f}</span>
+                {/* 3-Column Content Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+                  
+                  {/* Col 1: Message, Author, and Branch Purpose */}
+                  <div className="flex flex-col gap-4">
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Commit Message</span>
+                      <h4 className="font-heading text-sm font-bold text-slate-100 leading-snug">
+                        {selectedNodeDetails.message}
+                      </h4>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Author</span>
+                      <div className="flex items-center gap-2 bg-slate-950/40 border border-white/[0.04] p-2 rounded-xl">
+                        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-[10px] font-bold select-none">
+                          {selectedNodeDetails.author.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-semibold text-slate-200 truncate">{selectedNodeDetails.author}</span>
+                          <span className="text-[9px] text-slate-500 font-mono truncate select-none">{selectedNodeDetails.author.toLowerCase()}@gitsense.ai</span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
+                    </div>
 
-                <div className="pt-3 border-t border-white/[0.05]">
-                  <span className="text-xs font-bold text-slate-300 block mb-1">GitSense Explanation:</span>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    {selectedNodeDetails.explanation}
-                  </p>
+                    {selectedNodeDetails.purpose && (
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">Branch Purpose</span>
+                        <p className="text-[11px] text-slate-400 leading-relaxed font-sans italic">
+                          "{selectedNodeDetails.purpose}"
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Col 2: Changed Files */}
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">
+                      Files Changed ({selectedNodeDetails.files?.length || 0})
+                    </span>
+                    <div className="flex flex-col gap-1.5 max-h-[180px] overflow-y-auto custom-scrollbar pr-1">
+                      {selectedNodeDetails.files?.map((f, i) => {
+                        const ext = f.split('.').pop();
+                        return (
+                          <div key={i} className="flex items-center justify-between bg-slate-950/20 border border-white/[0.03] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-slate-300">
+                            <div className="flex items-center gap-1.5 truncate">
+                              <FileIcon size={10} className="text-[#00D4FF]/60" />
+                              <span className="truncate">{f}</span>
+                            </div>
+                            <span className="text-[8px] font-bold text-slate-500 uppercase font-sans bg-slate-900 px-1 py-0.5 rounded border border-white/[0.04] select-none">
+                              {ext}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Col 3: AI Analysis Insights */}
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider select-none">AI Analysis</span>
+                    <div className="bg-[#7C5CFF]/[0.07] border border-[#7C5CFF]/20 rounded-2xl p-4 shadow-inner relative overflow-hidden h-full flex flex-col justify-center min-h-[140px]">
+                      <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-[#7C5CFF]/25 to-[#00D4FF]/25 blur-2xl pointer-events-none" />
+                      <span className="text-[9px] font-bold text-[#00E38C] flex items-center gap-1.5 mb-2 font-heading select-none">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C] animate-pulse" />
+                        GITSENSE INSIGHT
+                      </span>
+                      <p className="text-[11px] text-slate-300 leading-relaxed font-sans">
+                        {selectedNodeDetails.explanation}
+                      </p>
+                    </div>
+                  </div>
+
                 </div>
               </motion.div>
             ) : (
-              <div className="text-center py-12 text-slate-500 text-xs border border-dashed border-white/[0.06] rounded-xl bg-slate-950/20">
-                Select a node from the commit tree to view full metadata details.
+              <div className="gitsense-card p-6 text-center flex flex-col items-center justify-center py-10 gap-3 text-slate-500 mt-2 select-none">
+                <Sparkles size={20} className="opacity-30 animate-pulse text-[#7C5CFF]" />
+                <p className="text-xs px-4 leading-relaxed font-medium">
+                  Select a commit node in the graph map above to inspect detailed code changes and AI insights.
+                </p>
               </div>
             )}
 
@@ -440,8 +543,23 @@ export default function VisualizerPage() {
 
       {/* ── RIGHT SIDEBAR ── */}
       <aside className={`sidebar-collapsible sidebar-right border-l border-white/[0.06] bg-[#060913]/90 flex flex-col z-20 select-none flex-shrink-0 relative hidden xl:flex ${!isRightSidebarOpen ? 'collapsed' : ''}`} style={{ width: '300px', minWidth: '300px' }}>
-        <div className="sidebar-inner w-[300px] h-full p-4 flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+        <div className="sidebar-inner w-[300px] h-full p-4 flex flex-col gap-5 overflow-y-auto custom-scrollbar">
           
+          {/* Header with Collapse Button */}
+          <div className="flex items-center justify-between pb-3 border-b border-white/[0.05]">
+            <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest">
+              REPOSITORY INSIGHTS
+            </span>
+            <button 
+              onClick={() => setIsRightSidebarOpen(false)}
+              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              title="Collapse Sidebar"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+
+          {/* Repo Insights Content */}
           {!isRepositoryConnected ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center gap-4 text-slate-500 mt-12">
                <div className="w-12 h-12 rounded-full bg-slate-900/80 border border-white/[0.05] flex items-center justify-center mb-2">
@@ -455,10 +573,6 @@ export default function VisualizerPage() {
             <>
               {/* Repo Summary Card */}
               <div className="flex flex-col gap-3">
-                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                  <Database size={13} className="text-[#7C5CFF]" /> Repository Summary
-                </h4>
-
                 <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col gap-0.5">
@@ -561,7 +675,6 @@ export default function VisualizerPage() {
                       </div>
                     </div>
                   )}
-
                 </div>
               </div>
             </>

@@ -43,6 +43,8 @@ export default function SubPageLayout({ children, activeTab = '' }) {
     };
   }, []);
   
+  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(true);
+  
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
     const saved = localStorage.getItem('gitsense_left_sidebar');
     return saved !== null ? JSON.parse(saved) : true;
@@ -103,6 +105,13 @@ export default function SubPageLayout({ children, activeTab = '' }) {
                 GitSense<span className="text-[#7C5CFF]">.AI</span>
               </span>
             </a>
+            <button 
+              onClick={() => setIsLeftSidebarOpen(false)}
+              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              title="Collapse Sidebar"
+            >
+              <ChevronLeft size={16} />
+            </button>
           </div>
 
           {/* Sidebar Navigation */}
@@ -130,6 +139,54 @@ export default function SubPageLayout({ children, activeTab = '' }) {
               <Activity size={16} className={activeTab === 'visualizer' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
               <span>Visualization Graph</span>
             </button>
+          </div>
+
+          {/* Your Repository Section */}
+          <div className="px-4 py-2.5 border-t border-white/[0.05] mt-2 text-left">
+            <button
+              onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
+              className="w-full flex items-center justify-between text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider py-1.5 hover:text-slate-300 transition-colors duration-200 cursor-pointer"
+            >
+              <span>Your Repository</span>
+              <ChevronDown 
+                size={12} 
+                className={`transition-transform duration-200 ${isRepoDropdownOpen ? '' : '-rotate-90'}`} 
+              />
+            </button>
+
+            {isRepoDropdownOpen && (
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                {isRepositoryConnected && connectedRepository ? (
+                  <a
+                    href={connectedRepository.url || "https://github.com"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex flex-col gap-1 bg-slate-950/40 hover:bg-slate-900 border border-white/[0.04] hover:border-white/[0.08] p-2.5 rounded-xl transition-all duration-200 cursor-pointer text-left min-w-0"
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-200 truncate">
+                      <GitBranch size={12} className="text-[#00D4FF] shrink-0" />
+                      <span className="truncate">{connectedRepository.name}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
+                      <span className="truncate">active: {connectedRepository.branch}</span>
+                    </div>
+                  </a>
+                ) : (
+                  <div className="bg-slate-950/20 border border-white/[0.03] p-2.5 rounded-xl text-[11px] text-slate-500 text-center flex flex-col gap-2">
+                    <span>No repository connected</span>
+                    <button
+                      onClick={() => {
+                        alert("Please use the 'Connect / Import GitHub Repo' button in the dashboard/visualizer header to connect your repository!");
+                      }}
+                      className="px-2.5 py-1 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#7C5CFF] hover:bg-[#7C5CFF]/25 hover:text-white rounded-lg text-[10px] font-semibold transition-all cursor-pointer"
+                    >
+                      Connect Now
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Sidebar Empty State */}

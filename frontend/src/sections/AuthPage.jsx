@@ -1,6 +1,23 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Mail, Lock, User, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Mail, Lock, User, CheckCircle2, Eye, EyeOff } from 'lucide-react';
+
+const GithubIcon = ({ size = 16, className = "" }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+    <path d="M9 18c-4.51 2-5-2-7-2" />
+  </svg>
+);
 
 const FLOATING_COMMANDS_CONFIG = [
   { text: 'git commit -m "feat: init auth"', top: '6%', duration: 14, delay: 0, color: '#A78BFA' }, // Violet-400
@@ -23,9 +40,12 @@ const FLOATING_COMMANDS_CONFIG = [
 export default function AuthPage({ initialMode }) {
   const [isSignUp, setIsSignUp] = useState(initialMode === 'signup');
   const [formSubmitted, setFormSubmitted] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showSignUpPassword, setShowSignUpPassword] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
+    github: '',
     password: '',
   });
 
@@ -36,6 +56,25 @@ export default function AuthPage({ initialMode }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    
+    // Save login/signup credentials into localStorage
+    if (isSignUp) {
+      localStorage.setItem('gitsense_profile_name', formData.name);
+      localStorage.setItem('gitsense_profile_email', formData.email);
+      let githubLink = formData.github.trim();
+      if (githubLink && !githubLink.startsWith('http://') && !githubLink.startsWith('https://')) {
+        githubLink = `https://github.com/${githubLink}`;
+      }
+      localStorage.setItem('gitsense_profile_github', githubLink || `https://github.com/${formData.name.toLowerCase().trim().replace(/\s+/g, '-')}`);
+    } else {
+      localStorage.setItem('gitsense_profile_email', formData.email);
+      // Extract a display name from the email address
+      const localPart = formData.email.split('@')[0];
+      const displayName = localPart.charAt(0).toUpperCase() + localPart.slice(1);
+      localStorage.setItem('gitsense_profile_name', displayName);
+      localStorage.setItem('gitsense_profile_github', `https://github.com/${localPart.toLowerCase()}`);
+    }
+
     setFormSubmitted(true);
     setTimeout(() => {
       setFormSubmitted(false);
@@ -180,14 +219,22 @@ export default function AuthPage({ initialMode }) {
                 <Lock size={16} />
               </span>
               <input
-                type="password"
+                type={showLoginPassword ? 'text' : 'password'}
                 name="password"
                 required={!isSignUp}
                 value={formData.password}
                 onChange={handleInputChange}
                 placeholder="Password"
-                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
+                className="w-full pl-10 pr-10 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
+              <button
+                type="button"
+                onClick={() => setShowLoginPassword((prev) => !prev)}
+                className="absolute right-3 top-3.5 text-slate-500 hover:text-slate-200 transition-colors duration-200 cursor-pointer"
+                title={showLoginPassword ? 'Hide password' : 'Show password'}
+              >
+                {showLoginPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
 
             <button
@@ -249,17 +296,40 @@ export default function AuthPage({ initialMode }) {
             
             <div className="relative">
               <span className="absolute left-3 top-3.5 text-[#00D4FF]">
+                <GithubIcon size={16} className="text-[#00D4FF]" />
+              </span>
+              <input
+                type="text"
+                name="github"
+                required={isSignUp}
+                value={formData.github}
+                onChange={handleInputChange}
+                placeholder="GitHub Link or Username"
+                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
+              />
+            </div>
+
+            <div className="relative">
+              <span className="absolute left-3 top-3.5 text-[#00D4FF]">
                 <Lock size={16} />
               </span>
               <input
-                type="password"
+                type={showSignUpPassword ? 'text' : 'password'}
                 name="password"
                 required={isSignUp}
                 value={formData.password}
                 onChange={handleInputChange}
                 placeholder="Password"
-                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
+                className="w-full pl-10 pr-10 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
+              <button
+                type="button"
+                onClick={() => setShowSignUpPassword((prev) => !prev)}
+                className="absolute right-3 top-3.5 text-slate-500 hover:text-slate-200 transition-colors duration-200 cursor-pointer"
+                title={showSignUpPassword ? 'Hide password' : 'Show password'}
+              >
+                {showSignUpPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
 
             <button
