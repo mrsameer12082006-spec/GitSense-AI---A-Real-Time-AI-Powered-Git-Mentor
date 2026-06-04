@@ -103,7 +103,8 @@ export default function VisualizerPage() {
       )}
 
       {/* ── LEFT SIDEBAR ── */}
-      <aside className={`sidebar-collapsible sidebar-left border-r border-white/[0.06] bg-[#060913]/90 flex flex-col z-20 select-none flex-shrink-0 relative ${!isLeftSidebarOpen ? 'collapsed' : ''}`} style={{ width: '260px', minWidth: '260px' }}>
+      <div className="relative flex-shrink-0 h-full z-20 flex">
+        <aside className={`sidebar-collapsible sidebar-left border-r border-white/[0.06] bg-[#060913]/90 flex flex-col select-none flex-shrink-0 relative ${!isLeftSidebarOpen ? 'collapsed' : ''}`} style={{ width: '260px', minWidth: '260px' }}>
         
         <div className="sidebar-inner w-[260px] h-full flex flex-col">
           {/* Sidebar Brand Top */}
@@ -216,25 +217,26 @@ export default function VisualizerPage() {
         </div>
       </aside>
 
-      {/* Toggle Button for Left Sidebar */}
-      {!isLeftSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn left"
-          onClick={() => setIsLeftSidebarOpen(true)}
-          title="Expand Sidebar"
-        >
-          <ChevronRight size={14} />
-        </button>
-      )}
-      {isLeftSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn left hidden md:flex"
-          onClick={() => setIsLeftSidebarOpen(false)}
-          title="Collapse Sidebar"
-        >
-          <ChevronLeft size={14} />
-        </button>
-      )}
+        {/* Toggle Button for Left Sidebar */}
+        {!isLeftSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn left closed"
+            onClick={() => setIsLeftSidebarOpen(true)}
+            title="Expand Sidebar"
+          >
+            <ChevronRight size={14} />
+          </button>
+        )}
+        {isLeftSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn left open hidden md:flex"
+            onClick={() => setIsLeftSidebarOpen(false)}
+            title="Collapse Sidebar"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        )}
+      </div>
 
       {/* ── MAIN WORKSPACE CONTAINER ── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -567,28 +569,30 @@ export default function VisualizerPage() {
 
       </div>
 
-      {/* Toggle Button for Right Sidebar */}
-      {!isRightSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn right"
-          onClick={() => setIsRightSidebarOpen(true)}
-          title="Expand Details"
-        >
-          <ChevronLeft size={14} />
-        </button>
-      )}
-      {isRightSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn right hidden xl:flex"
-          onClick={() => setIsRightSidebarOpen(false)}
-          title="Collapse Details"
-        >
-          <ChevronRight size={14} />
-        </button>
-      )}
+      {/* ── RIGHT SIDEBAR WRAPPER ── */}
+      <div className="relative flex-shrink-0 h-full flex hidden xl:flex z-20">
+        {/* Toggle Button for Right Sidebar */}
+        {!isRightSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn right closed"
+            onClick={() => setIsRightSidebarOpen(true)}
+            title="Expand Details"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        )}
+        {isRightSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn right open hidden xl:flex"
+            onClick={() => setIsRightSidebarOpen(false)}
+            title="Collapse Details"
+          >
+            <ChevronRight size={14} />
+          </button>
+        )}
 
-      {/* ── RIGHT SIDEBAR ── */}
-      <aside className={`sidebar-collapsible sidebar-right border-l border-white/[0.06] bg-[#060913]/90 flex flex-col z-20 select-none flex-shrink-0 relative hidden xl:flex ${!isRightSidebarOpen ? 'collapsed' : ''}`} style={{ width: '300px', minWidth: '300px' }}>
+        {/* ── RIGHT SIDEBAR ── */}
+        <aside className={`sidebar-collapsible sidebar-right border-l border-white/[0.06] bg-[#060913]/90 flex flex-col select-none flex-shrink-0 relative ${!isRightSidebarOpen ? 'collapsed' : ''}`} style={{ width: '300px', minWidth: '300px' }}>
         <div className="sidebar-inner w-[300px] h-full p-4 flex flex-col gap-5 overflow-y-auto custom-scrollbar">
           
           {/* Header with Collapse Button */}
@@ -728,6 +732,7 @@ export default function VisualizerPage() {
 
         </div>
       </aside>
+    </div>
 
     </div>
   );

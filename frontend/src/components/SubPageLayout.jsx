@@ -78,7 +78,8 @@ export default function SubPageLayout({ children, activeTab = '' }) {
       )}
 
       {/* ── LEFT SIDEBAR ── */}
-      <aside className={`sidebar-collapsible sidebar-left border-r border-white/[0.06] bg-[#060913]/90 flex flex-col z-20 select-none flex-shrink-0 relative ${!isLeftSidebarOpen ? 'collapsed' : ''}`} style={{ width: '260px', minWidth: '260px' }}>
+      <div className="relative flex-shrink-0 h-full z-20 flex">
+        <aside className={`sidebar-collapsible sidebar-left border-r border-white/[0.06] bg-[#060913]/90 flex flex-col select-none flex-shrink-0 relative ${!isLeftSidebarOpen ? 'collapsed' : ''}`} style={{ width: '260px', minWidth: '260px' }}>
         
         <div className="sidebar-inner w-[260px] h-full flex flex-col">
           {/* Sidebar Brand Top */}
@@ -199,25 +200,26 @@ export default function SubPageLayout({ children, activeTab = '' }) {
         </div>
       </aside>
 
-      {/* Toggle Button for Left Sidebar */}
-      {!isLeftSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn left"
-          onClick={() => setIsLeftSidebarOpen(true)}
-          title="Expand Sidebar"
-        >
-          <ChevronRight size={14} />
-        </button>
-      )}
-      {isLeftSidebarOpen && (
-        <button 
-          className="sidebar-toggle-btn left hidden md:flex"
-          onClick={() => setIsLeftSidebarOpen(false)}
-          title="Collapse Sidebar"
-        >
-          <ChevronLeft size={14} />
-        </button>
-      )}
+        {/* Toggle Button for Left Sidebar */}
+        {!isLeftSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn left closed"
+            onClick={() => setIsLeftSidebarOpen(true)}
+            title="Expand Sidebar"
+          >
+            <ChevronRight size={14} />
+          </button>
+        )}
+        {isLeftSidebarOpen && (
+          <button 
+            className="sidebar-toggle-btn left open hidden md:flex"
+            onClick={() => setIsLeftSidebarOpen(false)}
+            title="Collapse Sidebar"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        )}
+      </div>
 
       {/* ── MAIN WORKSPACE CONTAINER ── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
