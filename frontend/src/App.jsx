@@ -68,7 +68,7 @@ export default function App() {
         ) : currentPage === 'dashboard' ? (
           <Dashboard />
         ) : (
-          <AuthPage initialMode={authMode} />
+          <AuthPage key={authMode} initialMode={authMode} />
         )}
       </div>
     </div>

@@ -68,26 +68,23 @@ export default function Developers() {
                   <span className="inline-block rounded-full bg-white/4 px-3 py-1 text-xs font-semibold text-slate-200">{d.role}</span>
                 </div>
 
-                <div className="mt-4 w-full flex flex-col gap-3">
-                  <a href={`mailto:${d.email}`} className="flex items-center justify-between gap-3 rounded-lg border border-white/8 bg-[#071018]/60 px-3 py-2 text-sm text-slate-200 hover:shadow-[0_8px_28px_rgba(34,197,94,0.06)]">
-                    <div className="flex items-center gap-3">
-                      <Mail size={16} className="text-cyan-300" />
-                      <span className="truncate">{d.email}</span>
-                    </div>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-300"><path d="M17 7L7 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  </a>
+                <div className="mt-5 w-full flex flex-col items-center gap-3">
+                  <div className="flex items-center justify-center gap-3 w-full">
+                    <a href={`mailto:${d.email}`} title={`Email ${d.name} (${d.email})`} className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/3 px-3 py-2 text-xs text-white/90 hover:bg-white/5 transition flex-1 justify-center">
+                      <Mail size={14} className="text-cyan-300" />
+                      <span className="text-xs">Email</span>
+                    </a>
 
-                  <div className="flex items-center justify-center gap-3">
-                    <a href={d.linkedin} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/3 px-3 py-2 text-xs text-white/90 hover:bg-white/5 transition">
+                    <a href={d.linkedin} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/3 px-3 py-2 text-xs text-white/90 hover:bg-white/5 transition flex-1 justify-center">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-cyan-300"><path d="M16 8a6 6 0 0 1 6 6v6h-4v-6a2 2 0 0 0-4 0v6h-4v-12h4v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       <span className="text-xs">LinkedIn</span>
                     </a>
-                    {d.primary && (
-                      <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-cyan-500 to-violet-500 px-3 py-2 text-xs font-semibold text-black">
-                        Primary Contact
-                      </span>
-                    )}
                   </div>
+                  {d.primary && (
+                    <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-cyan-500 to-violet-500 px-3 py-2 text-xs font-semibold text-black">
+                      Primary Contact
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

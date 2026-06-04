@@ -39,8 +39,8 @@ export default function AuthPage({ initialMode }) {
     setFormSubmitted(true);
     setTimeout(() => {
       setFormSubmitted(false);
-      // Reset form and go to home page
-      window.location.hash = '#home';
+      // Reset form and redirect to dashboard page
+      window.location.hash = '#dashboard';
     }, 2000);
   };
 
@@ -167,7 +167,7 @@ export default function AuthPage({ initialMode }) {
               <input
                 type="email"
                 name="email"
-                required
+                required={!isSignUp}
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="Email"
@@ -182,7 +182,7 @@ export default function AuthPage({ initialMode }) {
               <input
                 type="password"
                 name="password"
-                required
+                required={!isSignUp}
                 value={formData.password}
                 onChange={handleInputChange}
                 placeholder="Password"
