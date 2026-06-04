@@ -518,6 +518,22 @@ html.light .bg-\[\#0b1220\]\/70 {
   border-color: rgba(0, 0, 0, 0.08) !important;
 }
 
+html.light .bg-\[\#0b1220\]\/95 {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .hover\:bg-white\/5:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light nav .absolute.top-full .group\/item:hover > div:first-child {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  color: #111827 !important;
+}
+
+
 html.light .bg-slate-950\/60 {
   background-color: rgba(255, 255, 255, 0.95) !important;
   border-color: rgba(0, 0, 0, 0.08) !important;
