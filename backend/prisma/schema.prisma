@@ -83,3 +83,11 @@ model Activity {
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 }
+
+// ── PDF RAG Knowledge Base ────────────────────────────────
+model KnowledgeChunk {
+  id        String   @id @default(cuid())
+  filename  String
+  content   String
+  createdAt DateTime @default(now())
+}

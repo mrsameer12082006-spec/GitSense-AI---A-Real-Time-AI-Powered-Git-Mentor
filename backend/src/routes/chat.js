@@ -3,6 +3,9 @@ import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/auth.js';
 import aiService from '../services/ai.js';
 import repoContextService from '../services/repoContext.js';
+import ragService from '../services/rag.js';
+import userMemoryService from '../services/userMemory.js';
+import webSearchService from '../services/webSearch.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -65,7 +68,26 @@ router.post('/', async (req, res) => {
       console.error('[Chat] DB error getting/creating conversation:', dbErr.message);
     }
 
-    // Save user message
+    // Get conversation history (prior to saving the new message to prevent duplication)
+    let history = [];
+    if (conversation) {
+      try {
+        const historyMessages = await prisma.message.findMany({
+          where: { conversationId: conversation.id },
+          orderBy: { createdAt: 'asc' },
+          take: 30, // Retrieve up to last 30 messages for conversation memory (Problem 2)
+        });
+        history = historyMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          metadata: m.metadata ? JSON.parse(m.metadata) : null,
+        }));
+      } catch (dbErr) {
+        console.error('[Chat] DB error fetching history:', dbErr.message);
+      }
+    }
+
+    // Save user message (after history query)
     if (conversation) {
       try {
         await prisma.message.create({
@@ -80,7 +102,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Build repository context
+    // 1. Build repository context (Priority 1)
     let repoContext = '';
     if (repoRecord) {
       const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -97,28 +119,81 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Get conversation history
-    let history = [];
-    if (conversation) {
+    // 2. Retrieve PDF Knowledge Base context (RAG - Priority 2)
+    let kbContext = '';
+    try {
+      const relevantChunks = await ragService.retrieveRelevantChunks(message, 4);
+      kbContext = ragService.formatChunksForContext(relevantChunks);
+    } catch (ragErr) {
+      console.error('[Chat] Failed to retrieve RAG chunks:', ragErr.message);
+    }
+
+    // 3. Retrieve Cross-Conversation & Repo-Specific Memories (Priority 3)
+    let crossConvMemory = '';
+    let repoMemory = '';
+    try {
+      crossConvMemory = await userMemoryService.buildCrossConversationContext(req.user.id, conversation?.id);
+      if (repoRecord) {
+        repoMemory = await userMemoryService.buildRepositoryMemoryContext(req.user.id, repoRecord.id);
+      }
+    } catch (memErr) {
+      console.error('[Chat] Failed to build memory contexts:', memErr.message);
+    }
+
+    // 4. Retrieve Web Search Fallback (Priority 5)
+    let webSearchContext = '';
+    const lowerMsg = message.toLowerCase();
+    const isGeneralGitQuery = 
+      lowerMsg.includes('how to') || 
+      lowerMsg.includes('explain') || 
+      lowerMsg.includes('error') || 
+      lowerMsg.includes('what is') ||
+      lowerMsg.includes('documentation') ||
+      lowerMsg.includes('git ') ||
+      lowerMsg.includes('github ');
+
+    // Perform web search fallback only if we lack connected repository or PDF documentation details
+    if (isGeneralGitQuery && !kbContext && !repoRecord) {
       try {
-        const historyMessages = await prisma.message.findMany({
-          where: { conversationId: conversation.id },
-          orderBy: { createdAt: 'asc' },
-          take: 20, // Last 20 messages
-        });
-        history = historyMessages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          metadata: m.metadata ? JSON.parse(m.metadata) : null,
-        }));
-      } catch (dbErr) {
-        console.error('[Chat] DB error fetching history:', dbErr.message);
+        const searchResults = await webSearchService.search(`${message} git documentation`);
+        webSearchContext = webSearchService.formatResultsForContext(searchResults);
+      } catch (searchErr) {
+        console.error('[Chat] Web search failed:', searchErr.message);
       }
     }
 
+    // 5. Assemble Context Pipeline in Strict Priority Order (Problem 11 & 6)
+    let unifiedContext = '';
+    
+    // Priority 1: Current repository context
+    unifiedContext += `## 1. CURRENT REPOSITORY CONTEXT (Priority 1):\n`;
+    if (repoRecord) {
+      unifiedContext += `${repoContext || 'Repository connection is active, but live metadata is currently loading.'}\n\n`;
+    } else {
+      unifiedContext += `No connected repository. Answer based on general Git knowledge.\n\n`;
+    }
+
+    // Priority 2: Uploaded PDFs / Knowledge Base (RAG)
+    if (kbContext) {
+      unifiedContext += `## 2. KNOWLEDGE BASE REFERENCE (RAG - Priority 2):\n${kbContext}\n`;
+    }
+
+    // Priority 3: Previous conversations & memories
+    if (repoMemory || crossConvMemory) {
+      unifiedContext += `## 3. CONVERSATION & USER MEMORIES (Priority 3):\n`;
+      if (repoMemory) unifiedContext += repoMemory;
+      if (crossConvMemory) unifiedContext += crossConvMemory;
+      unifiedContext += '\n';
+    }
+
+    // Priority 5: Web search fallback
+    if (webSearchContext) {
+      unifiedContext += `## 4. WEB SEARCH FALLBACK (Priority 5):\n${webSearchContext}\n`;
+    }
+
     // Generate AI response
-    console.log(`[Chat] Querying AI service with history length: ${history.length}...`);
-    const aiResponse = await aiService.generateResponse(message, repoContext, history);
+    console.log(`[Chat] Assembled Context Length: ${unifiedContext.length} chars. History Length: ${history.length}.`);
+    const aiResponse = await aiService.generateResponse(message, unifiedContext, history);
     console.log('[Chat] AI response received:', JSON.stringify(aiResponse).substring(0, 100) + '...');
 
     // Save AI response
@@ -130,6 +205,7 @@ router.post('/', async (req, res) => {
         if (aiResponse.codeBlock) metadata.codeBlock = aiResponse.codeBlock;
         if (aiResponse.commandBlock) metadata.commandBlock = aiResponse.commandBlock;
         if (aiResponse.diff) metadata.diff = aiResponse.diff;
+        if (aiResponse.conflictResolution) metadata.conflictResolution = aiResponse.conflictResolution;
 
         await prisma.message.create({
           data: {
@@ -175,6 +251,7 @@ router.post('/', async (req, res) => {
         codeBlock: aiResponse.codeBlock,
         commandBlock: aiResponse.commandBlock,
         diff: aiResponse.diff,
+        conflictResolution: aiResponse.conflictResolution,
       },
     });
   } catch (err) {

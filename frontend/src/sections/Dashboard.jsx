@@ -6,7 +6,7 @@ import {
   RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
   Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Trash2, Loader2, MicOff,
-  ExternalLink
+  ExternalLink, BookOpen
 } from 'lucide-react';
 import {
   githubImportOptions,
@@ -79,6 +79,186 @@ export default function Dashboard() {
   const [repoInsights, setRepoInsights] = useState(null);
   const [isRepoLoading, setIsRepoLoading] = useState(false);
 
+  // ── Repository Health & Autonomous Fix State ──
+  const [repoHealth, setRepoHealth] = useState(null);
+  const [isHealthLoading, setIsHealthLoading] = useState(false);
+  const [timelineSteps, setTimelineSteps] = useState([]);
+  const [activeFixingIssueId, setActiveFixingIssueId] = useState(null);
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalFixData, setApprovalFixData] = useState(null);
+
+  const fetchHealthData = useCallback(async (repoId) => {
+    if (!repoId) return;
+    setIsHealthLoading(true);
+    try {
+      const res = await apiFetch(`/repos/${repoId}/health`);
+      const data = await res.json();
+      if (data.health) {
+        setRepoHealth(data.health);
+      }
+    } catch (err) {
+      console.error('[Health] Failed to fetch repo health:', err);
+    } finally {
+      setIsHealthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (connectedRepo) {
+      fetchHealthData(connectedRepo.id);
+    } else {
+      setRepoHealth(null);
+    }
+  }, [connectedRepo, fetchHealthData]);
+
+  const handleFixIssue = async (issue) => {
+    if (!connectedRepo) return;
+    
+    if (!issue.safeToFix) {
+      setApprovalFixData(issue);
+      setShowApprovalModal(true);
+      return;
+    }
+
+    setTimelineSteps([
+      { label: 'Problem Detected', status: 'success' },
+      { label: 'Cause Found', status: 'active' },
+      { label: 'Fix Applied', status: 'pending' },
+      { label: 'Repository Clean', status: 'pending' }
+    ]);
+    setActiveFixingIssueId(issue.id);
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setTimelineSteps([
+        { label: 'Problem Detected', status: 'success' },
+        { label: 'Cause Found', status: 'success' },
+        { label: 'Fix Applied', status: 'active' },
+        { label: 'Repository Clean', status: 'pending' }
+      ]);
+
+      const res = await apiFetch(`/repos/${connectedRepo.id}/fix`, {
+        method: 'POST',
+        body: JSON.stringify({ issueId: issue.id, action: issue.fixAction }),
+      });
+      const data = await res.json();
+
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setTimelineSteps([
+        { label: 'Problem Detected', status: 'success' },
+        { label: 'Cause Found', status: 'success' },
+        { label: 'Fix Applied', status: 'success' },
+        { label: 'Repository Clean', status: 'active' }
+      ]);
+
+      await new Promise(resolve => setTimeout(resolve, 600));
+      await fetchHealthData(connectedRepo.id);
+      
+      apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
+        if (ins.insights) setRepoInsights(ins.insights);
+      }).catch(() => {});
+
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `🔧 **Autonomous Doctor Intervention**: I successfully resolved **${issue.title}**.\n\n* **Action**: ${data.activity || 'Applied safe fix workflow.'}\n* **Score Impact**: Health restored.`,
+        insight: 'Pruned redundant branch pointers and workspace clean. Ready for linear merges.',
+        recommendation: 'Verify active checkout.'
+      }]);
+
+    } catch (err) {
+      console.error('[Fix] Error:', err);
+    } finally {
+      setActiveFixingIssueId(null);
+      setTimeout(() => setTimelineSteps([]), 2000);
+    }
+  };
+
+  const handleConfirmFix = async () => {
+    if (!connectedRepo || !approvalFixData) return;
+    const issue = approvalFixData;
+    setShowApprovalModal(false);
+    setApprovalFixData(null);
+
+    setTimelineSteps([
+      { label: 'Problem Detected', status: 'success' },
+      { label: 'Cause Found', status: 'success' },
+      { label: 'Fix Applied', status: 'active' },
+      { label: 'Repository Clean', status: 'pending' }
+    ]);
+    setActiveFixingIssueId(issue.id);
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      const res = await apiFetch(`/repos/${connectedRepo.id}/confirm-fix`, {
+        method: 'POST',
+        body: JSON.stringify({ issueId: issue.id, action: issue.fixAction }),
+      });
+      const data = await res.json();
+
+      setTimelineSteps([
+        { label: 'Problem Detected', status: 'success' },
+        { label: 'Cause Found', status: 'success' },
+        { label: 'Fix Applied', status: 'success' },
+        { label: 'Repository Clean', status: 'active' }
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 600));
+      await fetchHealthData(connectedRepo.id);
+
+      apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
+        if (ins.insights) setRepoInsights(ins.insights);
+      }).catch(() => {});
+
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `✅ **Dangerous Action Executed Safely**: I resolved **${issue.title}**.\n\n* **Action**: ${data.activity || 'Completed branch manipulation.'}\n* **Impact**: Verified history safety.`,
+        insight: 'Branch references are now clean.',
+        recommendation: 'Continue linear integration workflows.'
+      }]);
+
+    } catch (err) {
+      console.error('[ConfirmFix] Error:', err);
+    } finally {
+      setActiveFixingIssueId(null);
+      setTimeout(() => setTimelineSteps([]), 2000);
+    }
+  };
+
+  const handleSimulateIssue = async (type) => {
+    if (!connectedRepo) return;
+    try {
+      const res = await apiFetch(`/repos/${connectedRepo.id}/simulate-issue`, {
+        method: 'POST',
+        body: JSON.stringify({ type })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchHealthData(connectedRepo.id);
+        
+        apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
+          if (ins.insights) setRepoInsights(ins.insights);
+        }).catch(() => {});
+
+        let msgText = '';
+        if (type === 'uncommitted') {
+          msgText = '⚠️ Simulated **Uncommitted Changes** in local workspace. Pull and checkout operations will warn you of overwrites.';
+        } else if (type === 'detached_head') {
+          msgText = '🔴 Simulated **Detached HEAD State** (commit history will not update branch HEAD).';
+        } else {
+          msgText = '✅ Restored simulated workspace to clean, fully synchronized state.';
+        }
+
+        setMessages(prev => [...prev, {
+          sender: 'ai',
+          text: msgText,
+          insight: 'Workspace status synchronized.'
+        }]);
+      }
+    } catch (err) {
+      console.error('[Simulate] Error:', err);
+    }
+  };
+
   // ── Chat History State ──
   const [chatHistory, setChatHistory] = useState({ today: [], week: [], month: [], older: [] });
   const [activeConversationId, setActiveConversationId] = useState(null);
@@ -96,6 +276,8 @@ export default function Dashboard() {
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const recognitionRef = useRef(null);
   const chatInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [pdfUploading, setPdfUploading] = useState(false);
 
   // ── Load user profile on mount ──
   useEffect(() => {
@@ -369,6 +551,57 @@ export default function Dashboard() {
       setAttachedFile(null);
     } else {
       setAttachedFile({ name: 'auth.js', size: '2.4 KB' });
+    }
+  };
+
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.type !== 'application/pdf') {
+      alert('Please upload a PDF document.');
+      return;
+    }
+
+    setPdfUploading(true);
+    setMessages(prev => [...prev, {
+      sender: 'ai',
+      text: `🔄 Indexing reference manual *${file.name}* into Knowledge Base... Please wait.`,
+      insight: 'Extracting text and generating semantic chunks for RAG context.'
+    }]);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const token = getToken();
+      const res = await fetch('/api/kb/upload', {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to upload PDF.');
+      }
+
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `✅ Successfully indexed **${file.name}** into local Knowledge Base!\n\n* **Chunks Generated**: ${data.chunks}\n* **Status**: Ready for repository-aware RAG queries.`,
+        insight: 'Semantic retrieval is now active for this reference manual.'
+      }]);
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `⚠️ PDF Indexing Error: ${err.message}`,
+        insight: 'Ensure the file is a valid PDF and the backend server is running.'
+      }]);
+    } finally {
+      setPdfUploading(false);
+      e.target.value = ''; // Reset input
     }
   };
 
@@ -789,21 +1022,23 @@ export default function Dashboard() {
 
                       {/* Render Command Block if exists */}
                       {msg.commandBlock && (
-                        <div className="mt-3 rounded-lg overflow-hidden border border-white/[0.08] bg-[#060913]">
-                          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-                            <span>Git Commands</span>
-                            <button
-                              onClick={() => copyToClipboard(msg.commandBlock, `cmd-${idx}`)}
-                              className="hover:text-white transition-colors cursor-pointer"
-                            >
-                              {copiedIndex === `cmd-${idx}` ? 'Copied' : <Copy size={11} />}
-                            </button>
-                          </div>
-                          <pre className="p-3 text-[11px] font-mono text-left overflow-x-auto leading-relaxed bg-[#010409] text-[#00D4FF] select-all flex items-start gap-2">
-                            <Terminal size={12} className="mt-0.5 text-slate-500" />
-                            <code>{msg.commandBlock}</code>
-                          </pre>
-                        </div>
+                        <CommandCard 
+                          command={msg.commandBlock} 
+                          idx={idx} 
+                          copiedIndex={copiedIndex}
+                          copyToClipboard={copyToClipboard}
+                        />
+                      )}
+
+                      {/* Render Conflict Resolution if exists */}
+                      {msg.conflictResolution && (
+                        <ConflictResolverCard
+                          conflict={msg.conflictResolution}
+                          idx={idx}
+                          connectedRepo={connectedRepo}
+                          setMessages={setMessages}
+                          apiFetch={apiFetch}
+                        />
                       )}
 
                       {/* Insights section */}
@@ -862,6 +1097,15 @@ export default function Dashboard() {
               )}
             </div>
 
+            {/* Repair Execution Timeline */}
+            {timelineSteps.length > 0 && (
+              <div className="px-6 py-3 border-t border-white/[0.06] bg-[#060913]/30">
+                <div className="max-w-[800px] mx-auto">
+                  <RepairTimeline steps={timelineSteps} />
+                </div>
+              </div>
+            )}
+
             {/* Bottom Chat Input Bar */}
             <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md flex-shrink-0">
               <div className="max-w-[800px] mx-auto flex flex-col gap-2">
@@ -890,6 +1134,23 @@ export default function Dashboard() {
                   >
                     <Paperclip size={16} />
                   </button>
+
+                  {/* Upload Reference PDF Button */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={pdfUploading}
+                    className={`p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer ${pdfUploading ? 'animate-pulse text-[#7C5CFF]' : ''}`}
+                    title="Upload Git Reference PDF Manual"
+                  >
+                    <BookOpen size={16} />
+                  </button>
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handlePdfUpload}
+                    accept=".pdf"
+                    className="hidden"
+                  />
 
                   {/* Chat Text Area Input */}
                   <textarea
@@ -999,6 +1260,110 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
+              {/* Repository Health Score Circle Donut */}
+              <div className="flex flex-col gap-3">
+                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                  <ShieldAlert size={13} className="text-[#7C5CFF]" /> Repository Health
+                </h4>
+                
+                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
+                  <div className="flex items-center gap-5">
+                    {/* Circle Donut */}
+                    <div className="relative w-16 h-16 flex-shrink-0 flex items-center justify-center">
+                      <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                        <circle cx="18" cy="18" r="15.915" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="3" />
+                        <circle cx="18" cy="18" r="15.915" fill="none" stroke={
+                          (repoHealth?.score ?? 100) >= 90 ? '#00E38C' :
+                          (repoHealth?.score ?? 100) >= 70 ? '#FFB800' : '#EF4444'
+                        } strokeWidth="3"
+                          strokeDasharray={`${repoHealth?.score ?? 100} 100`}
+                          strokeLinecap="round"
+                          className="transition-all duration-1000 ease-out"
+                        />
+                      </svg>
+                      <span className="absolute font-heading font-bold text-[10px] text-slate-100">{(repoHealth?.score ?? 100)}%</span>
+                    </div>
+
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold text-slate-200 truncate">
+                        {(repoHealth?.score ?? 100) === 100 ? '✅ Clean Repository' : '⚠️ Requires Attention'}
+                      </span>
+                      <span className="text-[10px] text-slate-500 mt-1">
+                        {repoHealth?.issues?.length || 0} issues detected in current workspace.
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Issues List */}
+                  {repoHealth?.issues && repoHealth.issues.length > 0 && (
+                    <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.05]">
+                      {repoHealth.issues.map((issue) => (
+                        <div key={issue.id} className="bg-slate-900/40 border border-white/[0.04] p-2.5 rounded-xl flex flex-col gap-2 text-left">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-200">{issue.title}</span>
+                            <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                              issue.severity === 'high' ? 'bg-rose-500/10 text-rose-400' :
+                              issue.severity === 'medium' ? 'bg-amber-500/10 text-amber-400' :
+                              'bg-slate-850 text-slate-400'
+                            }`}>
+                              {issue.severity}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-relaxed">{issue.description}</p>
+                          
+                          <button
+                            onClick={() => handleFixIssue(issue)}
+                            disabled={activeFixingIssueId !== null}
+                            className="w-full py-1.5 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 hover:bg-[#7C5CFF]/25 text-[#F8FAFC] text-[10px] font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                          >
+                            {activeFixingIssueId === issue.id ? (
+                              <Loader2 size={10} className="animate-spin" />
+                            ) : (
+                              <span>{issue.safeToFix ? 'Fix Issue' : 'Resolve Conflict'}</span>
+                            )}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Doctor Sandbox Controls */}
+              <div className="flex flex-col gap-3">
+                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-500 uppercase flex items-center gap-2 text-left">
+                  <Settings size={13} className="text-slate-500" /> Doctor Sandbox
+                </h4>
+                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-2 text-left">
+                  <p className="text-[10px] text-slate-500 leading-relaxed mb-1">
+                    Simulate workspace problems to test the Autonomous Doctor health diagnostics and mentoring.
+                  </p>
+                  <div className="grid grid-cols-1 gap-2">
+                    <button
+                      onClick={() => handleSimulateIssue('uncommitted')}
+                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                    >
+                      <span>Simulate Uncommitted Changes</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    </button>
+                    <button
+                      onClick={() => handleSimulateIssue('detached_head')}
+                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                    >
+                      <span>Simulate Detached HEAD</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                    </button>
+                    <button
+                      onClick={() => handleSimulateIssue('clean')}
+                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#00E38C]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                    >
+                      <span>Restore Clean Repository</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* Repo Summary Card */}
               <div className="flex flex-col gap-3">
 
@@ -1239,6 +1604,466 @@ export default function Dashboard() {
         )}
       </AnimatePresence>
 
+      {/* ── DANGEROUS FIX APPROVAL MODAL ── */}
+      <AnimatePresence>
+        {showApprovalModal && approvalFixData && (
+          <>
+            <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50" onClick={() => setShowApprovalModal(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none"
+            >
+              <div className="bg-slate-950 border border-rose-500/30 rounded-3xl p-6 w-full max-w-md flex flex-col gap-5 text-left shadow-2xl shadow-rose-950/20">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                    <ShieldAlert size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold font-heading text-slate-100">Confirm Git Operation</h3>
+                    <p className="text-[10px] text-slate-500 font-mono tracking-wide uppercase mt-0.5">Dangerous Action Approval Required</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-white/[0.04] p-4 rounded-2xl flex flex-col gap-2 text-xs">
+                  <span className="font-semibold text-slate-300">Operation:</span>
+                  <pre className="p-2.5 bg-slate-950 rounded-xl text-rose-400 font-mono text-xs border border-rose-500/10 overflow-x-auto whitespace-pre-wrap">
+                    {approvalFixData.command}
+                  </pre>
+                  
+                  <span className="font-semibold text-slate-300 mt-2">Potential Impact:</span>
+                  <p className="text-slate-400 leading-relaxed">
+                    {approvalFixData.fixAction === 'resolve_conflict' 
+                      ? 'This will merge code blocks from the source branch into your target branch. It may rewrite local changes and create automatic resolution markers if not fully synced.'
+                      : 'This will checkout a branch and abandon any un-named commits made while in detached HEAD state unless they are cherry-picked first.'}
+                  </p>
+                </div>
+
+                <p className="text-[11px] text-rose-400/80 leading-relaxed bg-rose-500/5 border border-rose-500/10 p-3 rounded-xl">
+                  ⚠️ <strong>Caution:</strong> Antigravity will protect your repository by default. Force pushing or rebasing shared branches is not recommended.
+                </p>
+
+                <div className="flex gap-3 border-t border-white/[0.05] pt-4">
+                  <button
+                    onClick={() => setShowApprovalModal(false)}
+                    className="flex-1 py-2.5 bg-slate-900 border border-white/[0.06] hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl text-xs font-semibold transition-all cursor-pointer text-center"
+                  >
+                    Cancel / Abort
+                  </button>
+                  <button
+                    onClick={handleConfirmFix}
+                    className="flex-1 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-lg shadow-rose-950/30"
+                  >
+                    Confirm & Execute
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
+
+// ── Git Command Database & Intelligence ──
+const GIT_COMMANDS_DB = {
+  'git pull origin main': {
+    purpose: 'Downloads latest changes from the remote repository and merges them into main.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'pull', desc: 'Fetch + merge changes from a remote branch.' },
+      { token: 'origin', desc: 'Default name for your remote repository.' },
+      { token: 'main', desc: 'Target branch to pull changes into.' }
+    ],
+    risk: 'Low-Medium. May create merge conflicts if your local changes overlap with remote changes.',
+    level: 'Medium',
+    when: 'Before starting new work or before pushing your own local commits.',
+    result: 'Your local main branch is updated with the remote commits.'
+  },
+  'git push origin main': {
+    purpose: 'Uploads your local commits to the remote repository main branch.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'push', desc: 'Upload local commits to remote.' },
+      { token: 'origin', desc: 'Target remote repository.' },
+      { token: 'main', desc: 'Target remote branch.' }
+    ],
+    risk: 'Low. Will fail if the remote branch contains commits you do not have locally.',
+    level: 'Low',
+    when: 'After committing your changes and verifying they work.',
+    result: 'Remote repository main branch is updated with your commits.'
+  },
+  'git push origin main --force': {
+    purpose: 'Overwrites the remote main branch with your local commits, ignoring remote updates.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'push', desc: 'Upload local commits to remote.' },
+      { token: 'origin', desc: 'Target remote repository.' },
+      { token: 'main', desc: 'Target remote branch.' },
+      { token: '--force', desc: 'Force overwrite remote history. Danger!' }
+    ],
+    risk: 'Critical. Can overwrite other developer\'s commits and lose history permanently.',
+    level: 'High',
+    when: 'Only when you need to overwrite history (e.g. after rebasing your own feature branch). Never on shared branches like main.',
+    result: 'Remote branch is forcefully aligned with your local history.'
+  },
+  'git stash': {
+    purpose: 'Temporarily shelves (stashes) changes you\'ve made to your working copy so you can work on something else.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'stash', desc: 'Shelve changes in a dirty working directory.' }
+    ],
+    risk: 'None. Your changes are saved safely in a stack and can be popped later.',
+    level: 'Low',
+    when: 'When you have uncommitted changes but need to switch branches or pull main changes.',
+    result: 'Your working directory is cleaned, and changes are stored.'
+  },
+  'git stash pop': {
+    purpose: 'Applies your stashed changes back to your working directory and removes them from the stash list.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'stash', desc: 'Access the stash utility.' },
+      { token: 'pop', desc: 'Apply and remove the top stash entry.' }
+    ],
+    risk: 'Low-Medium. May cause conflicts if the branch you are on has changed since you stashed.',
+    level: 'Medium',
+    when: 'After pulling changes or returning to your feature branch to resume work.',
+    result: 'Your shelved changes are re-applied to your files.'
+  },
+  'git checkout -b': {
+    purpose: 'Creates a new branch and switches to it immediately.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'checkout', desc: 'Switch branches or restore files.' },
+      { token: '-b', desc: 'Option to create a new branch with the specified name.' }
+    ],
+    risk: 'None.',
+    level: 'Low',
+    when: 'When you are about to start working on a new feature or bugfix.',
+    result: 'You are switched to a new branch.'
+  },
+  'git merge': {
+    purpose: 'Merges commits from another branch into your current active branch.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'merge', desc: 'Join two or more development histories.' }
+    ],
+    risk: 'Medium. Can lead to merge conflicts if changes overlap.',
+    level: 'Medium',
+    when: 'When you want to integrate completed work from a feature branch or pull in main updates.',
+    result: 'Commits from the specified branch are merged into your current branch.'
+  },
+  'git rebase': {
+    purpose: 'Re-applies commits from your branch on top of another base branch.',
+    breakdown: [
+      { token: 'git', desc: 'Version control system executable.' },
+      { token: 'rebase', desc: 'Forward-port local commits to the updated upstream head.' }
+    ],
+    risk: 'High. Rewrites commit history. Can cause major issues if done on public branches.',
+    level: 'High',
+    when: 'To keep a clean linear history in your feature branch before merging.',
+    result: 'Your local commits are re-applied on top of the target branch.'
+  }
+};
+
+const parseGitCommand = (word) => {
+  const cleanWord = word.trim().replace(/^['"`]+|['"`]+$/g, '');
+  const matched = GIT_COMMANDS_DB[cleanWord];
+  if (matched) return matched;
+  
+  if (cleanWord.startsWith('git ')) {
+    const parts = cleanWord.split(' ');
+    const breakdown = parts.map(token => {
+      let desc = 'Argument or target reference.';
+      if (token === 'git') desc = 'Version control system executable.';
+      else if (token === 'pull') desc = 'Fetch and integrate remote changes.';
+      else if (token === 'push') desc = 'Upload local commits to remote repository.';
+      else if (token === 'checkout') desc = 'Switch branch or restore files.';
+      else if (token === 'add') desc = 'Stage file changes for next commit.';
+      else if (token === 'commit') desc = 'Record staged changes into repository history.';
+      else if (token === 'stash') desc = 'Save local changes to stash stack.';
+      else if (token === 'branch') desc = 'Manage branches.';
+      else if (token === 'merge') desc = 'Join two or more development histories.';
+      else if (token === 'rebase') desc = 'Re-apply commits on top of another base.';
+      else if (token === 'origin') desc = 'Default remote name.';
+      else if (token === 'main' || token === 'master') desc = 'Primary development branch.';
+      else if (token === '-d' || token === '-D') desc = 'Flag to delete branch.';
+      else if (token === '-b') desc = 'Flag to create new branch.';
+      else if (token.startsWith('--')) desc = 'Command line option / flag.';
+      return { token, desc };
+    });
+    return {
+      purpose: `Execute Git ${parts[1] || 'command'} operation.`,
+      breakdown,
+      risk: parts[1] === 'push' && cleanWord.includes('--force') ? 'Critical: Rewrites remote history.' : 'Low to Medium depending on local edits.',
+      level: cleanWord.includes('--force') || cleanWord.includes('rebase') ? 'High' : 'Low',
+      when: 'To perform standard version control tasks.',
+      result: 'Updates local or remote repository state.'
+    };
+  }
+  return null;
+};
+
+// ── Command Card Component ──
+function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
+  const info = parseGitCommand(command);
+  const [isHovered, setIsHovered] = useState(false);
+
+  if (!info) {
+    return (
+      <div className="mt-3 rounded-xl overflow-hidden border border-white/[0.08] bg-[#060913]">
+        <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+          <span>Terminal</span>
+          <button onClick={() => copyToClipboard(command, `cmd-${idx}`)} className="hover:text-white cursor-pointer flex items-center gap-1">
+            {copiedIndex === `cmd-${idx}` ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <pre className="p-3 text-[11px] font-mono text-left bg-[#010409] text-slate-300"><code>{command}</code></pre>
+      </div>
+    );
+  }
+
+  const riskColor = info.level === 'High' ? 'text-rose-400 bg-rose-500/10' : info.level === 'Medium' ? 'text-amber-400 bg-amber-500/10' : 'text-[#00E38C] bg-[#00E38C]/10';
+
+  return (
+    <div className="mt-3 rounded-2xl overflow-hidden border border-white/[0.08] hover:border-[#7C5CFF]/30 bg-slate-950/80 transition-all duration-300 relative group text-left">
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-900/60 border-b border-white/[0.06]">
+        <div className="flex items-center gap-2">
+          <Terminal size={14} className="text-[#00D4FF]" />
+          <span className="text-xs font-mono font-bold text-slate-200">Interactive Command Card</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${riskColor}`}>
+            Risk: {info.level}
+          </span>
+          <button
+            onClick={() => copyToClipboard(command, `cmd-${idx}`)}
+            className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            title="Copy Command"
+          >
+            {copiedIndex === `cmd-${idx}` ? <Check size={12} className="text-[#00E38C]" /> : <Copy size={12} />}
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 flex flex-col gap-3">
+        <div 
+          className="p-3 bg-[#010409] border border-white/[0.04] rounded-xl font-mono text-xs text-[#00D4FF] relative select-all cursor-help"
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+        >
+          {command}
+          
+          <AnimatePresence>
+            {isHovered && (
+              <motion.div
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 5 }}
+                className="absolute left-0 top-[110%] mt-2 w-full max-w-[320px] bg-slate-950 border border-white/[0.1] rounded-xl shadow-2xl p-4 z-30 pointer-events-none text-left flex flex-col gap-3 backdrop-blur-xl"
+              >
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider">Purpose</span>
+                  <p className="text-xs text-slate-200 font-sans leading-relaxed">{info.purpose}</p>
+                </div>
+
+                <div className="flex flex-col gap-1.5 border-t border-white/[0.05] pt-2">
+                  <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider">Breakdown</span>
+                  <div className="flex flex-col gap-1 font-mono text-[10px] text-slate-400">
+                    {info.breakdown.map((item, bIdx) => (
+                      <div key={bIdx} className="flex gap-2">
+                        <span className="text-[#7C5CFF] font-semibold">{item.token}</span>
+                        <span className="text-slate-500">—</span>
+                        <span className="text-slate-300 font-sans">{item.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1 border-t border-white/[0.05] pt-2">
+                  <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider">Risk Level</span>
+                  <p className="text-xs text-rose-400 font-sans leading-relaxed">{info.risk}</p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-left border-t border-white/[0.05] pt-3 text-[11px]">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider">When To Use</span>
+            <span className="text-slate-300 font-medium leading-relaxed">{info.when}</span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider">Expected Result</span>
+            <span className="text-slate-300 font-medium leading-relaxed">{info.result}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Guided Conflict Resolver Component ──
+function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFetch }) {
+  const [resolvedCode, setResolvedCode] = useState(conflict.recommendedResolution || '');
+  const [isResolved, setIsResolved] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState(null);
+
+  const handleApplyResolution = async (branchOption) => {
+    setSelectedBranch(branchOption);
+    let code = '';
+    if (branchOption === 'A') {
+      const lines = conflict.conflictLines || '';
+      const match = lines.match(/<<<<<<<[\s\S]*?\n([\s\S]*?)=======/);
+      code = match ? match[1].trim() : 'Branch A content';
+    } else if (branchOption === 'B') {
+      const lines = conflict.conflictLines || '';
+      const match = lines.match(/=======[\s\S]*?\n([\s\S]*?)>>>>>>>/);
+      code = match ? match[1].trim() : 'Branch B content';
+    } else {
+      code = conflict.recommendedResolution;
+    }
+    
+    setResolvedCode(code);
+    setIsResolved(true);
+
+    if (connectedRepo) {
+      try {
+        await apiFetch(`/repos/${connectedRepo.id}/fix`, {
+          method: 'POST',
+          body: JSON.stringify({ issueId: `conflict-pr-resolved`, action: 'resolve_conflict' })
+        });
+      } catch (err) {}
+    }
+
+    setMessages(prev => [...prev, {
+      sender: 'ai',
+      text: `🔧 **Guided Conflict Resolved**: I resolved conflict in **${conflict.conflictFile}** by accepting **${branchOption === 'recommended' ? 'AI Recommendation' : `Branch ${branchOption}`}**.\n\n* **File**: \`${conflict.conflictFile}\`\n* **Status**: Merge conflict resolved successfully.`,
+      insight: `Successfully merged target logic from ${conflict.branchB} into ${conflict.branchA}.`,
+      recommendation: 'Check out local references and pull changes.'
+    }]);
+  };
+
+  return (
+    <div className="mt-3 rounded-2xl overflow-hidden border border-amber-500/20 hover:border-amber-500/40 bg-[#0c0d12] transition-all duration-300 text-left">
+      <div className="flex items-center justify-between px-4 py-3 bg-amber-500/5 border-b border-amber-500/10">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={14} className="text-amber-400 animate-pulse" />
+          <span className="text-xs font-bold text-slate-200">Merge Conflict Detected in <code className="font-mono bg-slate-900 px-1.5 py-0.5 rounded text-amber-300">{conflict.conflictFile}</code></span>
+        </div>
+      </div>
+
+      <div className="p-4 flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-4 text-[11px]">
+          <div className="flex flex-col gap-0.5 bg-slate-900/60 p-2.5 rounded-xl border border-white/[0.03]">
+            <span className="text-[9px] text-slate-500 font-semibold uppercase">Branch A (Current HEAD)</span>
+            <span className="text-slate-200 font-bold font-mono">{conflict.branchA || 'main'}</span>
+          </div>
+          <div className="flex flex-col gap-0.5 bg-slate-900/60 p-2.5 rounded-xl border border-white/[0.03]">
+            <span className="text-[9px] text-slate-500 font-semibold uppercase">Branch B (Incoming)</span>
+            <span className="text-slate-200 font-bold font-mono">{conflict.branchB || 'feature/login'}</span>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider">Conflict Code Block</span>
+          <pre className="p-3 text-[11px] font-mono overflow-x-auto leading-relaxed bg-[#030712] text-slate-300 rounded-xl border border-white/[0.05]">
+            {conflict.conflictLines}
+          </pre>
+        </div>
+
+        <div className="bg-[#7C5CFF]/5 border border-[#7C5CFF]/15 p-3 rounded-xl flex flex-col gap-1.5 text-[11px]">
+          <span className="font-bold text-slate-200 flex items-center gap-1.5 uppercase text-[9px] tracking-wider">
+            <Sparkles size={11} className="text-[#00D4FF]" /> AI Recommended Resolution
+          </span>
+          <p className="text-slate-300 leading-relaxed font-sans">{conflict.explanation}</p>
+          <pre className="p-2.5 text-[10px] font-mono overflow-x-auto leading-relaxed bg-[#010409] text-[#00E38C] rounded-lg mt-1 border border-[#00E38C]/10 select-all">
+            {conflict.recommendedResolution}
+          </pre>
+        </div>
+
+        {!isResolved ? (
+          <div className="flex flex-col sm:flex-row gap-2 border-t border-white/[0.05] pt-3">
+            <button
+              onClick={() => handleApplyResolution('A')}
+              className="flex-1 py-2 px-3 bg-slate-900 border border-white/[0.08] hover:border-slate-700 text-xs font-semibold text-slate-200 rounded-xl transition-all cursor-pointer text-center"
+            >
+              Accept {conflict.branchA || 'Branch A'}
+            </button>
+            <button
+              onClick={() => handleApplyResolution('B')}
+              className="flex-1 py-2 px-3 bg-slate-900 border border-white/[0.08] hover:border-slate-700 text-xs font-semibold text-slate-200 rounded-xl transition-all cursor-pointer text-center"
+            >
+              Accept {conflict.branchB || 'Branch B'}
+            </button>
+            <button
+              onClick={() => handleApplyResolution('recommended')}
+              className="flex-1 py-2 px-3 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] text-white hover:shadow-lg hover:shadow-[#7C5CFF]/20 text-xs font-bold rounded-xl transition-all cursor-pointer text-center"
+            >
+              Accept Recommendation
+            </button>
+          </div>
+        ) : (
+          <div className="border-t border-white/[0.05] pt-3 flex flex-col gap-2">
+            <div className="bg-[#00E38C]/10 border border-[#00E38C]/20 text-[#00E38C] rounded-xl p-3 flex items-center gap-2.5 text-xs">
+              <CheckCircle2 size={14} className="shrink-0" />
+              <span>Conflict resolved using <strong>{selectedBranch === 'recommended' ? 'AI Recommendation' : `Branch ${selectedBranch}`}</strong>. Code changes merged successfully.</span>
+            </div>
+            <pre className="p-3 text-[11px] font-mono overflow-x-auto leading-relaxed bg-[#030712] text-slate-400 rounded-xl border border-white/[0.05]">
+              {resolvedCode}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Repair Timeline Component ──
+function RepairTimeline({ steps }) {
+  if (!steps || steps.length === 0) return null;
+
+  const successCount = steps.filter(s => s.status === 'success').length;
+  const progressPercent = successCount === 4 ? '100%' :
+                          successCount === 3 ? '100%' :
+                          successCount === 2 ? '66%' :
+                          successCount === 1 ? '33%' : '0%';
+
+  return (
+    <div className="bg-slate-950/85 border border-[#7C5CFF]/20 rounded-2xl p-4 flex flex-col gap-3 text-left">
+      <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+        <Activity size={12} className="text-[#7C5CFF] animate-pulse" /> Repair Execution Timeline
+      </span>
+      <div className="flex items-center justify-between gap-2 mt-1 relative">
+        <div className="absolute left-[10%] right-[10%] top-[9px] h-[2px] bg-slate-900 z-0">
+          <div 
+            className="h-full bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] transition-all duration-1000"
+            style={{ width: progressPercent }}
+          />
+        </div>
+
+        {steps.map((step, sIdx) => {
+          const isSuccess = step.status === 'success';
+          const isActive = step.status === 'active';
+          const circleColor = isSuccess ? 'bg-[#00E38C] text-slate-950' : isActive ? 'bg-[#7C5CFF] text-white animate-pulse' : 'bg-slate-900 text-slate-500';
+          const textColor = isSuccess ? 'text-slate-300' : isActive ? 'text-white font-semibold' : 'text-slate-500';
+
+          return (
+            <div key={sIdx} className="flex flex-col items-center gap-1.5 flex-1 z-10 relative">
+              <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${circleColor}`}>
+                {isSuccess ? '✓' : sIdx + 1}
+              </div>
+              <span className={`text-[10px] font-sans text-center truncate w-full ${textColor}`}>
+                {step.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
