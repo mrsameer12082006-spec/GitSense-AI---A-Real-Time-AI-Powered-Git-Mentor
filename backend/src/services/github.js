@@ -536,6 +536,72 @@ class GitHubService {
       };
     }
   }
+
+  /**
+   * Get contents at a path (for file tree).
+   */
+  async getRepoContents(owner, repo, path = '', token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`, {
+        headers: this._headers(token),
+      });
+      return data;
+    } catch (err) {
+      console.error('[GitHub] getRepoContents error:', err.message);
+      throw new Error('Failed to fetch repository contents.');
+    }
+  }
+
+  /**
+   * Get file content by path.
+   */
+  async getFileContent(owner, repo, path, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`, {
+        headers: this._headers(token),
+      });
+      if (Array.isArray(data)) {
+        throw new Error('Path is a directory, not a file.');
+      }
+      if (data.encoding === 'base64' && data.content) {
+        return Buffer.from(data.content, 'base64').toString('utf8');
+      }
+      return data.content || '';
+    } catch (err) {
+      console.error('[GitHub] getFileContent error:', err.message);
+      throw new Error('Failed to fetch file content.');
+    }
+  }
+
+  /**
+   * Get specific commit details.
+   */
+  async getCommitDetails(owner, repo, sha, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}`, {
+        headers: this._headers(token),
+      });
+      return {
+        sha: data.sha,
+        hash: data.sha.substring(0, 7),
+        message: data.commit?.message || '',
+        author: data.commit?.author?.name || data.author?.login || 'Unknown',
+        date: data.commit?.author?.date || '',
+        time: this._timeAgo(data.commit?.author?.date),
+        stats: data.stats,
+        files: (data.files || []).map(f => ({
+          filename: f.filename,
+          status: f.status,
+          additions: f.additions,
+          deletions: f.deletions,
+          patch: f.patch
+        }))
+      };
+    } catch (err) {
+      console.error('[GitHub] getCommitDetails error:', err.message);
+      throw new Error('Failed to fetch commit details.');
+    }
+  }
 }
 
 // Singleton export
