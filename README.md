@@ -198,6 +198,26 @@ The AI also explains:
 
 ---
 
+## Development
+
+- **Ports:** Frontend dev server runs on `http://localhost:5173` (Vite default). Backend runs on `http://localhost:5000`.
+- **Environment:** Configure backend env in `backend/.env`. The repository includes sensible defaults (`PORT=5000`, `FRONTEND_URL=http://localhost:5173`).
+- **Run locally:**
+
+```bash
+cd backend
+npm install
+npm run dev
+
+cd ../frontend
+npm install
+npm run dev
+```
+
+This ensures the frontend proxy (`/api` -> `http://localhost:5000`) and backend CORS settings align so collaborators won't encounter ECONNREFUSED or auth callback mismatches.
+
+---
+
 ## Real-Time Communication
 - WebSockets
 - WebRTC
