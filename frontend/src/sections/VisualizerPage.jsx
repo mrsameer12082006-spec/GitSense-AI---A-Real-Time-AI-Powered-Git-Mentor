@@ -4,17 +4,35 @@ import {
   ChevronDown, LogOut, Settings, User, Info, FileText, Moon, 
   GitBranch, Activity, CheckCircle2, MessageSquare, Database, 
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Sparkles, FileText as FileIcon,
-  AlertTriangle
+  AlertTriangle, RotateCw
 } from 'lucide-react';
 import GitGraph from '../components/GitGraph';
 import {
   currentUser,
-  isRepositoryConnected,
-  connectedRepository,
   githubImportOptions,
-  repositoryInsights,
   sidebarEmptyStateText
 } from '../data/mockDashboardData';
+
+// ── API Helper ──
+const API_BASE = '/api';
+const getToken = () => localStorage.getItem('gitsense_token');
+const apiFetch = async (path, options = {}) => {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('gitsense_token');
+    window.location.hash = '#login';
+    throw new Error('Session expired');
+  }
+  return res;
+};
 
 export default function VisualizerPage() {
   const [isAvatarDropdownOpen, setIsAvatarDropdownOpen] = useState(false);
@@ -83,7 +101,65 @@ export default function VisualizerPage() {
   const [graphState, setGraphState] = useState('normal'); // normal, diverged, conflict
   const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
 
-  const handleNodeSelect = (node) => {
+  const [connectedRepo, setConnectedRepo] = useState(null);
+  const [commits, setCommits] = useState([]);
+  const [repoInsights, setRepoInsights] = useState(null);
+
+  // Derived values
+  const isRepositoryConnected = !!connectedRepo;
+  const connectedRepository = connectedRepo || { name: '', branch: 'main', url: 'https://github.com' };
+  const repositoryInsights = repoInsights || { commits: 0, openPRs: 0, issues: 0, contributors: 0, securityStatus: 'N/A', latestCommits: [], activePRs: [], pipelines: [] };
+
+  // Fetch current repository and its commits & insights
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    
+    apiFetch('/repos/current')
+      .then(r => r.json())
+      .then(data => {
+        if (data.connected && data.repository) {
+          setConnectedRepo(data.repository);
+          
+          // Fetch commits
+          apiFetch(`/repos/${data.repository.id}/commits`)
+            .then(r => r.json())
+            .then(cData => {
+              if (cData.commits) setCommits(cData.commits);
+            })
+            .catch(() => {});
+
+          // Fetch insights
+          apiFetch(`/repos/${data.repository.id}/insights`)
+            .then(r => r.json())
+            .then(insData => {
+              if (insData.insights) setRepoInsights(insData.insights);
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleNodeSelect = async (node) => {
+    if (connectedRepo && node.sha) {
+      try {
+        const res = await apiFetch(`/repos/${connectedRepo.id}/commits/${node.sha}`);
+        const data = await res.json();
+        if (data.commit) {
+          setSelectedNodeDetails({
+            ...node,
+            ...data.commit,
+            files: data.commit.files || [],
+            additions: data.commit.stats?.additions || 0,
+            deletions: data.commit.stats?.deletions || 0,
+          });
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to fetch commit details:', err);
+      }
+    }
     setSelectedNodeDetails(node);
   };
 
@@ -410,6 +486,7 @@ export default function VisualizerPage() {
               <GitGraph 
                 state={graphState} 
                 onNodeSelect={handleNodeSelect} 
+                commits={commits}
               />
             </div>
 
@@ -600,13 +677,36 @@ export default function VisualizerPage() {
             <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest">
               REPOSITORY INSIGHTS
             </span>
-            <button 
-              onClick={() => setIsRightSidebarOpen(false)}
-              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Collapse Sidebar"
-            >
-              <ChevronRight size={14} />
-            </button>
+            <div className="flex items-center gap-1">
+              {isRepositoryConnected && (
+                <button
+                  onClick={async () => {
+                    if (!connectedRepo) return;
+                    try {
+                      const res = await apiFetch(`/repos/${connectedRepo.id}/insights`);
+                      const ins = await res.json();
+                      if (ins.insights) setRepoInsights(ins.insights);
+                      
+                      // Also refetch commits
+                      const cRes = await apiFetch(`/repos/${connectedRepo.id}/commits`);
+                      const cData = await cRes.json();
+                      if (cData.commits) setCommits(cData.commits);
+                    } catch {}
+                  }}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Refresh Insights"
+                >
+                  <RotateCw size={12} className="hover:rotate-45 transition-transform" />
+                </button>
+              )}
+              <button 
+                onClick={() => setIsRightSidebarOpen(false)}
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                title="Collapse Sidebar"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
 
           {/* Repo Insights Content */}

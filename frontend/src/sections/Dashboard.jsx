@@ -6,12 +6,13 @@ import {
   RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
   Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Trash2, Loader2, MicOff,
-  ExternalLink, BookOpen
+  ExternalLink, BookOpen, Code, RotateCw
 } from 'lucide-react';
 import {
   githubImportOptions,
   getGreeting
 } from '../data/mockDashboardData';
+import IDEPanel from '../components/IDEPanel';
 
 // ── API Helper ──
 const API_BASE = '/api';
@@ -78,6 +79,7 @@ export default function Dashboard() {
   const [connectedRepo, setConnectedRepo] = useState(null);
   const [repoInsights, setRepoInsights] = useState(null);
   const [isRepoLoading, setIsRepoLoading] = useState(false);
+  const [activeSection, setActiveSection] = useState('chat'); // chat, ide
 
   // ── Repository Health & Autonomous Fix State ──
   const [repoHealth, setRepoHealth] = useState(null);
@@ -437,35 +439,110 @@ export default function Dashboard() {
         }),
       });
 
-      let data;
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        throw new Error(`Failed to parse server response as JSON (Status: ${res.status} ${res.statusText})`);
-      }
-
       if (!res.ok) {
-        throw new Error(data.error || `Request failed with status ${res.status}`);
+        let errMsg = `Request failed with status ${res.status}`;
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch {}
+        throw new Error(errMsg);
       }
 
-      if (data.response) {
-        setMessages(prev => [...prev, data.response]);
-      } else {
-        throw new Error('Server returned an empty response');
+      // Check if it is a streaming response
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        // Fallback to json if not event-stream
+        const data = await res.json();
+        if (data.response) {
+          setMessages(prev => [...prev, data.response]);
+        }
+        if (data.conversationId) {
+          setActiveConversationId(data.conversationId);
+        }
+        loadChatHistory();
+        return;
       }
 
-      // Update conversation ID for subsequent messages
-      if (data.conversationId) {
-        setActiveConversationId(data.conversationId);
-      }
+      // Read the stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let done = false;
 
-      // Refresh chat history
-      loadChatHistory();
+      // Add a placeholder message for the streaming response
+      let aiMsgIndex = -1;
+      setMessages(prev => {
+        aiMsgIndex = prev.length;
+        return [...prev, { sender: 'ai', text: '', isStreaming: true }];
+      });
+      setIsAiTyping(false); // Disable typing indicator since we have the message container now
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // Keep last incomplete line
+
+          for (const line of lines) {
+            const cleanLine = line.trim();
+            if (!cleanLine) continue;
+            if (cleanLine.startsWith('data: ')) {
+              const dataStr = cleanLine.substring(6);
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.token) {
+                  setMessages(prev => {
+                    const nextMsgs = [...prev];
+                    if (nextMsgs[aiMsgIndex]) {
+                      nextMsgs[aiMsgIndex] = {
+                        ...nextMsgs[aiMsgIndex],
+                        text: nextMsgs[aiMsgIndex].text + parsed.token
+                      };
+                    }
+                    return nextMsgs;
+                  });
+                } else if (parsed.done) {
+                  // Final metadata response
+                  setMessages(prev => {
+                    const nextMsgs = [...prev];
+                    if (nextMsgs[aiMsgIndex]) {
+                      nextMsgs[aiMsgIndex] = {
+                        sender: 'ai',
+                        text: parsed.response.text,
+                        insight: parsed.response.insight,
+                        recommendation: parsed.response.recommendation,
+                        codeBlock: parsed.response.codeBlock,
+                        commandBlock: parsed.response.commandBlock,
+                        diff: parsed.response.diff,
+                        conflictResolution: parsed.response.conflictResolution,
+                        diagnosedIssue: parsed.response.diagnosedIssue,
+                      };
+                    }
+                    return nextMsgs;
+                  });
+                  if (parsed.conversationId) {
+                    setActiveConversationId(parsed.conversationId);
+                  }
+                  // Refresh history and health status if we finished
+                  loadChatHistory();
+                  if (connectedRepo) {
+                    fetchHealthData(connectedRepo.id);
+                  }
+                }
+              } catch (e) {
+                // Ignore parsing errors on partial chunks
+              }
+            }
+          }
+        }
+      }
     } catch (err) {
       setMessages(prev => [...prev, {
         sender: 'ai',
         text: `⚠️ AI Chat Error: ${err.message}`,
-        insight: 'Please verify the backend server is running on port 3001 and your GROQ_API_KEY is configured in backend/.env',
+        insight: 'Please verify the backend server is running and your API keys are configured in backend/.env',
       }]);
     } finally {
       setIsAiTyping(false);
@@ -661,11 +738,27 @@ export default function Dashboard() {
           {/* Sidebar Navigation */}
           <div className="p-3 flex flex-col gap-1">
             <button
-              onClick={() => window.location.hash = '#dashboard'}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#F8FAFC]"
+              onClick={() => { setActiveSection('chat'); window.location.hash = '#dashboard'; }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border ${
+                activeSection === 'chat' && window.location.hash !== '#visualizer-page'
+                  ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#F8FAFC]'
+                  : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50'
+              }`}
             >
-              <Sparkles size={16} className="text-[#7C5CFF]" />
+              <Sparkles size={16} className={activeSection === 'chat' && window.location.hash !== '#visualizer-page' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
               <span>Git Assistant</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveSection('ide'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border ${
+                activeSection === 'ide'
+                  ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#F8FAFC]'
+                  : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50'
+              }`}
+            >
+              <Code size={16} className={activeSection === 'ide' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
+              <span>Code IDE</span>
             </button>
 
             <button
@@ -920,8 +1013,19 @@ export default function Dashboard() {
         {/* ── CENTRAL MAIN WORKSPACE PANELS ── */}
         <div className="flex-1 flex overflow-hidden min-w-0">
 
-          {/* GIT ASSISTANT CHAT INTERFACE */}
-          <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
+          {activeSection === 'ide' ? (
+            <IDEPanel
+              connectedRepo={connectedRepo}
+              apiFetch={apiFetch}
+              onAskAI={(filename, content) => {
+                setActiveSection('chat');
+                setInputVal(`Analyze this file: ${filename}\n\n\`\`\`\n${content}\n\`\`\``);
+                setTimeout(() => chatInputRef.current?.focus(), 50);
+              }}
+            />
+          ) : (
+            /* GIT ASSISTANT CHAT INTERFACE */
+            <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
             
             {/* Chat Messages List */}
             <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
@@ -1064,6 +1168,16 @@ export default function Dashboard() {
                           </p>
                         </div>
                       )}
+
+                      {/* Proactive Diagnosed Issue Card */}
+                      {msg.diagnosedIssue && (
+                        <DiagnosedIssueCard
+                          issue={msg.diagnosedIssue}
+                          idx={idx}
+                          copiedIndex={copiedIndex}
+                          copyToClipboard={copyToClipboard}
+                        />
+                      )}
                       </div>
 
                       {/* User Avatar */}
@@ -1110,6 +1224,51 @@ export default function Dashboard() {
             <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md flex-shrink-0">
               <div className="max-w-[800px] mx-auto flex flex-col gap-2">
                 
+                {/* Floating voice panel above the input bar */}
+                <AnimatePresence>
+                  {showVoiceModal && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="mb-2 bg-slate-950/90 border border-rose-500/20 rounded-xl p-4 w-full flex flex-col gap-3 relative shadow-xl shadow-black/50 backdrop-blur-xl text-left animate-pulse"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-rose-500 flex items-center justify-center animate-ping flex-shrink-0 ring-4 ring-rose-500/20" />
+                          <span className="text-xs font-bold text-slate-200">Listening...</span>
+                        </div>
+                        <button
+                          onClick={toggleRecording}
+                          className="px-2.5 py-1 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-lg text-[10px] font-bold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-1"
+                        >
+                          <MicOff size={10} /> Stop Listening
+                        </button>
+                      </div>
+
+                      {/* Waveform */}
+                      <div className="flex items-center gap-[2.5px] h-6 my-1">
+                        {audioWave.map((h, i) => (
+                          <motion.div
+                            key={i}
+                            animate={{ height: h * 0.7 }}
+                            className="w-[2.5px] bg-rose-500 rounded-full"
+                            style={{ minHeight: '2px', maxHeight: '20px' }}
+                          />
+                        ))}
+                      </div>
+
+                      {voiceTranscript ? (
+                        <p className="text-xs text-slate-300 font-mono leading-relaxed bg-slate-900/50 border border-white/[0.04] p-2.5 rounded-lg max-h-32 overflow-y-auto">
+                          {voiceTranscript}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-slate-500 italic">Say something... your voice transcript will appear here in real-time.</p>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 {/* Active file attachment indicator */}
                 {attachedFile && (
                   <div className="flex items-center justify-between self-start px-2.5 py-1 bg-slate-900 border border-white/[0.08] rounded-lg text-xs font-mono text-[#00D4FF] gap-2">
@@ -1205,6 +1364,7 @@ export default function Dashboard() {
             </div>
 
           </div>
+        )}
 
         </div>
 
@@ -1240,13 +1400,33 @@ export default function Dashboard() {
             <span className="text-xs font-bold font-heading text-slate-400 tracking-wider uppercase flex items-center gap-2">
               <Database size={13} className="text-[#7C5CFF]" /> Repository Details
             </span>
-            <button 
-              onClick={() => setIsRightSidebarOpen(false)}
-              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Collapse Sidebar"
-            >
-              <ChevronRight size={14} />
-            </button>
+            <div className="flex items-center gap-1">
+              {isRepositoryConnected && (
+                <button
+                  onClick={async () => {
+                    if (!connectedRepo) return;
+                    try {
+                      const res = await apiFetch(`/repos/${connectedRepo.id}/insights`);
+                      const ins = await res.json();
+                      if (ins.insights) setRepoInsights(ins.insights);
+                      // Also refetch health data
+                      fetchHealthData(connectedRepo.id);
+                    } catch {}
+                  }}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Refresh Insights"
+                >
+                  <RotateCw size={12} className="hover:rotate-45 transition-transform" />
+                </button>
+              )}
+              <button 
+                onClick={() => setIsRightSidebarOpen(false)}
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                title="Collapse Sidebar"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
           
           {!isRepositoryConnected ? (
@@ -1561,48 +1741,7 @@ export default function Dashboard() {
         )}
       </AnimatePresence>
 
-      {/* ── VOICE INPUT MODAL ── */}
-      <AnimatePresence>
-        {showVoiceModal && (
-          <>
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50" onClick={toggleRecording} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            >
-              <div className="bg-slate-950 border border-white/[0.08] rounded-2xl p-8 w-full max-w-sm text-center flex flex-col items-center gap-4">
-                <div className="w-16 h-16 rounded-full bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 flex items-center justify-center text-[#7C5CFF] animate-pulse">
-                  <Mic size={28} />
-                </div>
-                <h3 className="text-base font-bold font-heading text-white">Listening...</h3>
-                <p className="text-xs text-slate-400">Speak your question about the repository</p>
-                
-                {/* Waveform */}
-                <div className="flex items-center gap-[2px] h-8 my-2">
-                  {audioWave.map((h, i) => (
-                    <motion.div key={i} animate={{ height: h }} className="w-[3px] bg-[#7C5CFF] rounded-full" style={{ minHeight: '3px', maxHeight: '30px' }} />
-                  ))}
-                </div>
 
-                {voiceTranscript && (
-                  <div className="w-full bg-slate-900 border border-white/[0.06] rounded-xl p-3 text-sm text-slate-200 text-left font-mono min-h-[40px]">
-                    {voiceTranscript}
-                  </div>
-                )}
-
-                <button
-                  onClick={toggleRecording}
-                  className="mt-2 px-6 py-2 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-xl text-sm font-semibold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-2"
-                >
-                  <MicOff size={14} /> Stop Listening
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
 
       {/* ── DANGEROUS FIX APPROVAL MODAL ── */}
       <AnimatePresence>
@@ -2064,6 +2203,66 @@ function RepairTimeline({ steps }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── Proactive Diagnosed Issue Card Component ──
+function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
+  const [isFixed, setIsFixed] = useState(false);
+
+  return (
+    <div className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]">
+      {!isFixed ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3 items-start">
+            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 flex-shrink-0">
+              <AlertTriangle size={18} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">{issue.description}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsFixed(true)}
+            className="w-full py-2 px-3 rounded-xl bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-[#00E38C]/10"
+          >
+            Yes, Fix It
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3 items-start border-b border-white/[0.05] pb-3">
+            <div className="p-2 rounded-xl bg-[#00E38C]/10 text-[#00E38C] flex-shrink-0">
+              <CheckCircle2 size={18} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-bold text-slate-100">Fix Plan Revealed</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Please execute the recommended fix commands in your terminal.</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+              <span>Terminal Command</span>
+              <button
+                onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
+                className="hover:text-white cursor-pointer flex items-center gap-1"
+              >
+                {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+              <code>{issue.command}</code>
+            </pre>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-900/40 border border-white/[0.04] text-[11px] text-slate-400 italic">
+            Please run the commands above in your local terminal. Do not share credentials or sensitive tokens.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
