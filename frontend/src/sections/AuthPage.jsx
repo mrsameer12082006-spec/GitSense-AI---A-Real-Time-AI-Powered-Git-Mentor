@@ -62,7 +62,7 @@ export default function AuthPage({ initialMode }) {
     setLoading(true);
 
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = import.meta.env.VITE_API_URL || '';
       const endpoint = isSignUp ? `${API_URL}/api/auth/signup` : `${API_URL}/api/auth/login`;
       const payload = isSignUp
         ? { name: formData.name, email: formData.email, password: formData.password, githubLink: formData.github }

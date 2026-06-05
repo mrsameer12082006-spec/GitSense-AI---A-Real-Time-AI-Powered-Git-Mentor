@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma.js';
-import { generateToken } from '../middleware/auth.js';
+import { authenticate, generateToken } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -127,6 +127,31 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('[Auth] Login error:', err.message);
     res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+
+// ── GET /api/auth/me ────────────────────────────────────────
+router.get('/me', authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        githubLink: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    res.json({ user });
+  } catch (err) {
+    console.error('[Auth] Me error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch user profile.' });
   }
 });
 
