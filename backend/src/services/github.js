@@ -202,6 +202,7 @@ class GitHubService {
         authorAvatar: c.author?.avatar_url,
         date: c.commit.author?.date,
         time: this._timeAgo(c.commit.author?.date),
+        parents: (c.parents || []).map(p => p.sha)
       }));
 
       this._setCache(cacheKey, commits);
@@ -668,6 +669,94 @@ class GitHubService {
     } catch (err) {
       console.error('[GitHub] getCommitDetails error:', err.message);
       throw new Error('Failed to fetch commit details.');
+    }
+  }
+  /**
+   * Fetch branch-aware commits, mapping commits to their actual branch lanes.
+   */
+  async getBranchAwareCommits(owner, repo, defaultBranch = 'main', token = null) {
+    const cacheKey = `branch_commits:${owner}/${repo}`;
+    const cached = this._getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+      // 1. Get branches
+      const rawBranches = await this.getBranches(owner, repo, token);
+      if (rawBranches.length === 0) {
+        const standard = await this.getCommits(owner, repo, token, 30);
+        return { commits: standard, branches: [{ name: defaultBranch, color: '#7C5CFF' }] };
+      }
+
+      // 2. Prioritize default branch, then others, and limit to top 5
+      const prioritizedBranches = [...rawBranches].sort((a, b) => {
+        if (a.name === defaultBranch) return -1;
+        if (b.name === defaultBranch) return 1;
+        return 0;
+      }).slice(0, 5);
+
+      const colors = ['#7C5CFF', '#00D4FF', '#10B981', '#F59E0B', '#EF4444', '#EC4899', '#3B82F6'];
+      const branchList = prioritizedBranches.map((b, idx) => ({
+        name: b.name,
+        color: colors[idx % colors.length],
+        sha: b.sha
+      }));
+
+      // 3. Fetch commits for each branch
+      const branchCommitsResults = await Promise.allSettled(
+        branchList.map(async (b) => {
+          const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits`, {
+            headers: this._headers(token),
+            params: { sha: b.name, per_page: 20 },
+          });
+          return {
+            branchName: b.name,
+            commits: data
+          };
+        })
+      );
+
+      // 4. Merge commits and attribute to branches
+      const allCommitsMap = new Map();
+      const commitBranchMap = new Map();
+
+      for (let i = branchCommitsResults.length - 1; i >= 0; i--) {
+        const result = branchCommitsResults[i];
+        if (result.status === 'fulfilled') {
+          const { branchName, commits } = result.value;
+          for (const c of commits) {
+            commitBranchMap.set(c.sha, branchName);
+            allCommitsMap.set(c.sha, c);
+          }
+        }
+      }
+
+      const mergedCommits = Array.from(allCommitsMap.values()).map((c) => {
+        const branchName = commitBranchMap.get(c.sha) || defaultBranch;
+        const branchObj = branchList.find(b => b.name === branchName);
+        return {
+          sha: c.sha,
+          hash: c.sha.substring(0, 7),
+          message: c.commit.message.split('\n')[0],
+          author: c.commit.author?.name || c.author?.login || 'Unknown',
+          authorAvatar: c.author?.avatar_url,
+          date: c.commit.author?.date,
+          time: this._timeAgo(c.commit.author?.date),
+          branch: branchName,
+          color: branchObj ? branchObj.color : '#7C5CFF',
+          parents: (c.parents || []).map(p => p.sha)
+        };
+      });
+
+      mergedCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
+      const finalCommits = mergedCommits.slice(0, 30);
+
+      const result = { commits: finalCommits, branches: branchList };
+      this._setCache(cacheKey, result);
+      return result;
+    } catch (err) {
+      console.error('[GitHub] getBranchAwareCommits error:', err.message);
+      const standard = await this.getCommits(owner, repo, token, 30);
+      return { commits: standard, branches: [{ name: defaultBranch, color: '#7C5CFF' }] };
     }
   }
 }

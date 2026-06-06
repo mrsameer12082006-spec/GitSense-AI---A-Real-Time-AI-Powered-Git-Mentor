@@ -615,8 +615,13 @@ router.get('/:id/commits', async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     const token = user?.githubToken || null;
 
-    const commits = await githubService.getCommits(repository.owner, repository.name, token, 30);
-    res.json({ commits });
+    const result = await githubService.getBranchAwareCommits(
+      repository.owner,
+      repository.name,
+      repository.defaultBranch,
+      token
+    );
+    res.json(result);
   } catch (err) {
     console.error('[Repos] Fetch commits error:', err);
     res.status(500).json({ error: 'Failed to fetch commits.' });

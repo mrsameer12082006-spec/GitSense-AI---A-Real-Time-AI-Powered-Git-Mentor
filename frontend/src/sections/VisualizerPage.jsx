@@ -103,6 +103,7 @@ export default function VisualizerPage() {
 
   const [connectedRepo, setConnectedRepo] = useState(null);
   const [commits, setCommits] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [repoInsights, setRepoInsights] = useState(null);
   const [activeSidebarTab, setActiveSidebarTab] = useState('insights'); // insights, activity
 
@@ -134,6 +135,7 @@ export default function VisualizerPage() {
             .then(r => r.json())
             .then(cData => {
               if (cData.commits) setCommits(cData.commits);
+              if (cData.branches) setBranches(cData.branches);
             })
             .catch(() => {});
 
@@ -514,6 +516,7 @@ export default function VisualizerPage() {
                 state={graphState} 
                 onNodeSelect={handleNodeSelect} 
                 commits={commits}
+                branches={branches}
               />
             </div>
 
@@ -719,6 +722,7 @@ export default function VisualizerPage() {
                       const cRes = await apiFetch(`/repos/${connectedRepo.id}/commits`);
                       const cData = await cRes.json();
                       if (cData.commits) setCommits(cData.commits);
+                      if (cData.branches) setBranches(cData.branches);
                     } catch {}
                   }}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -945,10 +949,11 @@ export default function VisualizerPage() {
                         if (res.ok && data.repository) {
                           setConnectedRepo(data.repository);
                           setShowConnectSuccess(true);
-                          // Fetch commits
-                          apiFetch(`/repos/${data.repository.id}/commits`).then(r => r.json()).then(cData => {
-                            if (cData.commits) setCommits(cData.commits);
-                          }).catch(() => {});
+                           // Fetch commits
+                           apiFetch(`/repos/${data.repository.id}/commits`).then(r => r.json()).then(cData => {
+                             if (cData.commits) setCommits(cData.commits);
+                             if (cData.branches) setBranches(cData.branches);
+                           }).catch(() => {});
                           // Fetch insights
                           apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
                             if (ins.insights) setRepoInsights(ins.insights);

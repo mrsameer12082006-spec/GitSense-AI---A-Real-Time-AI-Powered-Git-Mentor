@@ -175,7 +175,7 @@ const BRANCH_TYPES = [
   { name: 'hotfix/bug', color: '#EF4444' }
 ];
 
-export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] }) {
+export default function GitGraph({ state = 'normal', onNodeSelect, commits = [], branches = [] }) {
   const [selectedNode, setSelectedNode] = useState(null);
   
   // Interactive Pan and Zoom States
@@ -192,41 +192,17 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
   // Chronological order: oldest to newest
   const sortedCommits = hasRealCommits ? [...commits].reverse() : [];
   
+  const displayBranchTypes = (hasRealCommits && branches && branches.length > 0)
+    ? branches
+    : BRANCH_TYPES;
+
   const displayCommits = hasRealCommits
     ? sortedCommits.map((c, idx) => {
-        const msg = c.message.toLowerCase();
-        let trackName = 'develop';
-        let trackY = 280;
-        let trackColor = '#F59E0B';
+        const branchIndex = displayBranchTypes.findIndex(b => b.name === c.branch);
+        const trackY = branchIndex !== -1 ? 100 + branchIndex * 60 : 180;
+        const trackColor = branchIndex !== -1 ? displayBranchTypes[branchIndex].color : '#7C5CFF';
         
-        if (msg.startsWith('merge') || msg.includes('merge branch')) {
-          trackName = 'main';
-          trackY = 180;
-          trackColor = '#7C5CFF';
-        } else if (msg.startsWith('feat')) {
-          trackName = 'feature/auth';
-          trackY = 100;
-          trackColor = '#00D4FF';
-        } else if (msg.startsWith('fix')) {
-          trackName = 'hotfix/bug';
-          trackY = 330;
-          trackColor = '#EF4444';
-        } else if (msg.startsWith('docs') || msg.startsWith('chore')) {
-          trackName = 'develop';
-          trackY = 280;
-          trackColor = '#F59E0B';
-        } else {
-          const trackIdx = idx % 3;
-          if (trackIdx === 0) {
-            trackName = 'main';
-            trackY = 180;
-            trackColor = '#7C5CFF';
-          } else if (trackIdx === 1) {
-            trackName = 'feature/cart';
-            trackY = 230;
-            trackColor = '#10B981';
-          }
-        }
+        const isHead = idx === sortedCommits.length - 1; // HEAD is the youngest/newest commit
 
         return {
           ...c,
@@ -234,8 +210,9 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
           x: 120 + idx * 140,
           y: trackY,
           color: trackColor,
-          branch: trackName,
-          safety: c.safety || (trackName === 'hotfix/bug' ? 85 : 100),
+          branch: c.branch,
+          head: isHead,
+          safety: c.safety || (c.branch === 'hotfix/bug' || c.branch?.includes('hotfix') ? 85 : 100),
           purpose: c.message,
           explanation: `Commit by ${c.author} (${c.time || 'recent'}).`,
         };
@@ -244,26 +221,55 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
 
   // Set default selected commit on load and when workflow state toggles or commits change
   useEffect(() => {
-    if (hasRealCommits && displayCommits.length > 0) {
-      const defaultNode = displayCommits[displayCommits.length - 1]; // HEAD tip
-      setSelectedNode(defaultNode);
-      onNodeSelect?.(defaultNode);
-    } else {
-      const defaultNode = ALL_COMMITS.find(c => c.hash === 'd9fa002') || ALL_COMMITS[ALL_COMMITS.length - 1];
-      setSelectedNode(defaultNode);
+    if (displayCommits && displayCommits.length > 0) {
+      const headCommit = displayCommits.find(c => c.head) || displayCommits[displayCommits.length - 1];
+      
+      let defaultNode = { ...headCommit };
+      if (hasRealCommits && defaultNode) {
+        if (state === 'conflict') {
+          defaultNode.safety = 38;
+          defaultNode.conflictFiles = ['src/App.jsx', 'package.json'];
+          defaultNode.explanation = '⚠️ Merge Conflict detected: app routing logic and configuration changes clash with remote main branch changes. Manual conflict resolution required.';
+        } else if (state === 'diverged') {
+          defaultNode.explanation = '🔗 Commit is behind remote main branch by 2 commits. Perform a pull rebase to sync branch heads.';
+        }
+      } else if (!hasRealCommits) {
+        const mockTarget = state === 'conflict' 
+          ? (displayCommits.find(c => c.hash === 'z9y8x7w') || headCommit)
+          : (displayCommits.find(c => c.hash === 'd9fa002') || headCommit);
+        
+        defaultNode = { ...mockTarget };
+        if (state === 'conflict' && defaultNode.hash === 'z9y8x7w') {
+          defaultNode.safety = 35;
+          defaultNode.conflictFiles = ['auth.js', 'middleware.js'];
+          defaultNode.explanation = '⚠️ Conflict detected: auth.js and middleware.js were modified simultaneously on origin and local main branch. Manual resolution required.';
+        }
+      }
+      setSelectedNode(headCommit);
       onNodeSelect?.(defaultNode);
     }
   }, [state, commits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNodeClick = (node) => {
-    // Custom state modifications depending on workflow selection
     let modifiedNode = { ...node };
-    if (state === 'conflict' && node.hash === 'z9y8x7w') {
-      modifiedNode.safety = 35;
-      modifiedNode.conflictFiles = ['auth.js', 'middleware.js'];
-      modifiedNode.explanation = '⚠️ Conflict detected: auth.js and middleware.js were modified simultaneously on origin and local main branch. Manual resolution required.';
-    } else if (state === 'diverged' && node.branch === 'feature/auth') {
-      modifiedNode.explanation = '🔗 Commit belongs to origin/feature/auth. Needs a pull and rebase to merge safely.';
+    const headCommit = displayCommits.find(c => c.head) || displayCommits[displayCommits.length - 1];
+
+    if (hasRealCommits && headCommit) {
+      if (state === 'conflict' && node.id === headCommit.id) {
+        modifiedNode.safety = 38;
+        modifiedNode.conflictFiles = ['src/App.jsx', 'package.json'];
+        modifiedNode.explanation = '⚠️ Merge Conflict detected: app routing logic and configuration changes clash with remote main branch changes. Manual conflict resolution required.';
+      } else if (state === 'diverged' && node.id === headCommit.id) {
+        modifiedNode.explanation = '🔗 Commit is behind remote main branch by 2 commits. Perform a pull rebase to sync branch heads.';
+      }
+    } else {
+      if (state === 'conflict' && node.hash === 'z9y8x7w') {
+        modifiedNode.safety = 35;
+        modifiedNode.conflictFiles = ['auth.js', 'middleware.js'];
+        modifiedNode.explanation = '⚠️ Conflict detected: auth.js and middleware.js were modified simultaneously on origin and local main branch. Manual resolution required.';
+      } else if (state === 'diverged' && node.branch === 'feature/auth') {
+        modifiedNode.explanation = '🔗 Commit belongs to origin/feature/auth. Needs a pull and rebase to merge safely.';
+      }
     }
     
     setSelectedNode(node);
@@ -310,35 +316,47 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
 
     if (hasRealCommits) {
       const dynamicPaths = [];
-      for (let i = 0; i < displayCommits.length - 1; i++) {
-        const current = displayCommits[i];
-        const next = displayCommits[i + 1];
-        if (current.y === next.y) {
-          dynamicPaths.push(
-            <line 
-              key={`path-${i}`} 
-              x1={current.x} 
-              y1={current.y} 
-              x2={next.x} 
-              y2={next.y} 
-              stroke={current.color} 
-              strokeWidth={3.5} 
-            />
-          );
-        } else {
-          const midX = (current.x + next.x) / 2;
-          dynamicPaths.push(
-            <path
-              key={`path-${i}`}
-              d={`M ${current.x} ${current.y} C ${midX} ${current.y}, ${midX} ${next.y}, ${next.x} ${next.y}`}
-              fill="none"
-              stroke={next.color}
-              strokeWidth={2.5}
-              opacity={0.8}
-            />
-          );
+      const commitMap = new Map();
+      displayCommits.forEach(c => commitMap.set(c.sha, c));
+
+      displayCommits.forEach((c) => {
+        if (c.parents && c.parents.length > 0) {
+          c.parents.forEach((parentSha) => {
+            const parent = commitMap.get(parentSha);
+            if (parent) {
+              const key = `path-${parent.sha}-${c.sha}`;
+              const isHeadConflict = state === 'conflict' && c.head;
+              const strokeColor = isHeadConflict ? '#EF4444' : c.color;
+              
+              if (parent.y === c.y) {
+                dynamicPaths.push(
+                  <line 
+                    key={key} 
+                    x1={parent.x} 
+                    y1={parent.y} 
+                    x2={c.x} 
+                    y2={c.y} 
+                    stroke={strokeColor} 
+                    strokeWidth={3.0} 
+                  />
+                );
+              } else {
+                const midX = (parent.x + c.x) / 2;
+                dynamicPaths.push(
+                  <path
+                    key={key}
+                    d={`M ${parent.x} ${parent.y} C ${midX} ${parent.y}, ${midX} ${c.y}, ${c.x} ${c.y}`}
+                    fill="none"
+                    stroke={strokeColor}
+                    strokeWidth={2.2}
+                    opacity={0.85}
+                  />
+                );
+              }
+            }
+          });
         }
-      }
+      });
       return <g>{dynamicPaths}</g>;
     }
 
@@ -482,7 +500,7 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
           
           {/* Legend Pills */}
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-400">
-            {BRANCH_TYPES.map(branch => (
+            {displayBranchTypes.map(branch => (
               <div key={branch.name} className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: branch.color }} />
                 <span>{branch.name}</span>
@@ -573,8 +591,8 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
             }}
           >
             
-            {/* ── BRANCH ANNOTATIONS (3 commits ago / Branch point) */}
-            {!hasRealCommits && (
+            {/* ── BRANCH ANNOTATIONS (3 commits ago / Branch point or Diverged Alert) */}
+            {!hasRealCommits ? (
               <>
                 <line x1={220} y1={105} x2={220} y2={170} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3 3" />
                 <g>
@@ -583,13 +601,26 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
                   <text x={220} y={87} fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="sans-serif">Branch point</text>
                 </g>
               </>
+            ) : (
+              state === 'diverged' && displayCommits.length > 0 && (
+                (() => {
+                  const headCommit = displayCommits.find(c => c.head) || displayCommits[displayCommits.length - 1];
+                  return (
+                    <g transform={`translate(${headCommit.x - 110}, ${headCommit.y - 70})`}>
+                      <rect width={220} height={42} rx={6} fill="#0b0f19" fillOpacity={0.9} stroke="#EF4444" strokeWidth={1} />
+                      <text x={110} y={17} fill="#EF4444" fontSize={9.5} textAnchor="middle" fontWeight="semibold" fontFamily="sans-serif">⚠️ Local branch is behind by 2 commits</text>
+                      <text x={110} y={32} fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="sans-serif">Run 'git pull --rebase' to resolve</text>
+                    </g>
+                  );
+                })()
+              )
             )}
 
             {/* ── PATH LINES */}
             {renderPaths()}
 
             {/* ── BRANCH PILLS OVERLAY */}
-            {!hasRealCommits && (
+            {!hasRealCommits ? (
               <>
                 {/* main label */}
                 <g transform="translate(30, 168)" className="pointer-events-none">
@@ -622,12 +653,36 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] 
                   <text x={40} y={15} fill="#EF4444" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">hotfix/bug</text>
                 </g>
               </>
+            ) : (
+              <g className="pointer-events-none">
+                {displayBranchTypes.map((branch, idx) => {
+                  const trackY = 100 + idx * 60;
+                  const pillWidth = Math.max(70, branch.name.length * 6.8 + 16);
+                  return (
+                    <g key={`branch-pill-${branch.name}`}>
+                      {/* Lane Track Background line */}
+                      <line x1={20} y1={trackY} x2={940} y2={trackY} stroke={branch.color} strokeWidth={1.0} strokeDasharray="3 6" opacity={0.22} />
+                      {/* Branch Name Badge */}
+                      <g transform={`translate(20, ${trackY - 12})`}>
+                        <rect width={pillWidth} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                        <rect width={pillWidth} height={24} rx={6} fill={`${branch.color}1c`} stroke={branch.color} strokeWidth={1.2} />
+                        <text x={pillWidth / 2} y={15} fill={branch.color} fontSize={10} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">
+                          {branch.name}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                })}
+              </g>
             )}
 
             {/* ── NODES */}
             {displayCommits.map((node) => {
               const isSelected = selectedNode?.id === node.id;
-              const isConflictStateMerge = state === 'conflict' && node.hash === 'z9y8x7w';
+              const isConflictStateMerge = state === 'conflict' && (
+                (!hasRealCommits && node.hash === 'z9y8x7w') ||
+                (hasRealCommits && node.head)
+              );
               
               let fill = node.color;
               if (isConflictStateMerge) {
