@@ -216,7 +216,8 @@ router.get('/github', (_req, res) => {
   }
 
   const scope = 'user:email,repo,read:org';
-  const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=${scope}`;
+  // Omit explicit `redirect_uri` so GitHub uses the app's registered callback URL.
+  const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=${scope}`;
 
   res.json({ url });
 });
@@ -242,9 +243,12 @@ router.get('/github/callback', async (req, res) => {
       { headers: { Accept: 'application/json' } }
     );
 
+    // Debug: log token response when things fail to help diagnose redirect/credential issues
     const accessToken = tokenResponse.data.access_token;
     if (!accessToken) {
-      return res.status(400).json({ error: 'Failed to obtain access token from GitHub.' });
+      console.error('[Auth] GitHub token response:', tokenResponse.data);
+      const message = tokenResponse.data.error_description || tokenResponse.data.error || 'Failed to obtain access token from GitHub.';
+      return res.status(400).json({ error: message });
     }
 
     // Fetch user info from GitHub
