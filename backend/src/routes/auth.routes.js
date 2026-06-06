@@ -156,6 +156,55 @@ router.get('/me', authenticate, async (req, res) => {
   }
 });
 
+// ── PUT /api/auth/profile ────────────────────────────────────
+// Update user profile details (name, email, githubLink)
+router.put('/profile', authenticate, async (req, res) => {
+  try {
+    const { name, email, githubLink } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Name and email are required.' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email is already taken by another user
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        email: normalizedEmail,
+        NOT: { id: req.user.id }
+      }
+    });
+
+    if (existingUser) {
+      return res.status(409).json({ error: 'An account with this email already exists.' });
+    }
+
+    // Update user in database
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        name: name.trim(),
+        email: normalizedEmail,
+        githubLink: githubLink ? githubLink.trim() : null
+      }
+    });
+
+    res.json({
+      message: 'Profile updated successfully!',
+      user: {
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        githubLink: updatedUser.githubLink
+      }
+    });
+  } catch (err) {
+    console.error('[Auth] Update profile error:', err.message);
+    res.status(500).json({ error: 'Failed to update profile.' });
+  }
+});
+
 // ── GET /api/auth/github ────────────────────────────────────
 // Redirects user to GitHub OAuth authorization page
 router.get('/github', (_req, res) => {
