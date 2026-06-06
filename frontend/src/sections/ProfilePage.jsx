@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import SubPageLayout from '../components/SubPageLayout';
-import { User, Mail, Save, Check } from 'lucide-react';
+import { User, Mail, Save, Check, AlertCircle } from 'lucide-react';
 
 const GithubIcon = ({ size = 15, className = "" }) => (
   <svg
@@ -20,129 +20,152 @@ const GithubIcon = ({ size = 15, className = "" }) => (
 );
 
 export default function ProfilePage() {
-  const [name, setName] = useState(() => {
-    try {
-      const u = localStorage.getItem('gitsense_user');
-      if (u) {
-        const parsed = JSON.parse(u);
-        if (parsed && parsed.name) return parsed.name;
-      }
-    } catch (e) {}
-    return localStorage.getItem('gitsense_profile_name') || 'Kartik Sharma';
-  });
-
-  const [email, setEmail] = useState(() => {
-    try {
-      const u = localStorage.getItem('gitsense_user');
-      if (u) {
-        const parsed = JSON.parse(u);
-        if (parsed && parsed.email) return parsed.email;
-      }
-    } catch (e) {}
-    return localStorage.getItem('gitsense_profile_email') || 'kartik.s1280@gmail.com';
-  });
-
-  const [github, setGithub] = useState(() => {
-    try {
-      const u = localStorage.getItem('gitsense_user');
-      if (u) {
-        const parsed = JSON.parse(u);
-        if (parsed && parsed.githubLink !== undefined) return parsed.githubLink;
-      }
-    } catch (e) {}
-    return localStorage.getItem('gitsense_profile_github') || 'https://github.com/kartik1280';
-  });
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [github, setGithub] = useState('');
   
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
 
+  // Load user profile on mount
   useEffect(() => {
-    const token = localStorage.getItem('gitsense_token');
-    if (!token) return;
-
-    const API_URL = import.meta.env.VITE_API_URL || '';
-    fetch(`${API_URL}/api/auth/me`, {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    })
-      .then(res => {
-        if (res.status === 401) {
-          localStorage.removeItem('gitsense_token');
-          window.location.hash = '#login';
-          throw new Error('Session expired');
+    const loadProfile = async () => {
+      try {
+        const token = localStorage.getItem('gitsense_token');
+        if (!token) {
+          setError('Session expired. Please log in again.');
+          setTimeout(() => window.location.hash = '#login', 1500);
+          return;
         }
-        return res.json();
-      })
-      .then(data => {
-        if (data.user) {
-          setName(data.user.name || '');
-          setEmail(data.user.email || '');
-          setGithub(data.user.githubLink || '');
-          // Sync with localStorage
-          localStorage.setItem('gitsense_user', JSON.stringify({
-            ...data.user,
-            avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
-          }));
-        }
-      })
-      .catch(err => {
-        console.error('Error fetching user profile:', err);
-      });
-  }, []);
 
-  const handleSave = async (e) => {
-    e.preventDefault();
-    const token = localStorage.getItem('gitsense_token');
-    const API_URL = import.meta.env.VITE_API_URL || '';
-
-    // Optimistically update legacy keys
-    localStorage.setItem('gitsense_profile_name', name);
-    localStorage.setItem('gitsense_profile_email', email);
-    localStorage.setItem('gitsense_profile_github', github);
-
-    try {
-      if (token) {
-        const res = await fetch(`${API_URL}/api/auth/profile`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            name,
-            email,
-            githubLink: github
-          })
+        const API_URL = import.meta.env.VITE_API_URL || '';
+        const res = await fetch(`${API_URL}/api/auth/me`, {
+          headers: { 'Authorization': `Bearer ${token}` }
         });
 
         if (res.status === 401) {
           localStorage.removeItem('gitsense_token');
+          localStorage.removeItem('gitsense_user');
           window.location.hash = '#login';
           return;
         }
 
         if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || 'Failed to update profile');
+          throw new Error('Failed to load profile');
         }
 
         const data = await res.json();
         if (data.user) {
+          setName(data.user.name || '');
+          setEmail(data.user.email || '');
+          setGithub(data.user.githubLink || '');
+          
           // Sync with localStorage
           localStorage.setItem('gitsense_user', JSON.stringify({
             ...data.user,
             avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
           }));
         }
+      } catch (err) {
+        console.error('Error loading profile:', err);
+        setError('Failed to load profile. Please refresh the page.');
+      } finally {
+        setLoading(false);
       }
+    };
+
+    loadProfile();
+  }, []);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSuccessMsg('');
+
+    // Validate inputs
+    if (!name.trim()) {
+      setError('Name is required');
+      return;
+    }
+    if (!email.trim()) {
+      setError('Email is required');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const token = localStorage.getItem('gitsense_token');
+      const API_URL = import.meta.env.VITE_API_URL || '';
+
+      const res = await fetch(`${API_URL}/api/auth/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          githubLink: github.trim() || ''
+        })
+      });
+
+      if (res.status === 401) {
+        localStorage.removeItem('gitsense_token');
+        localStorage.removeItem('gitsense_user');
+        window.location.hash = '#login';
+        return;
+      }
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to update profile');
+      }
+
+      const data = await res.json();
+      if (data.user) {
+        // Sync with localStorage
+        localStorage.setItem('gitsense_user', JSON.stringify({
+          ...data.user,
+          avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
+        }));
+      }
+
       setIsSaved(true);
+      setSuccessMsg('Profile updated successfully!');
       setTimeout(() => setIsSaved(false), 2500);
+      setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err) {
-      alert(err.message || 'Failed to save changes.');
+      console.error('Error saving profile:', err);
+      setError(err.message || 'Failed to save profile');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const initial = name.trim().charAt(0).toUpperCase() || 'K';
+  const initial = name.trim().charAt(0).toUpperCase() || 'U';
+
+  if (loading) {
+    return (
+      <SubPageLayout activeTab="">
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-1 text-left">
+            <h2 className="text-2xl font-extrabold tracking-tight text-white font-heading">User Profile</h2>
+            <p className="text-sm text-slate-400">View and update your personal developer details.</p>
+          </div>
+          <div className="gitsense-card p-8 flex items-center justify-center border-white/[0.08] bg-[#0b1220]/70 h-64">
+            <div className="text-center">
+              <div className="animate-spin w-8 h-8 border-2 border-[#7C5CFF] border-t-transparent rounded-full mx-auto mb-2"></div>
+              <p className="text-slate-400">Loading profile...</p>
+            </div>
+          </div>
+        </div>
+      </SubPageLayout>
+    );
+  }
 
   return (
     <SubPageLayout activeTab="">
@@ -153,6 +176,22 @@ export default function ProfilePage() {
           <h2 className="text-2xl font-extrabold tracking-tight text-white font-heading">User Profile</h2>
           <p className="text-sm text-slate-400">View and update your personal developer details.</p>
         </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="gitsense-card p-4 flex items-center gap-3 border-red-500/30 bg-red-950/20 rounded-lg">
+            <AlertCircle size={18} className="text-red-400 flex-shrink-0" />
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        )}
+
+        {/* Success Message */}
+        {successMsg && (
+          <div className="gitsense-card p-4 flex items-center gap-3 border-[#00E38C]/30 bg-[#00E38C]/10 rounded-lg">
+            <Check size={18} className="text-[#00E38C] flex-shrink-0" />
+            <p className="text-sm text-[#00E38C]">{successMsg}</p>
+          </div>
+        )}
 
         {/* Card */}
         <div className="gitsense-card p-8 flex flex-col md:flex-row gap-8 items-center border-white/[0.08] bg-[#0b1220]/70">
@@ -179,23 +218,24 @@ export default function ProfilePage() {
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600"
+                  disabled={saving}
+                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600 disabled:opacity-50"
                 />
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-mono font-bold text-slate-400 uppercase">Email Address</label>
-              <div className="relative flex items-center bg-slate-950/80 border border-white/[0.06] hover:border-white/[0.12] focus-within:border-[#7C5CFF]/60 rounded-xl px-3.5 py-2.5 transition-all">
+              <label className="text-xs font-mono font-bold text-slate-400 uppercase">Email Address (Read-Only)</label>
+              <div className="relative flex items-center bg-slate-950/80 border border-white/[0.06] rounded-xl px-3.5 py-2.5 opacity-60">
                 <Mail size={15} className="text-slate-500 mr-2.5" />
                 <input
                   type="email"
-                  required
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600"
+                  disabled={true}
+                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600 cursor-not-allowed"
                 />
               </div>
+              <p className="text-xs text-slate-500">Email cannot be changed in this version</p>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -204,22 +244,29 @@ export default function ProfilePage() {
                 <GithubIcon size={15} className="text-slate-500 mr-2.5" />
                 <input
                   type="url"
-                  required
                   value={github}
                   onChange={(e) => setGithub(e.target.value)}
-                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600"
+                  disabled={saving}
+                  placeholder="https://github.com/username"
+                  className="flex-1 bg-transparent border-none outline-none text-sm text-slate-100 placeholder-slate-600 disabled:opacity-50"
                 />
               </div>
             </div>
 
             <button
               type="submit"
-              className="mt-2 btn btn-primary flex items-center justify-center gap-2 self-start py-2.5 px-6 !text-sm cursor-pointer"
+              disabled={saving}
+              className="mt-2 btn btn-primary flex items-center justify-center gap-2 self-start py-2.5 px-6 !text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSaved ? (
                 <>
                   <Check size={15} className="text-[#00E38C]" />
                   <span>Profile Saved</span>
+                </>
+              ) : saving ? (
+                <>
+                  <div className="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full"></div>
+                  <span>Saving...</span>
                 </>
               ) : (
                 <>
