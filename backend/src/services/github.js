@@ -564,7 +564,7 @@ class GitHubService {
       failedWorkflows.forEach(run => {
         score -= 10;
         issues.push({
-          id: `failed-ci-${run.name.replace(/\s+/g, '-').toLowerCase()}`,
+          id: `failed-ci-${run.name.replace(/\s+/g, '-').toLowerCase()}-${run.branch.replace(/\s+/g, '-').toLowerCase()}-${new Date(run.createdAt).getTime()}`,
           type: 'ci_failure',
           title: `CI/CD Build Failure: ${run.name}`,
           description: `The latest workflow run on branch '${run.branch}' failed. Inspect logs for details.`,

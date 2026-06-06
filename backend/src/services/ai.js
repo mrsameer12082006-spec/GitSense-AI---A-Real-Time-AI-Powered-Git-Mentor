@@ -13,22 +13,16 @@ class AIService {
   }
 
   /**
-   * Helper to dynamically get config based on API key prefix.
-   * Redirects gsk_ keys to Groq API.
+   * Helper to dynamically get config for TrueGen AI.
+   * Groq fallback has been permanently removed.
    */
   _getAIConfig() {
     const apiKey = process.env.TRUGEN_API_KEY || process.env.GROQ_API_KEY;
-    const isGroq = apiKey && apiKey.startsWith('gsk_');
     
-    const baseURL = isGroq 
-      ? 'https://api.groq.com/openai/v1'
-      : (process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1');
+    const baseURL = process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1';
+    const model = process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile';
       
-    const model = isGroq
-      ? 'llama-3.3-70b-versatile'
-      : (process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile');
-      
-    return { apiKey, baseURL, model, isGroq };
+    return { apiKey, baseURL, model, isGroq: false };
   }
 
   /**

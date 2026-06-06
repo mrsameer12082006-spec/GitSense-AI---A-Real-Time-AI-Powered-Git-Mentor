@@ -4,6 +4,9 @@ import { authenticate } from '../middleware/auth.js';
 import aiService from '../services/ai.js';
 import repoContextService from '../services/repoContext.js';
 import githubService from '../services/github.js';
+import userMemoryService from '../services/userMemory.js';
+import ragService from '../services/rag.js';
+import webSearchService from '../services/webSearch.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -98,6 +101,55 @@ router.post('/', async (req, res) => {
       unifiedContext += `${repoContext || 'Repository connection is active, but live metadata is loading.'}\n\n`;
     } else {
       unifiedContext += `No connected repository. Answer based on general Git knowledge.\n\n`;
+    }
+
+    // 2. Add User Memory Context (Phase 4)
+    let crossConversationContext = '';
+    let repositoryMemoryContext = '';
+    try {
+      crossConversationContext = await userMemoryService.buildCrossConversationContext(req.user.id, conversation?.id);
+      if (repoRecord) {
+        repositoryMemoryContext = await userMemoryService.buildRepositoryMemoryContext(req.user.id, repoRecord.id);
+      }
+    } catch (err) {
+      console.error('[Chat] Failed to build user memory context:', err.message);
+    }
+
+    if (crossConversationContext || repositoryMemoryContext) {
+      unifiedContext += `## 2. PAST CONVERSATION MEMORY:\n`;
+      if (crossConversationContext) unifiedContext += crossConversationContext;
+      if (repositoryMemoryContext) unifiedContext += repositoryMemoryContext;
+      unifiedContext += `\n`;
+    }
+
+    // 3. Add RAG Context (Phase 4)
+    let ragContext = '';
+    try {
+      const relevantChunks = await ragService.retrieveRelevantChunks(message, 3);
+      ragContext = ragService.formatChunksForContext(relevantChunks);
+    } catch (err) {
+      console.error('[Chat] Failed to retrieve RAG chunks:', err.message);
+    }
+
+    if (ragContext) {
+      unifiedContext += `## 3. PDF KNOWLEDGE BASE CONTEXT:\n${ragContext}\n`;
+    }
+
+    // 4. Add Web Search fallback context (Phase 4)
+    let webSearchContext = '';
+    const queryLower = message.toLowerCase();
+    const shouldSearch = !repoRecord || queryLower.includes('how') || queryLower.includes('why') || queryLower.includes('error') || queryLower.includes('failed') || queryLower.includes('git') || queryLower.includes('github') || queryLower.includes('setup') || queryLower.includes('config');
+    if (shouldSearch) {
+      try {
+        const searchResults = await webSearchService.search(message);
+        webSearchContext = webSearchService.formatResultsForContext(searchResults);
+      } catch (err) {
+        console.error('[Chat] Web search failed:', err.message);
+      }
+    }
+
+    if (webSearchContext) {
+      unifiedContext += `## 4. WEB SEARCH FALLBACK CONTEXT:\n${webSearchContext}\n`;
     }
 
     // Set headers for Server-Sent Events
