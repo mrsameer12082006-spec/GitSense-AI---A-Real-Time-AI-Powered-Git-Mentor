@@ -202,6 +202,33 @@ The GitHub OAuth implementation is complete but requires manual testing with rea
 10. Click Disconnect → revokes GitHub access
 11. Test fallback: Use public repos from signupsigning githubLink when no OAuth connected
 
+### GitHub OAuth Test Results (Observed)
+
+- **Status:** Partially successful — OAuth endpoints are implemented and reachable, but the token exchange is currently failing in some manual runs.
+- **What currently works:**
+  - The GitHub authorization page loads (no longer shows the initial "Invalid redirect_uri" error after removing the explicit `redirect_uri` parameter).
+  - The `/api/github/connect` and `/api/github/callback` endpoints are reachable and respond.
+  - CSRF `state` handling and frontend redirect flow are wired and tested.
+- **What failed during manual test:**
+  - After authorizing the app on GitHub, the callback returned: `{"error":"Failed to obtain access token from GitHub."}`.
+  - Backend now logs the full GitHub token response on failure (see `backend/src/routes/auth.routes.js` change), which will show the exact `error` / `error_description` returned by GitHub.
+- **Likely causes to investigate:**
+  1. Invalid or mismatched `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in `backend/.env` (most common).
+  2. Authorization code already used or expired (GitHub returns `bad_verification_code`). Retry immediately after consenting.
+  3. GitHub App configuration problem (callback URL mismatch or app type misconfigured).
+  4. Network issues or unexpected response format from GitHub.
+- **Actions taken:**
+  - Removed explicit `redirect_uri` parameters from both the authorize URL and token-exchange payload so GitHub validates against the app's registered callback URL.
+  - Added detailed logging for the token exchange response to surface GitHub's error messages.
+  - Restarted backend and frontend and re-ran the manual OAuth flow.
+- **Recommended next steps to resolve:**
+  1. Verify the GitHub OAuth App settings at https://github.com/settings/developers and ensure the **Authorization callback URL** is exactly `http://localhost:5000/api/github/callback`.
+ 2. Confirm `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `backend/.env` match the values from your GitHub OAuth App.
+ 3. Re-run the flow and, if it fails, copy the backend log output for the token response (the backend now prints `tokenResponse.data`) and share it here so I can diagnose further.
+ 4. If GitHub returns `bad_verification_code`, try a fresh authorization (do not reuse the same URL/code), and ensure the server's time is correct (clock skew can occasionally affect short-lived codes).
+
+**Current conclusion:** OAuth integration is functionally wired and the redirect mismatch was fixed; the remaining blocker is the token exchange failure which is most likely a configuration/credential issue. Once the token exchange succeeds the rest of the import flow should work end-to-end.
+
 ## Quick Start Guide
 
 ### Prerequisites
