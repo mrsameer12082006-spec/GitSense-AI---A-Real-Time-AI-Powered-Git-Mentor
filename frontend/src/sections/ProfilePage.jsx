@@ -20,19 +20,126 @@ const GithubIcon = ({ size = 15, className = "" }) => (
 );
 
 export default function ProfilePage() {
-  const [name, setName] = useState(() => localStorage.getItem('gitsense_profile_name') || 'Kartik Sharma');
-  const [email, setEmail] = useState(() => localStorage.getItem('gitsense_profile_email') || 'kartik.s1280@gmail.com');
-  const [github, setGithub] = useState(() => localStorage.getItem('gitsense_profile_github') || 'https://github.com/kartik1280');
+  const [name, setName] = useState(() => {
+    try {
+      const u = localStorage.getItem('gitsense_user');
+      if (u) {
+        const parsed = JSON.parse(u);
+        if (parsed && parsed.name) return parsed.name;
+      }
+    } catch (e) {}
+    return localStorage.getItem('gitsense_profile_name') || 'Kartik Sharma';
+  });
+
+  const [email, setEmail] = useState(() => {
+    try {
+      const u = localStorage.getItem('gitsense_user');
+      if (u) {
+        const parsed = JSON.parse(u);
+        if (parsed && parsed.email) return parsed.email;
+      }
+    } catch (e) {}
+    return localStorage.getItem('gitsense_profile_email') || 'kartik.s1280@gmail.com';
+  });
+
+  const [github, setGithub] = useState(() => {
+    try {
+      const u = localStorage.getItem('gitsense_user');
+      if (u) {
+        const parsed = JSON.parse(u);
+        if (parsed && parsed.githubLink !== undefined) return parsed.githubLink;
+      }
+    } catch (e) {}
+    return localStorage.getItem('gitsense_profile_github') || 'https://github.com/kartik1280';
+  });
   
   const [isSaved, setIsSaved] = useState(false);
 
-  const handleSave = (e) => {
+  useEffect(() => {
+    const token = localStorage.getItem('gitsense_token');
+    if (!token) return;
+
+    const API_URL = import.meta.env.VITE_API_URL || '';
+    fetch(`${API_URL}/api/auth/me`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+      .then(res => {
+        if (res.status === 401) {
+          localStorage.removeItem('gitsense_token');
+          window.location.hash = '#login';
+          throw new Error('Session expired');
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.user) {
+          setName(data.user.name || '');
+          setEmail(data.user.email || '');
+          setGithub(data.user.githubLink || '');
+          // Sync with localStorage
+          localStorage.setItem('gitsense_user', JSON.stringify({
+            ...data.user,
+            avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
+          }));
+        }
+      })
+      .catch(err => {
+        console.error('Error fetching user profile:', err);
+      });
+  }, []);
+
+  const handleSave = async (e) => {
     e.preventDefault();
+    const token = localStorage.getItem('gitsense_token');
+    const API_URL = import.meta.env.VITE_API_URL || '';
+
+    // Optimistically update legacy keys
     localStorage.setItem('gitsense_profile_name', name);
     localStorage.setItem('gitsense_profile_email', email);
     localStorage.setItem('gitsense_profile_github', github);
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 2500);
+
+    try {
+      if (token) {
+        const res = await fetch(`${API_URL}/api/auth/profile`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name,
+            email,
+            githubLink: github
+          })
+        });
+
+        if (res.status === 401) {
+          localStorage.removeItem('gitsense_token');
+          window.location.hash = '#login';
+          return;
+        }
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || 'Failed to update profile');
+        }
+
+        const data = await res.json();
+        if (data.user) {
+          // Sync with localStorage
+          localStorage.setItem('gitsense_user', JSON.stringify({
+            ...data.user,
+            avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
+          }));
+        }
+      }
+      setIsSaved(true);
+      setTimeout(() => setIsSaved(false), 2500);
+    } catch (err) {
+      alert(err.message || 'Failed to save changes.');
+    }
   };
 
   const initial = name.trim().charAt(0).toUpperCase() || 'K';

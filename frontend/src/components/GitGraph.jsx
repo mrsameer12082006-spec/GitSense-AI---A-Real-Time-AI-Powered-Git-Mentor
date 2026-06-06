@@ -175,7 +175,7 @@ const BRANCH_TYPES = [
   { name: 'hotfix/bug', color: '#EF4444' }
 ];
 
-export default function GitGraph({ state = 'normal', onNodeSelect }) {
+export default function GitGraph({ state = 'normal', onNodeSelect, commits = [] }) {
   const [selectedNode, setSelectedNode] = useState(null);
   
   // Interactive Pan and Zoom States
@@ -187,13 +187,73 @@ export default function GitGraph({ state = 'normal', onNodeSelect }) {
   
   const svgRef = useRef(null);
 
-  // Set default selected commit on load and when workflow state toggles
+  const hasRealCommits = commits && commits.length > 0;
+  
+  // Chronological order: oldest to newest
+  const sortedCommits = hasRealCommits ? [...commits].reverse() : [];
+  
+  const displayCommits = hasRealCommits
+    ? sortedCommits.map((c, idx) => {
+        const msg = c.message.toLowerCase();
+        let trackName = 'develop';
+        let trackY = 280;
+        let trackColor = '#F59E0B';
+        
+        if (msg.startsWith('merge') || msg.includes('merge branch')) {
+          trackName = 'main';
+          trackY = 180;
+          trackColor = '#7C5CFF';
+        } else if (msg.startsWith('feat')) {
+          trackName = 'feature/auth';
+          trackY = 100;
+          trackColor = '#00D4FF';
+        } else if (msg.startsWith('fix')) {
+          trackName = 'hotfix/bug';
+          trackY = 330;
+          trackColor = '#EF4444';
+        } else if (msg.startsWith('docs') || msg.startsWith('chore')) {
+          trackName = 'develop';
+          trackY = 280;
+          trackColor = '#F59E0B';
+        } else {
+          const trackIdx = idx % 3;
+          if (trackIdx === 0) {
+            trackName = 'main';
+            trackY = 180;
+            trackColor = '#7C5CFF';
+          } else if (trackIdx === 1) {
+            trackName = 'feature/cart';
+            trackY = 230;
+            trackColor = '#10B981';
+          }
+        }
+
+        return {
+          ...c,
+          id: c.sha,
+          x: 120 + idx * 140,
+          y: trackY,
+          color: trackColor,
+          branch: trackName,
+          safety: c.safety || (trackName === 'hotfix/bug' ? 85 : 100),
+          purpose: c.message,
+          explanation: `Commit by ${c.author} (${c.time || 'recent'}).`,
+        };
+      })
+    : ALL_COMMITS;
+
+  // Set default selected commit on load and when workflow state toggles or commits change
   useEffect(() => {
-    // Default to the branch HEAD tip (d9fa002) for high fidelity
-    const defaultNode = ALL_COMMITS.find(c => c.hash === 'd9fa002') || ALL_COMMITS[ALL_COMMITS.length - 1];
-    setSelectedNode(defaultNode);
-    onNodeSelect?.(defaultNode);
-  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (hasRealCommits && displayCommits.length > 0) {
+      const defaultNode = displayCommits[displayCommits.length - 1]; // HEAD tip
+      setSelectedNode(defaultNode);
+      onNodeSelect?.(defaultNode);
+    } else {
+      const defaultNode = ALL_COMMITS.find(c => c.hash === 'd9fa002') || ALL_COMMITS[ALL_COMMITS.length - 1];
+      setSelectedNode(defaultNode);
+      onNodeSelect?.(defaultNode);
+    }
+  }, [state, commits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNodeClick = (node) => {
     // Custom state modifications depending on workflow selection
@@ -247,6 +307,40 @@ export default function GitGraph({ state = 'normal', onNodeSelect }) {
     // Decide if merge lines into final node are conflicted
     const mergeStroke = isConflict ? "#EF4444" : "#7C5CFF";
     const mergeLinkClass = isConflict ? "node-link" : "";
+
+    if (hasRealCommits) {
+      const dynamicPaths = [];
+      for (let i = 0; i < displayCommits.length - 1; i++) {
+        const current = displayCommits[i];
+        const next = displayCommits[i + 1];
+        if (current.y === next.y) {
+          dynamicPaths.push(
+            <line 
+              key={`path-${i}`} 
+              x1={current.x} 
+              y1={current.y} 
+              x2={next.x} 
+              y2={next.y} 
+              stroke={current.color} 
+              strokeWidth={3.5} 
+            />
+          );
+        } else {
+          const midX = (current.x + next.x) / 2;
+          dynamicPaths.push(
+            <path
+              key={`path-${i}`}
+              d={`M ${current.x} ${current.y} C ${midX} ${current.y}, ${midX} ${next.y}, ${next.x} ${next.y}`}
+              fill="none"
+              stroke={next.color}
+              strokeWidth={2.5}
+              opacity={0.8}
+            />
+          );
+        }
+      }
+      return <g>{dynamicPaths}</g>;
+    }
 
     return (
       <g>
@@ -480,50 +574,58 @@ export default function GitGraph({ state = 'normal', onNodeSelect }) {
           >
             
             {/* ── BRANCH ANNOTATIONS (3 commits ago / Branch point) */}
-            <line x1={220} y1={105} x2={220} y2={170} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3 3" />
-            <g>
-              <rect x={170} y={55} width={100} height={42} rx={6} fill="#060913" fillOpacity={0.85} stroke="rgba(255,255,255,0.1)" strokeWidth={1} />
-              <text x={220} y={72} fill="#94a3b8" fontSize={9.5} textAnchor="middle" fontFamily="sans-serif">3 commits ago</text>
-              <text x={220} y={87} fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="sans-serif">Branch point</text>
-            </g>
+            {!hasRealCommits && (
+              <>
+                <line x1={220} y1={105} x2={220} y2={170} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3 3" />
+                <g>
+                  <rect x={170} y={55} width={100} height={42} rx={6} fill="#060913" fillOpacity={0.85} stroke="rgba(255,255,255,0.1)" strokeWidth={1} />
+                  <text x={220} y={72} fill="#94a3b8" fontSize={9.5} textAnchor="middle" fontFamily="sans-serif">3 commits ago</text>
+                  <text x={220} y={87} fill="#64748b" fontSize={9} textAnchor="middle" fontFamily="sans-serif">Branch point</text>
+                </g>
+              </>
+            )}
 
             {/* ── PATH LINES */}
             {renderPaths()}
 
             {/* ── BRANCH PILLS OVERLAY */}
-            {/* main label */}
-            <g transform="translate(30, 168)" className="pointer-events-none">
-              <rect width={56} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
-              <rect width={56} height={24} rx={6} fill="rgba(124, 92, 255, 0.12)" stroke="#7C5CFF" strokeWidth={1.2} />
-              <text x={28} y={15} fill="#7C5CFF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">main</text>
-            </g>
-            {/* feature/auth label */}
-            <g transform="translate(420, 88)" className="pointer-events-none">
-              <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
-              <rect width={84} height={24} rx={6} fill="rgba(0, 212, 255, 0.12)" stroke="#00D4FF" strokeWidth={1.2} />
-              <text x={42} y={15} fill="#00D4FF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/auth</text>
-            </g>
-            {/* feature/cart label */}
-            <g transform="translate(420, 218)" className="pointer-events-none">
-              <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
-              <rect width={84} height={24} rx={6} fill="rgba(16, 185, 129, 0.12)" stroke="#10B981" strokeWidth={1.2} />
-              <text x={42} y={15} fill="#10B981" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/cart</text>
-            </g>
-            {/* develop label */}
-            <g transform="translate(424, 268)" className="pointer-events-none">
-              <rect width={68} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
-              <rect width={68} height={24} rx={6} fill="rgba(245, 158, 11, 0.12)" stroke="#F59E0B" strokeWidth={1.2} />
-              <text x={34} y={15} fill="#F59E0B" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">develop</text>
-            </g>
-            {/* hotfix/bug label */}
-            <g transform="translate(420, 318)" className="pointer-events-none">
-              <rect width={80} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
-              <rect width={80} height={24} rx={6} fill="rgba(239, 68, 68, 0.12)" stroke="#EF4444" strokeWidth={1.2} />
-              <text x={40} y={15} fill="#EF4444" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">hotfix/bug</text>
-            </g>
+            {!hasRealCommits && (
+              <>
+                {/* main label */}
+                <g transform="translate(30, 168)" className="pointer-events-none">
+                  <rect width={56} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                  <rect width={56} height={24} rx={6} fill="rgba(124, 92, 255, 0.12)" stroke="#7C5CFF" strokeWidth={1.2} />
+                  <text x={28} y={15} fill="#7C5CFF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">main</text>
+                </g>
+                {/* feature/auth label */}
+                <g transform="translate(420, 88)" className="pointer-events-none">
+                  <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                  <rect width={84} height={24} rx={6} fill="rgba(0, 212, 255, 0.12)" stroke="#00D4FF" strokeWidth={1.2} />
+                  <text x={42} y={15} fill="#00D4FF" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/auth</text>
+                </g>
+                {/* feature/cart label */}
+                <g transform="translate(420, 218)" className="pointer-events-none">
+                  <rect width={84} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                  <rect width={84} height={24} rx={6} fill="rgba(16, 185, 129, 0.12)" stroke="#10B981" strokeWidth={1.2} />
+                  <text x={42} y={15} fill="#10B981" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">feature/cart</text>
+                </g>
+                {/* develop label */}
+                <g transform="translate(424, 268)" className="pointer-events-none">
+                  <rect width={68} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                  <rect width={68} height={24} rx={6} fill="rgba(245, 158, 11, 0.12)" stroke="#F59E0B" strokeWidth={1.2} />
+                  <text x={34} y={15} fill="#F59E0B" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">develop</text>
+                </g>
+                {/* hotfix/bug label */}
+                <g transform="translate(420, 318)" className="pointer-events-none">
+                  <rect width={80} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />
+                  <rect width={80} height={24} rx={6} fill="rgba(239, 68, 68, 0.12)" stroke="#EF4444" strokeWidth={1.2} />
+                  <text x={40} y={15} fill="#EF4444" fontSize={11} fontWeight="bold" textAnchor="middle" fontFamily="sans-serif">hotfix/bug</text>
+                </g>
+              </>
+            )}
 
             {/* ── NODES */}
-            {ALL_COMMITS.map((node) => {
+            {displayCommits.map((node) => {
               const isSelected = selectedNode?.id === node.id;
               const isConflictStateMerge = state === 'conflict' && node.hash === 'z9y8x7w';
               

@@ -16,15 +16,42 @@
 export const currentUser = {
   get name() {
     if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const u = window.localStorage.getItem('gitsense_user');
+        if (u) {
+          const parsed = JSON.parse(u);
+          if (parsed && parsed.name) return parsed.name;
+        }
+      } catch (e) {}
       return window.localStorage.getItem('gitsense_profile_name') || 'Kartik Sharma';
     }
     return 'Kartik Sharma';
   },
   get email() {
     if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const u = window.localStorage.getItem('gitsense_user');
+        if (u) {
+          const parsed = JSON.parse(u);
+          if (parsed && parsed.email) return parsed.email;
+        }
+      } catch (e) {}
       return window.localStorage.getItem('gitsense_profile_email') || 'kartik.s1280@gmail.com';
     }
     return 'kartik.s1280@gmail.com';
+  },
+  get githubLink() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const u = window.localStorage.getItem('gitsense_user');
+        if (u) {
+          const parsed = JSON.parse(u);
+          if (parsed && parsed.githubLink !== undefined) return parsed.githubLink;
+        }
+      } catch (e) {}
+      return window.localStorage.getItem('gitsense_profile_github') || 'https://github.com/kartik1280';
+    }
+    return 'https://github.com/kartik1280';
   },
   get avatarInitial() {
     const n = this.name;
@@ -49,7 +76,7 @@ export const connectedRepository = {
 // TODO: Replace this with backend/API data later
 export const githubImportOptions = [
   { id: 'connect', label: 'Connect GitHub Account', icon: 'GitBranch' },
-  { id: 'paste', label: 'Paste Repository URL', icon: 'Link' },
+  { id: 'paste', label: 'Paste Repository URL', icon: 'Paperclip' },
 ];
 
 // ── Repository Insights (Right Sidebar) ─────────────────────────

@@ -584,4 +584,118 @@ router.post('/:id/simulate-issue', async (req, res) => {
   }
 });
 
+// ── GET /api/repos/connect-github ──────────────────────────
+// List repositories of authenticated GitHub account
+router.get('/connect-github', async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user?.githubToken) {
+      return res.status(400).json({ error: 'GitHub account not connected. Please connect via GitHub OAuth first.' });
+    }
+    const repos = await githubService.getUserRepos(user.githubToken);
+    res.json({ repos });
+  } catch (err) {
+    console.error('[Repos] List repos error:', err);
+    res.status(500).json({ error: 'Failed to list GitHub repositories.' });
+  }
+});
+
+// ── GET /api/repos/:id/commits ──────────────────────────────
+// Fetch commit list for connected repository
+router.get('/:id/commits', async (req, res) => {
+  try {
+    const repository = await prisma.repository.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+
+    if (!repository) {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || null;
+
+    const commits = await githubService.getCommits(repository.owner, repository.name, token, 30);
+    res.json({ commits });
+  } catch (err) {
+    console.error('[Repos] Fetch commits error:', err);
+    res.status(500).json({ error: 'Failed to fetch commits.' });
+  }
+});
+
+// ── GET /api/repos/:id/commits/:sha ──────────────────────────
+// Fetch commit details including diff stats
+router.get('/:id/commits/:sha', async (req, res) => {
+  try {
+    const repository = await prisma.repository.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+
+    if (!repository) {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || null;
+
+    const commit = await githubService.getCommitDetails(repository.owner, repository.name, req.params.sha, token);
+    res.json({ commit });
+  } catch (err) {
+    console.error('[Repos] Fetch commit details error:', err);
+    res.status(500).json({ error: 'Failed to fetch commit details.' });
+  }
+});
+
+// ── GET /api/repos/:id/contents ──────────────────────────────
+// Fetch directory listing
+router.get('/:id/contents', async (req, res) => {
+  try {
+    const repository = await prisma.repository.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+
+    if (!repository) {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || null;
+    const path = req.query.path || '';
+
+    const contents = await githubService.getRepoContents(repository.owner, repository.name, path, token);
+    res.json({ contents });
+  } catch (err) {
+    console.error('[Repos] Fetch contents error:', err);
+    res.status(500).json({ error: 'Failed to fetch directory contents.' });
+  }
+});
+
+// ── GET /api/repos/:id/contents/file ─────────────────────────
+// Fetch file raw content
+router.get('/:id/contents/file', async (req, res) => {
+  try {
+    const repository = await prisma.repository.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+
+    if (!repository) {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || null;
+    const path = req.query.path;
+
+    if (!path) {
+      return res.status(400).json({ error: 'File path is required.' });
+    }
+
+    const fileContent = await githubService.getFileContent(repository.owner, repository.name, path, token);
+    res.json({ content: fileContent });
+  } catch (err) {
+    console.error('[Repos] Fetch file content error:', err);
+    res.status(500).json({ error: 'Failed to fetch file content.' });
+  }
+});
+
 export default router;

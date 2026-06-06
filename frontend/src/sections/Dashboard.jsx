@@ -6,12 +6,13 @@ import {
   RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
   Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Trash2, Loader2, MicOff,
-  ExternalLink, BookOpen
+  ExternalLink, BookOpen, Code, RotateCw
 } from 'lucide-react';
 import {
   githubImportOptions,
   getGreeting
 } from '../data/mockDashboardData';
+import IDEPanel from '../components/IDEPanel';
 
 // ── API Helper ──
 const API_BASE = '/api';
@@ -78,6 +79,26 @@ export default function Dashboard() {
   const [connectedRepo, setConnectedRepo] = useState(null);
   const [repoInsights, setRepoInsights] = useState(null);
   const [isRepoLoading, setIsRepoLoading] = useState(false);
+  const [activeSection, setActiveSection] = useState(() => {
+    const hash = window.location.hash;
+    if (hash.includes('section=ide')) return 'ide';
+    return 'chat';
+  });
+
+  // ── Sync activeSection with URL hash parameter ──
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash;
+      if (hash.includes('section=ide')) {
+        setActiveSection('ide');
+      } else if (hash.includes('section=chat') || hash === '#dashboard') {
+        setActiveSection('chat');
+      }
+    };
+    handleHashChange();
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   // ── Repository Health & Autonomous Fix State ──
   const [repoHealth, setRepoHealth] = useState(null);
@@ -365,6 +386,7 @@ export default function Dashboard() {
     const saved = localStorage.getItem('gitsense_right_sidebar');
     return saved !== null ? JSON.parse(saved) : true;
   });
+  const [activeSidebarTab, setActiveSidebarTab] = useState('insights'); // insights, activity
 
   // Handle resizing for mobile
   useEffect(() => {
@@ -437,35 +459,110 @@ export default function Dashboard() {
         }),
       });
 
-      let data;
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        throw new Error(`Failed to parse server response as JSON (Status: ${res.status} ${res.statusText})`);
-      }
-
       if (!res.ok) {
-        throw new Error(data.error || `Request failed with status ${res.status}`);
+        let errMsg = `Request failed with status ${res.status}`;
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch {}
+        throw new Error(errMsg);
       }
 
-      if (data.response) {
-        setMessages(prev => [...prev, data.response]);
-      } else {
-        throw new Error('Server returned an empty response');
+      // Check if it is a streaming response
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        // Fallback to json if not event-stream
+        const data = await res.json();
+        if (data.response) {
+          setMessages(prev => [...prev, data.response]);
+        }
+        if (data.conversationId) {
+          setActiveConversationId(data.conversationId);
+        }
+        loadChatHistory();
+        return;
       }
 
-      // Update conversation ID for subsequent messages
-      if (data.conversationId) {
-        setActiveConversationId(data.conversationId);
-      }
+      // Read the stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let done = false;
 
-      // Refresh chat history
-      loadChatHistory();
+      // Add a placeholder message for the streaming response
+      let aiMsgIndex = -1;
+      setMessages(prev => {
+        aiMsgIndex = prev.length;
+        return [...prev, { sender: 'ai', text: '', isStreaming: true }];
+      });
+      setIsAiTyping(false); // Disable typing indicator since we have the message container now
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // Keep last incomplete line
+
+          for (const line of lines) {
+            const cleanLine = line.trim();
+            if (!cleanLine) continue;
+            if (cleanLine.startsWith('data: ')) {
+              const dataStr = cleanLine.substring(6);
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.token) {
+                  setMessages(prev => {
+                    const nextMsgs = [...prev];
+                    if (nextMsgs[aiMsgIndex]) {
+                      nextMsgs[aiMsgIndex] = {
+                        ...nextMsgs[aiMsgIndex],
+                        text: nextMsgs[aiMsgIndex].text + parsed.token
+                      };
+                    }
+                    return nextMsgs;
+                  });
+                } else if (parsed.done) {
+                  // Final metadata response
+                  setMessages(prev => {
+                    const nextMsgs = [...prev];
+                    if (nextMsgs[aiMsgIndex]) {
+                      nextMsgs[aiMsgIndex] = {
+                        sender: 'ai',
+                        text: parsed.response.text,
+                        insight: parsed.response.insight,
+                        recommendation: parsed.response.recommendation,
+                        codeBlock: parsed.response.codeBlock,
+                        commandBlock: parsed.response.commandBlock,
+                        diff: parsed.response.diff,
+                        conflictResolution: parsed.response.conflictResolution,
+                        diagnosedIssue: parsed.response.diagnosedIssue,
+                      };
+                    }
+                    return nextMsgs;
+                  });
+                  if (parsed.conversationId) {
+                    setActiveConversationId(parsed.conversationId);
+                  }
+                  // Refresh history and health status if we finished
+                  loadChatHistory();
+                  if (connectedRepo) {
+                    fetchHealthData(connectedRepo.id);
+                  }
+                }
+              } catch (e) {
+                // Ignore parsing errors on partial chunks
+              }
+            }
+          }
+        }
+      }
     } catch (err) {
       setMessages(prev => [...prev, {
         sender: 'ai',
         text: `⚠️ AI Chat Error: ${err.message}`,
-        insight: 'Please verify the backend server is running on port 3001 and your GROQ_API_KEY is configured in backend/.env',
+        insight: 'Please verify the backend server is running and your API keys are configured in backend/.env',
       }]);
     } finally {
       setIsAiTyping(false);
@@ -661,11 +758,27 @@ export default function Dashboard() {
           {/* Sidebar Navigation */}
           <div className="p-3 flex flex-col gap-1">
             <button
-              onClick={() => window.location.hash = '#dashboard'}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#F8FAFC]"
+              onClick={() => { setActiveSection('chat'); window.location.hash = '#dashboard?section=chat'; }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border ${
+                activeSection === 'chat' && window.location.hash !== '#visualizer-page'
+                  ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#F8FAFC]'
+                  : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50'
+              }`}
             >
-              <Sparkles size={16} className="text-[#7C5CFF]" />
+              <Sparkles size={16} className={activeSection === 'chat' && window.location.hash !== '#visualizer-page' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
               <span>Git Assistant</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveSection('ide'); window.location.hash = '#dashboard?section=ide'; }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border ${
+                activeSection === 'ide'
+                  ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#F8FAFC]'
+                  : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50'
+              }`}
+            >
+              <Code size={16} className={activeSection === 'ide' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
+              <span>Code IDE</span>
             </button>
 
             <button
@@ -831,6 +944,7 @@ export default function Dashboard() {
                         {option.icon === 'GitBranch' && <GitBranch size={14} />}
                         {option.icon === 'Download' && <Download size={14} />}
                         {option.icon === 'Link' && <LinkIcon size={14} />}
+                        {option.icon === 'Paperclip' && <Paperclip size={14} />}
                         <span>{option.label}</span>
                       </button>
                     ))}
@@ -920,8 +1034,19 @@ export default function Dashboard() {
         {/* ── CENTRAL MAIN WORKSPACE PANELS ── */}
         <div className="flex-1 flex overflow-hidden min-w-0">
 
-          {/* GIT ASSISTANT CHAT INTERFACE */}
-          <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
+          {activeSection === 'ide' ? (
+            <IDEPanel
+              connectedRepo={connectedRepo}
+              apiFetch={apiFetch}
+              onAskAI={(filename, content) => {
+                setActiveSection('chat');
+                setInputVal(`Analyze this file: ${filename}\n\n\`\`\`\n${content}\n\`\`\``);
+                setTimeout(() => chatInputRef.current?.focus(), 50);
+              }}
+            />
+          ) : (
+            /* GIT ASSISTANT CHAT INTERFACE */
+            <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
             
             {/* Chat Messages List */}
             <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
@@ -1064,6 +1189,16 @@ export default function Dashboard() {
                           </p>
                         </div>
                       )}
+
+                      {/* Proactive Diagnosed Issue Card */}
+                      {msg.diagnosedIssue && (
+                        <DiagnosedIssueCard
+                          issue={msg.diagnosedIssue}
+                          idx={idx}
+                          copiedIndex={copiedIndex}
+                          copyToClipboard={copyToClipboard}
+                        />
+                      )}
                       </div>
 
                       {/* User Avatar */}
@@ -1110,6 +1245,51 @@ export default function Dashboard() {
             <div className="p-4 border-t border-white/[0.06] bg-[#060913]/60 backdrop-blur-md flex-shrink-0">
               <div className="max-w-[800px] mx-auto flex flex-col gap-2">
                 
+                {/* Floating voice panel above the input bar */}
+                <AnimatePresence>
+                  {showVoiceModal && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="mb-2 bg-slate-950/90 border border-rose-500/20 rounded-xl p-4 w-full flex flex-col gap-3 relative shadow-xl shadow-black/50 backdrop-blur-xl text-left animate-pulse"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-rose-500 flex items-center justify-center animate-ping flex-shrink-0 ring-4 ring-rose-500/20" />
+                          <span className="text-xs font-bold text-slate-200">Listening...</span>
+                        </div>
+                        <button
+                          onClick={toggleRecording}
+                          className="px-2.5 py-1 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-lg text-[10px] font-bold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-1"
+                        >
+                          <MicOff size={10} /> Stop Listening
+                        </button>
+                      </div>
+
+                      {/* Waveform */}
+                      <div className="flex items-center gap-[2.5px] h-6 my-1">
+                        {audioWave.map((h, i) => (
+                          <motion.div
+                            key={i}
+                            animate={{ height: h * 0.7 }}
+                            className="w-[2.5px] bg-rose-500 rounded-full"
+                            style={{ minHeight: '2px', maxHeight: '20px' }}
+                          />
+                        ))}
+                      </div>
+
+                      {voiceTranscript ? (
+                        <p className="text-xs text-slate-300 font-mono leading-relaxed bg-slate-900/50 border border-white/[0.04] p-2.5 rounded-lg max-h-32 overflow-y-auto">
+                          {voiceTranscript}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-slate-500 italic">Say something... your voice transcript will appear here in real-time.</p>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 {/* Active file attachment indicator */}
                 {attachedFile && (
                   <div className="flex items-center justify-between self-start px-2.5 py-1 bg-slate-900 border border-white/[0.08] rounded-lg text-xs font-mono text-[#00D4FF] gap-2">
@@ -1128,9 +1308,13 @@ export default function Dashboard() {
                   
                   {/* Attach File Button */}
                   <button
-                    onClick={handleFileAttach}
-                    className={`p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer ${attachedFile ? 'text-[#00D4FF] bg-slate-850' : ''}`}
-                    title="Attach Repository File"
+                    onClick={() => {
+                      setShowPasteUrlModal(true);
+                      setPasteUrlValue('');
+                      setPasteUrlError('');
+                    }}
+                    className="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    title="Paste Repository URL"
                   >
                     <Paperclip size={16} />
                   </button>
@@ -1205,6 +1389,7 @@ export default function Dashboard() {
             </div>
 
           </div>
+        )}
 
         </div>
 
@@ -1240,13 +1425,33 @@ export default function Dashboard() {
             <span className="text-xs font-bold font-heading text-slate-400 tracking-wider uppercase flex items-center gap-2">
               <Database size={13} className="text-[#7C5CFF]" /> Repository Details
             </span>
-            <button 
-              onClick={() => setIsRightSidebarOpen(false)}
-              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Collapse Sidebar"
-            >
-              <ChevronRight size={14} />
-            </button>
+            <div className="flex items-center gap-1">
+              {isRepositoryConnected && (
+                <button
+                  onClick={async () => {
+                    if (!connectedRepo) return;
+                    try {
+                      const res = await apiFetch(`/repos/${connectedRepo.id}/insights`);
+                      const ins = await res.json();
+                      if (ins.insights) setRepoInsights(ins.insights);
+                      // Also refetch health data
+                      fetchHealthData(connectedRepo.id);
+                    } catch {}
+                  }}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Refresh Insights"
+                >
+                  <RotateCw size={12} className="hover:rotate-45 transition-transform" />
+                </button>
+              )}
+              <button 
+                onClick={() => setIsRightSidebarOpen(false)}
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                title="Collapse Sidebar"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
           
           {!isRepositoryConnected ? (
@@ -1260,218 +1465,245 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
-              {/* Repository Health Score Circle Donut */}
-              <div className="flex flex-col gap-3">
-                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                  <ShieldAlert size={13} className="text-[#7C5CFF]" /> Repository Health
-                </h4>
-                
-                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                  <div className="flex items-center gap-5">
-                    {/* Circle Donut */}
-                    <div className="relative w-16 h-16 flex-shrink-0 flex items-center justify-center">
-                      <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                        <circle cx="18" cy="18" r="15.915" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="3" />
-                        <circle cx="18" cy="18" r="15.915" fill="none" stroke={
-                          (repoHealth?.score ?? 100) >= 90 ? '#00E38C' :
-                          (repoHealth?.score ?? 100) >= 70 ? '#FFB800' : '#EF4444'
-                        } strokeWidth="3"
-                          strokeDasharray={`${repoHealth?.score ?? 100} 100`}
-                          strokeLinecap="round"
-                          className="transition-all duration-1000 ease-out"
-                        />
-                      </svg>
-                      <span className="absolute font-heading font-bold text-[10px] text-slate-100">{(repoHealth?.score ?? 100)}%</span>
-                    </div>
+              {/* Tab Switcher */}
+              <div className="flex bg-slate-950 p-0.5 rounded-xl border border-white/[0.06] mb-3">
+                <button
+                  onClick={() => setActiveSidebarTab('insights')}
+                  className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                    activeSidebarTab === 'insights'
+                      ? 'bg-slate-900 border border-white/[0.06] text-[#00D4FF]'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Repo Insights
+                </button>
+                <button
+                  onClick={() => setActiveSidebarTab('activity')}
+                  className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                    activeSidebarTab === 'activity'
+                      ? 'bg-slate-900 border border-white/[0.06] text-[#00D4FF]'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Recent Activity
+                </button>
+              </div>
 
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-semibold text-slate-200 truncate">
-                        {(repoHealth?.score ?? 100) === 100 ? '✅ Clean Repository' : '⚠️ Requires Attention'}
-                      </span>
-                      <span className="text-[10px] text-slate-500 mt-1">
-                        {repoHealth?.issues?.length || 0} issues detected in current workspace.
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Issues List */}
-                  {repoHealth?.issues && repoHealth.issues.length > 0 && (
-                    <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.05]">
-                      {repoHealth.issues.map((issue) => (
-                        <div key={issue.id} className="bg-slate-900/40 border border-white/[0.04] p-2.5 rounded-xl flex flex-col gap-2 text-left">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-200">{issue.title}</span>
-                            <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                              issue.severity === 'high' ? 'bg-rose-500/10 text-rose-400' :
-                              issue.severity === 'medium' ? 'bg-amber-500/10 text-amber-400' :
-                              'bg-slate-850 text-slate-400'
-                            }`}>
-                              {issue.severity}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-slate-400 leading-relaxed">{issue.description}</p>
-                          
-                          <button
-                            onClick={() => handleFixIssue(issue)}
-                            disabled={activeFixingIssueId !== null}
-                            className="w-full py-1.5 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 hover:bg-[#7C5CFF]/25 text-[#F8FAFC] text-[10px] font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                          >
-                            {activeFixingIssueId === issue.id ? (
-                              <Loader2 size={10} className="animate-spin" />
-                            ) : (
-                              <span>{issue.safeToFix ? 'Fix Issue' : 'Resolve Conflict'}</span>
-                            )}
-                          </button>
+              {activeSidebarTab === 'insights' ? (
+                <>
+                  {/* Repository Health Score Circle Donut */}
+                  <div className="flex flex-col gap-3">
+                    <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                      <ShieldAlert size={13} className="text-[#7C5CFF]" /> Repository Health
+                    </h4>
+                    
+                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
+                      <div className="flex items-center gap-5">
+                        {/* Circle Donut */}
+                        <div className="relative w-16 h-16 flex-shrink-0 flex items-center justify-center">
+                          <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                            <circle cx="18" cy="18" r="15.915" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="3" />
+                            <circle cx="18" cy="18" r="15.915" fill="none" stroke={
+                              (repoHealth?.score ?? 100) >= 90 ? '#00E38C' :
+                              (repoHealth?.score ?? 100) >= 70 ? '#FFB800' : '#EF4444'
+                            } strokeWidth="3"
+                              strokeDasharray={`${repoHealth?.score ?? 100} 100`}
+                              strokeLinecap="round"
+                              className="transition-all duration-1000 ease-out"
+                            />
+                          </svg>
+                          <span className="absolute font-heading font-bold text-[10px] text-slate-100">{(repoHealth?.score ?? 100)}%</span>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
 
-              {/* Doctor Sandbox Controls */}
-              <div className="flex flex-col gap-3">
-                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-500 uppercase flex items-center gap-2 text-left">
-                  <Settings size={13} className="text-slate-500" /> Doctor Sandbox
-                </h4>
-                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-2 text-left">
-                  <p className="text-[10px] text-slate-500 leading-relaxed mb-1">
-                    Simulate workspace problems to test the Autonomous Doctor health diagnostics and mentoring.
-                  </p>
-                  <div className="grid grid-cols-1 gap-2">
-                    <button
-                      onClick={() => handleSimulateIssue('uncommitted')}
-                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                    >
-                      <span>Simulate Uncommitted Changes</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                    </button>
-                    <button
-                      onClick={() => handleSimulateIssue('detached_head')}
-                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                    >
-                      <span>Simulate Detached HEAD</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                    </button>
-                    <button
-                      onClick={() => handleSimulateIssue('clean')}
-                      className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#00E38C]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                    >
-                      <span>Restore Clean Repository</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Repo Summary Card */}
-              <div className="flex flex-col gap-3">
-
-                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Commits</span>
-                      <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.commits}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Open PRs</span>
-                      <span className="font-heading font-bold text-lg text-[#00D4FF]">{repositoryInsights.openPRs}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Issues</span>
-                      <span className="font-heading font-bold text-lg text-rose-400">{repositoryInsights.issues}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Contributors</span>
-                      <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.contributors}</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-white/[0.05] flex items-center justify-between text-xs">
-                    <span className="text-slate-500">Security Scans:</span>
-                    <span className="text-[#00E38C] font-semibold flex items-center gap-1">
-                      <CheckCircle2 size={12} /> {repositoryInsights.securityStatus}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recent Activity Card */}
-              <div className="flex flex-col gap-3 flex-1 overflow-hidden min-h-0">
-                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                  <Activity size={13} className="text-[#00D4FF]" /> Recent Activity
-                </h4>
-
-                <div className="flex-1 bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
-                  
-                  {/* Activity Commits */}
-                  <div className="flex flex-col gap-2.5">
-                    <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                      Commits
-                    </span>
-                    <div className="flex flex-col gap-2">
-                      {repositoryInsights.latestCommits?.map((commit, idx) => (
-                        <div key={idx} className="flex flex-col gap-0.5 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="font-mono text-[#00D4FF]">{commit.hash}</span>
-                            <span className="text-slate-500">{commit.time}</span>
-                          </div>
-                          <span className="text-xs font-semibold text-slate-300 truncate">{commit.message}</span>
-                          <span className="text-[10px] text-slate-500">by {commit.author}</span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-semibold text-slate-200 truncate">
+                            {(repoHealth?.score ?? 100) === 100 ? '✅ Clean Repository' : '⚠️ Requires Attention'}
+                          </span>
+                          <span className="text-[10px] text-slate-500 mt-1">
+                            {repoHealth?.issues?.length || 0} issues detected in current workspace.
+                          </span>
                         </div>
-                      ))}
+                      </div>
+
+                      {/* Issues List */}
+                      {repoHealth?.issues && repoHealth.issues.length > 0 && (
+                        <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.05]">
+                          {repoHealth.issues.map((issue) => (
+                            <div key={issue.id} className="bg-slate-900/40 border border-white/[0.04] p-2.5 rounded-xl flex flex-col gap-2 text-left">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-200">{issue.title}</span>
+                                <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                                  issue.severity === 'high' ? 'bg-rose-500/10 text-rose-400' :
+                                  issue.severity === 'medium' ? 'bg-amber-500/10 text-amber-400' :
+                                  'bg-slate-850 text-slate-400'
+                                }`}>
+                                  {issue.severity}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 leading-relaxed">{issue.description}</p>
+                              
+                              <button
+                                onClick={() => handleFixIssue(issue)}
+                                disabled={activeFixingIssueId !== null}
+                                className="w-full py-1.5 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 hover:bg-[#7C5CFF]/25 text-[#F8FAFC] text-[10px] font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                              >
+                                {activeFixingIssueId === issue.id ? (
+                                  <Loader2 size={10} className="animate-spin" />
+                                ) : (
+                                  <span>{issue.safeToFix ? 'Fix Issue' : 'Resolve Conflict'}</span>
+                                )}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Activity Pull Requests */}
-                  {repositoryInsights.activePRs && repositoryInsights.activePRs.length > 0 && (
-                    <div className="flex flex-col gap-2.5 mt-2">
+                  {/* Doctor Sandbox Controls */}
+                  <div className="flex flex-col gap-3">
+                    <h4 className="font-heading font-bold text-xs tracking-wider text-slate-500 uppercase flex items-center gap-2 text-left">
+                      <Settings size={13} className="text-slate-500" /> Doctor Sandbox
+                    </h4>
+                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-2 text-left">
+                      <p className="text-[10px] text-slate-500 leading-relaxed mb-1">
+                        Simulate workspace problems to test the Autonomous Doctor health diagnostics and mentoring.
+                      </p>
+                      <div className="grid grid-cols-1 gap-2">
+                        <button
+                          onClick={() => handleSimulateIssue('uncommitted')}
+                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                        >
+                          <span>Simulate Uncommitted Changes</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                        </button>
+                        <button
+                          onClick={() => handleSimulateIssue('detached_head')}
+                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                        >
+                          <span>Simulate Detached HEAD</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                        </button>
+                        <button
+                          onClick={() => handleSimulateIssue('clean')}
+                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#00E38C]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
+                        >
+                          <span>Restore Clean Repository</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Repo Summary Card */}
+                  <div className="flex flex-col gap-3">
+                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] text-slate-500 font-semibold">Commits</span>
+                          <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.commits}</span>
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] text-slate-500 font-semibold">Open PRs</span>
+                          <span className="font-heading font-bold text-lg text-[#00D4FF]">{repositoryInsights.openPRs}</span>
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] text-slate-500 font-semibold">Issues</span>
+                          <span className="font-heading font-bold text-lg text-rose-400">{repositoryInsights.issues}</span>
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] text-slate-500 font-semibold">Contributors</span>
+                          <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.contributors}</span>
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/[0.05] flex items-center justify-between text-xs">
+                        <span className="text-slate-500">Security Scans:</span>
+                        <span className="text-[#00E38C] font-semibold flex items-center gap-1">
+                          <CheckCircle2 size={12} /> {repositoryInsights.securityStatus}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                /* Recent Activity Card */
+                <div className="flex flex-col gap-3 flex-1 overflow-hidden min-h-0">
+                  <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                    <Activity size={13} className="text-[#00D4FF]" /> Recent Activity
+                  </h4>
+
+                  <div className="flex-1 bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+                    
+                    {/* Activity Commits */}
+                    <div className="flex flex-col gap-2.5">
                       <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                        Active Pull Requests
+                        Commits
                       </span>
                       <div className="flex flex-col gap-2">
-                        {repositoryInsights.activePRs.map((pr, idx) => (
-                          <div key={idx} className="flex flex-col gap-1 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-200">{pr.id}</span>
-                              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                pr.status === 'Approved' ? 'bg-[#00E38C]/15 text-[#00E38C]' :
-                                pr.status === 'In Review' ? 'bg-[#00D4FF]/15 text-[#00D4FF]' :
-                                'bg-amber-500/15 text-amber-400'
-                              }`}>
-                                {pr.status}
-                              </span>
+                        {repositoryInsights.latestCommits?.map((commit, idx) => (
+                          <div key={idx} className="flex flex-col gap-0.5 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="font-mono text-[#00D4FF]">{commit.hash}</span>
+                              <span className="text-slate-500">{commit.time}</span>
                             </div>
-                            <span className="text-[11px] font-medium text-slate-400 truncate">{pr.title}</span>
-                            <span className="text-[9px] text-slate-500">Opened by {pr.author}</span>
+                            <span className="text-xs font-semibold text-slate-300 truncate">{commit.message}</span>
+                            <span className="text-[10px] text-slate-500">by {commit.author}</span>
                           </div>
                         ))}
                       </div>
                     </div>
-                  )}
 
-                  {/* Pipeline Runs */}
-                  {repositoryInsights.pipelines && repositoryInsights.pipelines.length > 0 && (
-                    <div className="flex flex-col gap-2.5 mt-2">
-                      <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                        CI/CD Pipelines
-                      </span>
-                      <div className="flex flex-col gap-2">
-                        {repositoryInsights.pipelines.map((pipe, idx) => (
-                          <div key={idx} className="flex items-center justify-between bg-slate-900/60 p-2.5 rounded-lg border border-white/[0.03] text-xs">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ${pipe.status === 'Passed' ? 'bg-[#00E38C]' : 'bg-rose-400'}`} />
-                              <span className="font-semibold text-slate-300">{pipe.name}</span>
+                    {/* Activity Pull Requests */}
+                    {repositoryInsights.activePRs && repositoryInsights.activePRs.length > 0 && (
+                      <div className="flex flex-col gap-2.5 mt-2">
+                        <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
+                          Active Pull Requests
+                        </span>
+                        <div className="flex flex-col gap-2">
+                          {repositoryInsights.activePRs.map((pr, idx) => (
+                            <div key={idx} className="flex flex-col gap-1 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-200">{pr.id}</span>
+                                <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                                  pr.status === 'Approved' ? 'bg-[#00E38C]/15 text-[#00E38C]' :
+                                  pr.status === 'In Review' ? 'bg-[#00D4FF]/15 text-[#00D4FF]' :
+                                  'bg-amber-500/15 text-amber-400'
+                                }`}>
+                                  {pr.status}
+                                </span>
+                              </div>
+                              <span className="text-[11px] font-medium text-slate-400 truncate">{pr.title}</span>
+                              <span className="text-[9px] text-slate-500">Opened by {pr.author}</span>
                             </div>
-                            <span className={`text-[10px] font-semibold ${pipe.status === 'Passed' ? 'text-slate-500' : 'text-rose-400'}`}>{pipe.status}</span>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
+                    {/* Pipeline Runs */}
+                    {repositoryInsights.pipelines && repositoryInsights.pipelines.length > 0 && (
+                      <div className="flex flex-col gap-2.5 mt-2">
+                        <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
+                          CI/CD Pipelines
+                        </span>
+                        <div className="flex flex-col gap-2">
+                          {repositoryInsights.pipelines.map((pipe, idx) => (
+                            <div key={idx} className="flex items-center justify-between bg-slate-900/60 p-2.5 rounded-lg border border-white/[0.03] text-xs">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ${pipe.status === 'Passed' ? 'bg-[#00E38C]' : 'bg-rose-400'}`} />
+                                <span className="font-semibold text-slate-300">{pipe.name}</span>
+                              </div>
+                              <span className={`text-[10px] font-semibold ${pipe.status === 'Passed' ? 'text-slate-500' : 'text-rose-400'}`}>{pipe.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           )}
 
@@ -1561,48 +1793,7 @@ export default function Dashboard() {
         )}
       </AnimatePresence>
 
-      {/* ── VOICE INPUT MODAL ── */}
-      <AnimatePresence>
-        {showVoiceModal && (
-          <>
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50" onClick={toggleRecording} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            >
-              <div className="bg-slate-950 border border-white/[0.08] rounded-2xl p-8 w-full max-w-sm text-center flex flex-col items-center gap-4">
-                <div className="w-16 h-16 rounded-full bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 flex items-center justify-center text-[#7C5CFF] animate-pulse">
-                  <Mic size={28} />
-                </div>
-                <h3 className="text-base font-bold font-heading text-white">Listening...</h3>
-                <p className="text-xs text-slate-400">Speak your question about the repository</p>
-                
-                {/* Waveform */}
-                <div className="flex items-center gap-[2px] h-8 my-2">
-                  {audioWave.map((h, i) => (
-                    <motion.div key={i} animate={{ height: h }} className="w-[3px] bg-[#7C5CFF] rounded-full" style={{ minHeight: '3px', maxHeight: '30px' }} />
-                  ))}
-                </div>
 
-                {voiceTranscript && (
-                  <div className="w-full bg-slate-900 border border-white/[0.06] rounded-xl p-3 text-sm text-slate-200 text-left font-mono min-h-[40px]">
-                    {voiceTranscript}
-                  </div>
-                )}
-
-                <button
-                  onClick={toggleRecording}
-                  className="mt-2 px-6 py-2 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-xl text-sm font-semibold hover:bg-rose-500/30 transition-all cursor-pointer flex items-center gap-2"
-                >
-                  <MicOff size={14} /> Stop Listening
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
 
       {/* ── DANGEROUS FIX APPROVAL MODAL ── */}
       <AnimatePresence>
@@ -2064,6 +2255,66 @@ function RepairTimeline({ steps }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── Proactive Diagnosed Issue Card Component ──
+function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
+  const [isFixed, setIsFixed] = useState(false);
+
+  return (
+    <div className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]">
+      {!isFixed ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3 items-start">
+            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 flex-shrink-0">
+              <AlertTriangle size={18} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">{issue.description}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsFixed(true)}
+            className="w-full py-2 px-3 rounded-xl bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-[#00E38C]/10"
+          >
+            Yes, Fix It
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3 items-start border-b border-white/[0.05] pb-3">
+            <div className="p-2 rounded-xl bg-[#00E38C]/10 text-[#00E38C] flex-shrink-0">
+              <CheckCircle2 size={18} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-bold text-slate-100">Fix Plan Revealed</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Please execute the recommended fix commands in your terminal.</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+              <span>Terminal Command</span>
+              <button
+                onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
+                className="hover:text-white cursor-pointer flex items-center gap-1"
+              >
+                {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+              <code>{issue.command}</code>
+            </pre>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-900/40 border border-white/[0.04] text-[11px] text-slate-400 italic">
+            Please run the commands above in your local terminal. Do not share credentials or sensitive tokens.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

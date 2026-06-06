@@ -29,8 +29,12 @@ class GitHubService {
   }
 
   _headers(token) {
-    const h = { Accept: 'application/vnd.github.v3+json' };
-    if (token) h.Authorization = `Bearer ${token}`;
+    const h = { 
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'GitSense-AI'
+    };
+    const finalToken = token || process.env.GITHUB_TOKEN;
+    if (finalToken) h.Authorization = `Bearer ${finalToken}`;
     return h;
   }
 
@@ -71,6 +75,10 @@ class GitHubService {
         return { exists: false, error: 'Repository not found. It may be private or deleted.' };
       }
       if (err.response?.status === 403) {
+        const errMsg = err.response?.data?.message || '';
+        if (errMsg.includes('rate limit exceeded') || errMsg.includes('Rate limit exceeded')) {
+          return { exists: false, error: 'GitHub API rate limit exceeded. Please add GITHUB_TOKEN="your_token" to your backend/.env file and restart the backend.' };
+        }
         return { exists: false, error: 'Access forbidden. The repository may be private.' };
       }
       return { exists: false, error: 'Failed to validate repository.' };
@@ -534,6 +542,72 @@ class GitHubService {
         conflictPRs: [],
         failedWorkflows: []
       };
+    }
+  }
+
+  /**
+   * Get contents at a path (for file tree).
+   */
+  async getRepoContents(owner, repo, path = '', token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`, {
+        headers: this._headers(token),
+      });
+      return data;
+    } catch (err) {
+      console.error('[GitHub] getRepoContents error:', err.message);
+      throw new Error('Failed to fetch repository contents.');
+    }
+  }
+
+  /**
+   * Get file content by path.
+   */
+  async getFileContent(owner, repo, path, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`, {
+        headers: this._headers(token),
+      });
+      if (Array.isArray(data)) {
+        throw new Error('Path is a directory, not a file.');
+      }
+      if (data.encoding === 'base64' && data.content) {
+        return Buffer.from(data.content, 'base64').toString('utf8');
+      }
+      return data.content || '';
+    } catch (err) {
+      console.error('[GitHub] getFileContent error:', err.message);
+      throw new Error('Failed to fetch file content.');
+    }
+  }
+
+  /**
+   * Get specific commit details.
+   */
+  async getCommitDetails(owner, repo, sha, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}`, {
+        headers: this._headers(token),
+      });
+      return {
+        sha: data.sha,
+        hash: data.sha.substring(0, 7),
+        message: data.commit?.message || '',
+        author: data.commit?.author?.name || data.author?.login || 'Unknown',
+        date: data.commit?.author?.date || '',
+        time: this._timeAgo(data.commit?.author?.date),
+        stats: data.stats,
+        files: (data.files || []).map(f => ({
+          filename: f.filename,
+          status: f.status,
+          additions: f.additions,
+          deletions: f.deletions,
+          patch: f.patch
+        }))
+      };
+    } catch (err) {
+      console.error('[GitHub] getCommitDetails error:', err.message);
+      throw new Error('Failed to fetch commit details.');
     }
   }
 }
