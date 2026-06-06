@@ -15,6 +15,7 @@ import ProfilePage from './sections/ProfilePage';
 import SettingsPage from './sections/SettingsPage';
 import AboutUsPage from './sections/AboutUsPage';
 import PrivacyPage from './sections/PrivacyPage';
+import { ShaderAnimation } from './components/ui/shader-animation';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState(() => {
@@ -102,6 +103,11 @@ export default function App() {
 
       {/* Layer 0 — fixed canvas background */}
       <ParticleCanvas />
+
+      {/* Layer 0.5 — fixed shader background */}
+      <div className="fixed inset-0 z-0 opacity-18 pointer-events-none overflow-hidden">
+        <ShaderAnimation />
+      </div>
 
       {/* Layer 1 — mouse-based spotlight tracker */}
       <CursorSpotlight />
