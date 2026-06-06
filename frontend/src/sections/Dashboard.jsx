@@ -438,6 +438,17 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+  // Auto-resize chat input textarea as text size grows
+  useEffect(() => {
+    const textarea = chatInputRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      if (inputVal) {
+        textarea.style.height = `${textarea.scrollHeight}px`;
+      }
+    }
+  }, [inputVal]);
+
   const submitUserMessage = async (text) => {
     if (!text.trim()) return;
 
@@ -1344,7 +1355,7 @@ export default function Dashboard() {
                     value={inputVal}
                     onChange={(e) => setInputVal(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    className="flex-1 bg-transparent border-none outline-none px-3 py-1 text-sm text-slate-100 placeholder-slate-500 resize-none h-7 max-h-32 overflow-y-auto select-text"
+                    className="flex-1 bg-transparent border-none outline-none px-3 py-1 text-sm text-slate-100 placeholder-slate-500 resize-none min-h-[28px] h-auto max-h-32 overflow-y-auto select-text"
                   />
 
                   {/* Microphone / Waveform */}
