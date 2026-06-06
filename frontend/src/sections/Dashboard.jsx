@@ -1308,9 +1308,13 @@ export default function Dashboard() {
                   
                   {/* Attach File Button */}
                   <button
-                    onClick={handleFileAttach}
-                    className={`p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer ${attachedFile ? 'text-[#00D4FF] bg-slate-850' : ''}`}
-                    title="Attach Repository File"
+                    onClick={() => {
+                      setShowPasteUrlModal(true);
+                      setPasteUrlValue('');
+                      setPasteUrlError('');
+                    }}
+                    className="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    title="Paste Repository URL"
                   >
                     <Paperclip size={16} />
                   </button>
