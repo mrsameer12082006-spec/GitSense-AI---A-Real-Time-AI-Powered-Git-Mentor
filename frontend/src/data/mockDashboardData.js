@@ -49,7 +49,7 @@ export const connectedRepository = {
 // TODO: Replace this with backend/API data later
 export const githubImportOptions = [
   { id: 'connect', label: 'Connect GitHub Account', icon: 'GitBranch' },
-  { id: 'paste', label: 'Paste Repository URL', icon: 'Link' },
+  { id: 'paste', label: 'Paste Repository URL', icon: 'Paperclip' },
 ];
 
 // ── Repository Insights (Right Sidebar) ─────────────────────────

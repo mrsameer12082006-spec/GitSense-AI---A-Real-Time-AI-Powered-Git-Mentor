@@ -29,8 +29,12 @@ class GitHubService {
   }
 
   _headers(token) {
-    const h = { Accept: 'application/vnd.github.v3+json' };
-    if (token) h.Authorization = `Bearer ${token}`;
+    const h = { 
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'GitSense-AI'
+    };
+    const finalToken = token || process.env.GITHUB_TOKEN;
+    if (finalToken) h.Authorization = `Bearer ${finalToken}`;
     return h;
   }
 
@@ -71,6 +75,10 @@ class GitHubService {
         return { exists: false, error: 'Repository not found. It may be private or deleted.' };
       }
       if (err.response?.status === 403) {
+        const errMsg = err.response?.data?.message || '';
+        if (errMsg.includes('rate limit exceeded') || errMsg.includes('Rate limit exceeded')) {
+          return { exists: false, error: 'GitHub API rate limit exceeded. Please add GITHUB_TOKEN="your_token" to your backend/.env file and restart the backend.' };
+        }
         return { exists: false, error: 'Access forbidden. The repository may be private.' };
       }
       return { exists: false, error: 'Failed to validate repository.' };

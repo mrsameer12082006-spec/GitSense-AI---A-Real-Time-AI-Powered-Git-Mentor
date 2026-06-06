@@ -4,7 +4,7 @@ import {
   ChevronDown, LogOut, Settings, User, Info, FileText, Moon, 
   GitBranch, Activity, CheckCircle2, MessageSquare, Database, 
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Sparkles, FileText as FileIcon,
-  AlertTriangle, RotateCw
+  AlertTriangle, RotateCw, Code, Paperclip, X, Loader2
 } from 'lucide-react';
 import GitGraph from '../components/GitGraph';
 import {
@@ -104,6 +104,14 @@ export default function VisualizerPage() {
   const [connectedRepo, setConnectedRepo] = useState(null);
   const [commits, setCommits] = useState([]);
   const [repoInsights, setRepoInsights] = useState(null);
+  const [activeSidebarTab, setActiveSidebarTab] = useState('insights'); // insights, activity
+
+  // ── Paste URL Modal States ──
+  const [showPasteUrlModal, setShowPasteUrlModal] = useState(false);
+  const [pasteUrlValue, setPasteUrlValue] = useState('');
+  const [pasteUrlLoading, setPasteUrlLoading] = useState(false);
+  const [pasteUrlError, setPasteUrlError] = useState('');
+  const [showConnectSuccess, setShowConnectSuccess] = useState(false);
 
   // Derived values
   const isRepositoryConnected = !!connectedRepo;
@@ -219,11 +227,19 @@ export default function VisualizerPage() {
           {/* Sidebar Navigation */}
           <div className="p-3 flex flex-col gap-1">
             <button
-              onClick={() => window.location.hash = '#dashboard'}
+              onClick={() => window.location.hash = '#dashboard?section=chat'}
               className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
             >
               <Sparkles size={16} className="text-slate-400" />
               <span>Git Assistant</span>
+            </button>
+
+            <button
+              onClick={() => window.location.hash = '#dashboard?section=ide'}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
+            >
+              <Code size={16} className="text-slate-400" />
+              <span>Code IDE</span>
             </button>
 
             <button
@@ -347,13 +363,24 @@ export default function VisualizerPage() {
                         key={option.id}
                         onClick={() => {
                           setIsGithubDropdownOpen(false);
-                          alert(`Placeholder: ${option.label} clicked.`);
+                          if (option.id === 'connect') {
+                            // GitHub OAuth flow
+                            apiFetch('/auth/github').then(r => r.json()).then(data => {
+                              if (data.url) window.open(data.url, '_blank', 'width=600,height=700');
+                              else alert('GitHub OAuth not configured. Add GITHUB_CLIENT_ID to backend/.env');
+                            }).catch(() => alert('Backend not running. Start with: cd backend && npm run dev'));
+                          } else if (option.id === 'paste') {
+                            setShowPasteUrlModal(true);
+                            setPasteUrlValue('');
+                            setPasteUrlError('');
+                          }
                         }}
                         className="w-full text-left px-3 py-2.5 rounded-lg text-xs font-medium transition-all flex items-center gap-3 text-slate-300 hover:text-white hover:bg-slate-900 cursor-pointer"
                       >
                         {option.icon === 'GitBranch' && <GitBranch size={14} />}
                         {option.icon === 'Download' && <Download size={14} />}
                         {option.icon === 'Link' && <LinkIcon size={14} />}
+                        {option.icon === 'Paperclip' && <Paperclip size={14} />}
                         <span>{option.label}</span>
                       </button>
                     ))}
@@ -544,13 +571,14 @@ export default function VisualizerPage() {
                     </span>
                     <div className="flex flex-col gap-2 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
                       {selectedNodeDetails.files?.map((f, i) => {
-                        const ext = f.split('.').pop().toUpperCase();
-                        const addition = selectedNodeDetails.additions?.[i] || Math.floor(Math.random() * 80) + 10;
+                        const filename = typeof f === 'object' ? f.filename : f;
+                        const ext = filename ? filename.split('.').pop().toUpperCase() : '';
+                        const addition = typeof f === 'object' ? (f.additions ?? 0) : (selectedNodeDetails.additions?.[i] || Math.floor(Math.random() * 80) + 10);
                         return (
                           <div key={i} className="flex items-center justify-between bg-slate-950/20 border border-white/[0.03] px-3 py-2 rounded-xl text-[11px] font-mono text-slate-300">
                             <div className="flex items-center gap-2 truncate">
                               <FileIcon size={12} className="text-[#00D4FF]/60" />
-                              <span className="truncate">{f}</span>
+                              <span className="truncate">{filename}</span>
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="text-[8px] font-bold text-slate-400 font-sans bg-slate-900 border border-white/[0.04] px-1 py-0.5 rounded select-none">
@@ -721,118 +749,230 @@ export default function VisualizerPage() {
             </div>
           ) : (
             <>
-              {/* Repo Summary Card */}
-              <div className="flex flex-col gap-3">
-                <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Commits</span>
-                      <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.commits}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Open PRs</span>
-                      <span className="font-heading font-bold text-lg text-[#00D4FF]">{repositoryInsights.openPRs}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Issues</span>
-                      <span className="font-heading font-bold text-lg text-rose-400">{repositoryInsights.issues}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-semibold">Contributors</span>
-                      <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.contributors}</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-white/[0.05] flex items-center justify-between text-xs">
-                    <span className="text-slate-500">Security Scans:</span>
-                    <span className="text-[#00E38C] font-semibold flex items-center gap-1">
-                      <CheckCircle2 size={12} /> {repositoryInsights.securityStatus}
-                    </span>
-                  </div>
-                </div>
+              {/* Tab Switcher */}
+              <div className="flex bg-slate-950 p-0.5 rounded-xl border border-white/[0.06] mb-3">
+                <button
+                  onClick={() => setActiveSidebarTab('insights')}
+                  className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                    activeSidebarTab === 'insights'
+                      ? 'bg-slate-900 border border-white/[0.06] text-[#00D4FF]'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Repo Insights
+                </button>
+                <button
+                  onClick={() => setActiveSidebarTab('activity')}
+                  className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                    activeSidebarTab === 'activity'
+                      ? 'bg-slate-900 border border-white/[0.06] text-[#00D4FF]'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Recent Activity
+                </button>
               </div>
 
-              {/* Recent Activity Card */}
-              <div className="flex flex-col gap-3 flex-1 overflow-hidden min-h-0">
-                <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                  <Activity size={13} className="text-[#00D4FF]" /> Recent Activity
-                </h4>
+              {activeSidebarTab === 'insights' ? (
+                /* Repo Summary Card */
+                <div className="flex flex-col gap-3">
+                  <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] text-slate-500 font-semibold">Commits</span>
+                        <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.commits}</span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] text-slate-500 font-semibold">Open PRs</span>
+                        <span className="font-heading font-bold text-lg text-[#00D4FF]">{repositoryInsights.openPRs}</span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] text-slate-500 font-semibold">Issues</span>
+                        <span className="font-heading font-bold text-lg text-rose-400">{repositoryInsights.issues}</span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] text-slate-500 font-semibold">Contributors</span>
+                        <span className="font-heading font-bold text-lg text-slate-100">{repositoryInsights.contributors}</span>
+                      </div>
+                    </div>
 
-                <div className="flex-1 bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
-                  
-                  {/* Activity Commits */}
-                  <div className="flex flex-col gap-2.5">
-                    <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                      Commits
-                    </span>
-                    <div className="flex flex-col gap-2">
-                      {repositoryInsights.latestCommits?.map((commit, idx) => (
-                        <div key={idx} className="flex flex-col gap-0.5 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="font-mono text-[#00D4FF]">{commit.hash}</span>
-                            <span className="text-slate-500">{commit.time}</span>
+                    <div className="pt-3 border-t border-white/[0.05] flex items-center justify-between text-xs">
+                      <span className="text-slate-500">Security Scans:</span>
+                      <span className="text-[#00E38C] font-semibold flex items-center gap-1">
+                        <CheckCircle2 size={12} /> {repositoryInsights.securityStatus}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Recent Activity Card */
+                <div className="flex flex-col gap-3 flex-1 overflow-hidden min-h-0">
+                  <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                    <Activity size={13} className="text-[#00D4FF]" /> Recent Activity
+                  </h4>
+
+                  <div className="flex-1 bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+                    
+                    {/* Activity Commits */}
+                    <div className="flex flex-col gap-2.5">
+                      <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
+                        Commits
+                      </span>
+                      <div className="flex flex-col gap-2">
+                        {repositoryInsights.latestCommits?.map((commit, idx) => (
+                          <div key={idx} className="flex flex-col gap-0.5 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="font-mono text-[#00D4FF]">{commit.hash}</span>
+                              <span className="text-slate-500">{commit.time}</span>
+                            </div>
+                            <span className="text-xs font-semibold text-slate-300 truncate">{commit.message}</span>
+                            <span className="text-[10px] text-slate-500">by {commit.author}</span>
                           </div>
-                          <span className="text-xs font-semibold text-slate-300 truncate">{commit.message}</span>
-                          <span className="text-[10px] text-slate-500">by {commit.author}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Activity Pull Requests */}
+                    {repositoryInsights.activePRs && repositoryInsights.activePRs.length > 0 && (
+                      <div className="flex flex-col gap-2.5 mt-2">
+                        <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
+                          Active Pull Requests
+                        </span>
+                        <div className="flex flex-col gap-2">
+                          {repositoryInsights.activePRs.map((pr, idx) => (
+                            <div key={idx} className="flex flex-col gap-1 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-200">{pr.id}</span>
+                                <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                                  pr.status === 'Approved' ? 'bg-[#00E38C]/15 text-[#00E38C]' :
+                                  pr.status === 'In Review' ? 'bg-[#00D4FF]/15 text-[#00D4FF]' :
+                                  'bg-amber-500/15 text-amber-400'
+                                }`}>
+                                  {pr.status}
+                                </span>
+                              </div>
+                              <span className="text-[11px] font-medium text-slate-400 truncate">{pr.title}</span>
+                              <span className="text-[9px] text-slate-500">Opened by {pr.author}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    )}
+
+                    {/* Pipeline Runs */}
+                    {repositoryInsights.pipelines && repositoryInsights.pipelines.length > 0 && (
+                      <div className="flex flex-col gap-2.5 mt-2">
+                        <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
+                          CI/CD Pipelines
+                        </span>
+                        <div className="flex flex-col gap-2">
+                          {repositoryInsights.pipelines.map((pipe, idx) => (
+                            <div key={idx} className="flex items-center justify-between bg-slate-900/60 p-2.5 rounded-lg border border-white/[0.03] text-xs">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ${pipe.status === 'Passed' ? 'bg-[#00E38C]' : 'bg-rose-400'}`} />
+                                <span className="font-semibold text-slate-300">{pipe.name}</span>
+                              </div>
+                              <span className={`text-[10px] font-semibold ${pipe.status === 'Passed' ? 'text-slate-500' : 'text-rose-400'}`}>{pipe.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-
-                  {/* Activity Pull Requests */}
-                  {repositoryInsights.activePRs && repositoryInsights.activePRs.length > 0 && (
-                    <div className="flex flex-col gap-2.5 mt-2">
-                      <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                        Active Pull Requests
-                      </span>
-                      <div className="flex flex-col gap-2">
-                        {repositoryInsights.activePRs.map((pr, idx) => (
-                          <div key={idx} className="flex flex-col gap-1 bg-slate-900/60 p-2 rounded-lg border border-white/[0.03]">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-200">{pr.id}</span>
-                              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                pr.status === 'Approved' ? 'bg-[#00E38C]/15 text-[#00E38C]' :
-                                pr.status === 'In Review' ? 'bg-[#00D4FF]/15 text-[#00D4FF]' :
-                                'bg-amber-500/15 text-amber-400'
-                              }`}>
-                                {pr.status}
-                              </span>
-                            </div>
-                            <span className="text-[11px] font-medium text-slate-400 truncate">{pr.title}</span>
-                            <span className="text-[9px] text-slate-500">Opened by {pr.author}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Pipeline Runs */}
-                  {repositoryInsights.pipelines && repositoryInsights.pipelines.length > 0 && (
-                    <div className="flex flex-col gap-2.5 mt-2">
-                      <span className="text-[10px] font-heading font-bold text-slate-500 uppercase tracking-wider">
-                        CI/CD Pipelines
-                      </span>
-                      <div className="flex flex-col gap-2">
-                        {repositoryInsights.pipelines.map((pipe, idx) => (
-                          <div key={idx} className="flex items-center justify-between bg-slate-900/60 p-2.5 rounded-lg border border-white/[0.03] text-xs">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ${pipe.status === 'Passed' ? 'bg-[#00E38C]' : 'bg-rose-400'}`} />
-                              <span className="font-semibold text-slate-300">{pipe.name}</span>
-                            </div>
-                            <span className={`text-[10px] font-semibold ${pipe.status === 'Passed' ? 'text-slate-500' : 'text-rose-400'}`}>{pipe.status}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
-              </div>
+              )}
             </>
           )}
 
         </div>
       </aside>
     </div>
+
+      {/* ── PASTE URL MODAL ── */}
+      <AnimatePresence>
+        {showPasteUrlModal && (
+          <>
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50" onClick={() => setShowPasteUrlModal(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            >
+              {showConnectSuccess ? (
+                <div className="bg-slate-950 border border-[#00E38C]/30 rounded-2xl p-8 w-full max-w-md text-center flex flex-col items-center gap-4">
+                  <div className="w-14 h-14 rounded-full bg-[#00E38C]/15 border border-[#00E38C]/30 flex items-center justify-center text-[#00E38C]">
+                    <CheckCircle2 size={28} />
+                  </div>
+                  <h3 className="text-lg font-bold font-heading text-white">Repository Connected!</h3>
+                  <p className="text-sm text-slate-400">Your repository has been successfully linked to GitSense AI.</p>
+                  <button
+                    onClick={() => { setShowPasteUrlModal(false); setShowConnectSuccess(false); }}
+                    className="mt-2 px-6 py-2 bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white rounded-xl text-sm font-semibold transition-all cursor-pointer"
+                  >
+                    Start Visualizing
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-slate-950 border border-white/[0.08] rounded-2xl p-6 w-full max-w-md flex flex-col gap-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold font-heading text-white flex items-center gap-2">
+                      <LinkIcon size={16} className="text-[#00D4FF]" /> Paste Repository URL
+                    </h3>
+                    <button onClick={() => setShowPasteUrlModal(false)} className="text-slate-400 hover:text-white cursor-pointer"><X size={16} /></button>
+                  </div>
+                  <p className="text-xs text-slate-400">Enter a public GitHub repository URL to connect it.</p>
+                  <input
+                    type="text"
+                    placeholder="https://github.com/owner/repo"
+                    value={pasteUrlValue}
+                    onChange={(e) => { setPasteUrlValue(e.target.value); setPasteUrlError(''); }}
+                    className="w-full bg-slate-900 border border-white/[0.08] rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#7C5CFF]/60 transition-all font-mono"
+                    autoFocus
+                  />
+                  {pasteUrlError && <p className="text-xs text-rose-400">{pasteUrlError}</p>}
+                  <button
+                    onClick={async () => {
+                      if (!pasteUrlValue.trim()) { setPasteUrlError('Please enter a URL.'); return; }
+                      setPasteUrlLoading(true);
+                      setPasteUrlError('');
+                      try {
+                        const res = await apiFetch('/repos/connect-url', {
+                          method: 'POST',
+                          body: JSON.stringify({ url: pasteUrlValue }),
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.repository) {
+                          setConnectedRepo(data.repository);
+                          setShowConnectSuccess(true);
+                          // Fetch commits
+                          apiFetch(`/repos/${data.repository.id}/commits`).then(r => r.json()).then(cData => {
+                            if (cData.commits) setCommits(cData.commits);
+                          }).catch(() => {});
+                          // Fetch insights
+                          apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
+                            if (ins.insights) setRepoInsights(ins.insights);
+                          }).catch(() => {});
+                        } else {
+                          setPasteUrlError(data.error || 'Failed to connect.');
+                        }
+                      } catch {
+                        setPasteUrlError('Backend not running. Start with: cd backend && npm run dev');
+                      } finally {
+                        setPasteUrlLoading(false);
+                      }
+                    }}
+                    disabled={pasteUrlLoading}
+                    className="w-full py-3 bg-[#7C5CFF] hover:bg-[#8C6DFF] text-white rounded-xl text-sm font-semibold transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {pasteUrlLoading ? <><Loader2 size={14} className="animate-spin" /> Connecting...</> : 'Connect Repository'}
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
     </div>
   );
