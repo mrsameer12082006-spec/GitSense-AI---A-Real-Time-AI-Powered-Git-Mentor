@@ -9,7 +9,7 @@ const GITHUB_API = 'https://api.github.com';
 class GitHubService {
   constructor() {
     this.cache = new Map();
-    this.CACHE_TTL = 60_000; // 60 seconds
+    this.CACHE_TTL = 300_000; // 5 minutes (300 seconds)
   }
 
   /**
@@ -36,6 +36,30 @@ class GitHubService {
     const finalToken = token || process.env.GITHUB_TOKEN;
     if (finalToken) h.Authorization = `Bearer ${finalToken}`;
     return h;
+  }
+
+  /**
+   * Helper to perform a GET request and parse the Link header for total page count.
+   * This is the most efficient way to get total counts (commits, pulls, contributors) on GitHub REST API.
+   */
+  async _getTotalCount(endpoint, params = {}, token = null) {
+    try {
+      const response = await axios.get(`${GITHUB_API}${endpoint}`, {
+        headers: this._headers(token),
+        params: { ...params, per_page: 1 },
+      });
+      const linkHeader = response.headers.link;
+      if (linkHeader) {
+        const match = linkHeader.match(/page=(\d+)>; rel="last"/);
+        if (match) {
+          return parseInt(match[1], 10);
+        }
+      }
+      return Array.isArray(response.data) ? response.data.length : 0;
+    } catch (err) {
+      console.error(`[GitHub] _getTotalCount error for ${endpoint}:`, err.message);
+      return 0;
+    }
   }
 
   /**
@@ -152,7 +176,7 @@ class GitHubService {
       return details;
     } catch (err) {
       console.error('[GitHub] getRepoDetails error:', err.message);
-      throw new Error('Failed to fetch repository details.');
+      return {};
     }
   }
 
@@ -345,38 +369,74 @@ class GitHubService {
     }
   }
 
-  /**
-   * Get comprehensive repository insights (aggregated data).
-   */
   async getRepoInsights(owner, repo, token = null) {
-    const [details, commits, prs, issues, contributors, workflows] = await Promise.all([
-      this.getRepoDetails(owner, repo, token),
-      this.getCommits(owner, repo, token, 5),
-      this.getPullRequests(owner, repo, token),
-      this.getIssues(owner, repo, token),
-      this.getContributors(owner, repo, token),
-      this.getWorkflowRuns(owner, repo, token),
-    ]);
+    const cacheKey = `insights:${owner}/${repo}`;
+    const cached = this._getCached(cacheKey);
+    if (cached) return cached;
 
-    return {
-      commits: details.starCount !== undefined ? commits.length : 0,
-      totalCommitAuthors: [...new Set(commits.map((c) => c.author))].length,
-      openPRs: prs.length,
-      issues: issues.length,
-      contributors: contributors.length,
-      securityStatus: 'Clean', // Placeholder — would need Security API
-      latestCommits: commits.slice(0, 3),
-      activePRs: prs.slice(0, 3).map((pr) => ({
-        id: pr.id,
-        title: pr.title,
-        status: pr.status,
-        author: pr.author,
-      })),
-      pipelines: workflows.slice(0, 3).map((w) => ({
-        name: w.name,
-        status: w.status,
-      })),
-    };
+    try {
+      const [
+        details,
+        commits,
+        prs,
+        issues,
+        contributors,
+        workflows,
+        totalCommits,
+        totalPRs,
+        totalContributors
+      ] = await Promise.all([
+        this.getRepoDetails(owner, repo, token).catch(() => ({})),
+        this.getCommits(owner, repo, token, 30).catch(() => []),
+        this.getPullRequests(owner, repo, token).catch(() => []),
+        this.getIssues(owner, repo, token).catch(() => []),
+        this.getContributors(owner, repo, token).catch(() => []),
+        this.getWorkflowRuns(owner, repo, token).catch(() => []),
+        this._getTotalCount(`/repos/${owner}/${repo}/commits`, {}, token),
+        this._getTotalCount(`/repos/${owner}/${repo}/pulls`, { state: 'open' }, token),
+        this._getTotalCount(`/repos/${owner}/${repo}/contributors`, {}, token),
+      ]);
+
+      const openIssuesCountCombined = details.openIssuesCount !== undefined ? details.openIssuesCount : (issues.length + prs.length);
+      const openPRsCount = totalPRs || prs.length || 0;
+      const issuesCount = Math.max(0, openIssuesCountCombined - openPRsCount);
+
+      const insights = {
+        commits: totalCommits || commits.length || 0,
+        totalCommitAuthors: [...new Set(commits.map((c) => c.author))].length,
+        openPRs: openPRsCount,
+        issues: issuesCount,
+        contributors: totalContributors || contributors.length || 0,
+        securityStatus: 'Clean', // Placeholder — would need Security API
+        latestCommits: commits.slice(0, 3),
+        activePRs: prs.slice(0, 3).map((pr) => ({
+          id: pr.id,
+          title: pr.title,
+          status: pr.status,
+          author: pr.author,
+        })),
+        pipelines: workflows.slice(0, 3).map((w) => ({
+          name: w.name,
+          status: w.status,
+        })),
+      };
+
+      this._setCache(cacheKey, insights);
+      return insights;
+    } catch (err) {
+      console.error('[GitHub] getRepoInsights error:', err.message);
+      return {
+        commits: 0,
+        totalCommitAuthors: 0,
+        openPRs: 0,
+        issues: 0,
+        contributors: 0,
+        securityStatus: 'N/A',
+        latestCommits: [],
+        activePRs: [],
+        pipelines: []
+      };
+    }
   }
 
   /**
