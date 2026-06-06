@@ -13,6 +13,25 @@ class AIService {
   }
 
   /**
+   * Helper to dynamically get config based on API key prefix.
+   * Redirects gsk_ keys to Groq API.
+   */
+  _getAIConfig() {
+    const apiKey = process.env.TRUGEN_API_KEY || process.env.GROQ_API_KEY;
+    const isGroq = apiKey && apiKey.startsWith('gsk_');
+    
+    const baseURL = isGroq 
+      ? 'https://api.groq.com/openai/v1'
+      : (process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1');
+      
+    const model = isGroq
+      ? 'llama-3.3-70b-versatile'
+      : (process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile');
+      
+    return { apiKey, baseURL, model, isGroq };
+  }
+
+  /**
    * Generates the system prompt including strict mentorship guidelines and connected contexts.
    */
   _buildSystemPrompt(repoContext = '') {
@@ -66,17 +85,10 @@ Rules:
    * Helper to fetch completion stream.
    */
   async getCompletionStream(userMessage, repoContext = '', history = []) {
-    const isTruGen = !!process.env.TRUGEN_API_KEY;
-    const apiKey = isTruGen ? process.env.TRUGEN_API_KEY : process.env.GROQ_API_KEY;
-    const baseURL = isTruGen 
-      ? (process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1')
-      : 'https://api.groq.com/openai/v1';
-    const model = isTruGen
-      ? (process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile')
-      : 'llama-3.3-70b-versatile';
+    const { apiKey, baseURL, model, isGroq } = this._getAIConfig();
 
     if (!apiKey) {
-      throw new Error(isTruGen ? 'TRUGEN_API_KEY is not set.' : 'GROQ_API_KEY is not set. Add it to your .env file.');
+      throw new Error('TRUGEN_API_KEY is not set. Add it to your .env file.');
     }
 
     const systemPrompt = this._buildSystemPrompt(repoContext);
@@ -100,7 +112,7 @@ Rules:
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     };
-    if (isTruGen) {
+    if (!isGroq) {
       headers['x-api-key'] = apiKey;
     }
 
@@ -128,17 +140,10 @@ Rules:
    * Non-streaming response generator (fallback/testing).
    */
   async generateResponse(userMessage, repoContext = '', history = []) {
-    const isTruGen = !!process.env.TRUGEN_API_KEY;
-    const apiKey = isTruGen ? process.env.TRUGEN_API_KEY : process.env.GROQ_API_KEY;
-    const baseURL = isTruGen 
-      ? (process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1')
-      : 'https://api.groq.com/openai/v1';
-    const model = isTruGen
-      ? (process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile')
-      : 'llama-3.3-70b-versatile';
+    const { apiKey, baseURL, model, isGroq } = this._getAIConfig();
 
     if (!apiKey) {
-      throw new Error(isTruGen ? 'TRUGEN_API_KEY is not set.' : 'GROQ_API_KEY is not set. Add it to your .env file.');
+      throw new Error('TRUGEN_API_KEY is not set. Add it to your .env file.');
     }
 
     const systemPrompt = this._buildSystemPrompt(repoContext);
@@ -162,7 +167,7 @@ Rules:
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     };
-    if (isTruGen) {
+    if (!isGroq) {
       headers['x-api-key'] = apiKey;
     }
 
@@ -218,14 +223,8 @@ Rules:
    * Generate a short title for a conversation based on the first message.
    */
   async generateTitle(firstMessage) {
-    const isTruGen = !!process.env.TRUGEN_API_KEY;
-    const apiKey = isTruGen ? process.env.TRUGEN_API_KEY : process.env.GROQ_API_KEY;
-    const baseURL = isTruGen 
-      ? (process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1')
-      : 'https://api.groq.com/openai/v1';
-    const model = isTruGen
-      ? (process.env.TRUGEN_MODEL || 'llama-3.1-8b-instant')
-      : 'llama-3.1-8b-instant';
+    const { apiKey, baseURL, isGroq } = this._getAIConfig();
+    const model = isGroq ? 'llama-3.1-8b-instant' : (process.env.TRUGEN_MODEL || 'llama-3.1-8b-instant');
 
     if (!apiKey) return 'New Conversation';
 
@@ -233,7 +232,7 @@ Rules:
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     };
-    if (isTruGen) {
+    if (!isGroq) {
       headers['x-api-key'] = apiKey;
     }
 

@@ -111,7 +111,8 @@ router.post('/', async (req, res) => {
     // Read and pipe the stream to res
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    let accumulatedText = '';
+    let streamBuffer = '';
+    let aiCompletionText = '';
     let done = false;
 
     // Helper to unescape JSON properties manually during streaming
@@ -156,12 +157,12 @@ router.post('/', async (req, res) => {
       done = readerDone;
       if (value) {
         const chunk = decoder.decode(value, { stream: !done });
-        accumulatedText += chunk;
+        streamBuffer += chunk;
 
         // Extract raw JSON stream tokens (data: {...})
-        const lines = accumulatedText.split('\n');
-        // Keep the last incomplete line in accumulatedText
-        accumulatedText = lines.pop();
+        const lines = streamBuffer.split('\n');
+        // Keep the last incomplete line in streamBuffer
+        streamBuffer = lines.pop();
 
         for (const line of lines) {
           const cleanLine = line.trim();
@@ -172,10 +173,10 @@ router.post('/', async (req, res) => {
               const delta = parsedData.choices?.[0]?.delta?.content || '';
               
               // Accumulate raw completion buffer
-              accumulatedText += delta;
+              aiCompletionText += delta;
               
               // Extract current mapped "text" property
-              const currentFullText = extractTextFromPartialJson(accumulatedText);
+              const currentFullText = extractTextFromPartialJson(aiCompletionText);
               if (currentFullText.length > lastSentText.length) {
                 const tokenToSend = currentFullText.substring(lastSentText.length);
                 res.write(`data: ${JSON.stringify({ token: tokenToSend })}\n\n`);
@@ -189,32 +190,40 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Process remainder
-    const finalLines = accumulatedText.split('\n');
-    let rawJsonCompletion = '';
+    // Process remainder of streamBuffer if any
+    const finalLines = streamBuffer.split('\n');
     for (const line of finalLines) {
       const cleanLine = line.trim();
       if (cleanLine.startsWith('data: ')) {
         try {
           const parsedData = JSON.parse(cleanLine.substring(6));
-          rawJsonCompletion += parsedData.choices?.[0]?.delta?.content || '';
+          aiCompletionText += parsedData.choices?.[0]?.delta?.content || '';
         } catch {}
       } else {
-        rawJsonCompletion += line;
+        aiCompletionText += line;
       }
     }
 
-    // Extract complete JSON object
+    // Extract complete JSON object from the fully accumulated completion
     let parsedAI = { text: 'I apologize, I could not generate a response.' };
     try {
-      parsedAI = JSON.parse(rawJsonCompletion);
+      parsedAI = JSON.parse(aiCompletionText);
     } catch {
-      const textVal = extractTextFromPartialJson(rawJsonCompletion);
+      const textVal = extractTextFromPartialJson(aiCompletionText);
       if (textVal) {
         parsedAI = { text: textVal };
       } else {
-        parsedAI = { text: rawJsonCompletion };
+        parsedAI = { text: aiCompletionText };
       }
+    }
+
+    // Fallback if parsedAI.text is empty or undefined/null
+    if (!parsedAI || typeof parsedAI !== 'object' || !parsedAI.text || !parsedAI.text.trim()) {
+      const fallbackText = extractTextFromPartialJson(aiCompletionText);
+      parsedAI = {
+        ...parsedAI,
+        text: fallbackText || aiCompletionText || 'I apologize, I could not generate a response.'
+      };
     }
 
     // Fetch repository issues (Self-diagnosis)

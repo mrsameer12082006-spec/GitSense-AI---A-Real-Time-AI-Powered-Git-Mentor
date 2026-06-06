@@ -501,11 +501,11 @@ export default function Dashboard() {
       let done = false;
 
       // Add a placeholder message for the streaming response
-      let aiMsgIndex = -1;
-      setMessages(prev => {
-        aiMsgIndex = prev.length;
-        return [...prev, { sender: 'ai', text: '', isStreaming: true }];
-      });
+      const streamingMessageId = `ai-stream-${Date.now()}`;
+      setMessages(prev => [
+        ...prev,
+        { id: streamingMessageId, sender: 'ai', text: '', isStreaming: true }
+      ]);
       setIsAiTyping(false); // Disable typing indicator since we have the message container now
 
       while (!done) {
@@ -523,35 +523,41 @@ export default function Dashboard() {
               const dataStr = cleanLine.substring(6);
               try {
                 const parsed = JSON.parse(dataStr);
+                if (parsed.error) {
+                  throw new Error(parsed.error);
+                }
                 if (parsed.token) {
                   setMessages(prev => {
-                    const nextMsgs = [...prev];
-                    if (nextMsgs[aiMsgIndex]) {
-                      nextMsgs[aiMsgIndex] = {
-                        ...nextMsgs[aiMsgIndex],
-                        text: nextMsgs[aiMsgIndex].text + parsed.token
-                      };
-                    }
-                    return nextMsgs;
+                    return prev.map(msg => {
+                      if (msg.id === streamingMessageId) {
+                        return {
+                          ...msg,
+                          text: msg.text + parsed.token
+                        };
+                      }
+                      return msg;
+                    });
                   });
                 } else if (parsed.done) {
                   // Final metadata response
                   setMessages(prev => {
-                    const nextMsgs = [...prev];
-                    if (nextMsgs[aiMsgIndex]) {
-                      nextMsgs[aiMsgIndex] = {
-                        sender: 'ai',
-                        text: parsed.response.text,
-                        insight: parsed.response.insight,
-                        recommendation: parsed.response.recommendation,
-                        codeBlock: parsed.response.codeBlock,
-                        commandBlock: parsed.response.commandBlock,
-                        diff: parsed.response.diff,
-                        conflictResolution: parsed.response.conflictResolution,
-                        diagnosedIssue: parsed.response.diagnosedIssue,
-                      };
-                    }
-                    return nextMsgs;
+                    return prev.map(msg => {
+                      if (msg.id === streamingMessageId) {
+                        return {
+                          id: msg.id,
+                          sender: 'ai',
+                          text: parsed.response?.text || msg.text || '',
+                          insight: parsed.response?.insight,
+                          recommendation: parsed.response?.recommendation,
+                          codeBlock: parsed.response?.codeBlock,
+                          commandBlock: parsed.response?.commandBlock,
+                          diff: parsed.response?.diff,
+                          conflictResolution: parsed.response?.conflictResolution,
+                          diagnosedIssue: parsed.response?.diagnosedIssue,
+                        };
+                      }
+                      return msg;
+                    });
                   });
                   if (parsed.conversationId) {
                     setActiveConversationId(parsed.conversationId);
