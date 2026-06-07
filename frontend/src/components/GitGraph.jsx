@@ -178,11 +178,10 @@ const BRANCH_TYPES = [
 export default function GitGraph({ state = 'normal', onNodeSelect, commits = [], branches = [] }) {
   const [selectedNode, setSelectedNode] = useState(null);
   
-  // Interactive Pan and Zoom States
+  // Interactive Zoom and Drag-Scroll States
   const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [dragStart, setDragStart] = useState({ startX: 0, startScrollLeft: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   
   const svgRef = useRef(null);
@@ -218,6 +217,8 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
         };
       })
     : ALL_COMMITS;
+
+  const contentWidth = Math.max(960, 100 + displayCommits.length * 140);
 
   // Set default selected commit on load and when workflow state toggles or commits change
   useEffect(() => {
@@ -276,20 +277,22 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
     onNodeSelect?.(modifiedNode);
   };
 
-  // Dragging event handlers for panning
+  // Dragging event handlers for horizontal scrolling
   const handleMouseDown = (e) => {
-    // Only drag on left click
-    if (e.button !== 0) return;
+    if (e.button !== 0) return; // Only drag on left click
     setIsDragging(true);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+    if (svgRef.current) {
+      setDragStart({ 
+        startX: e.clientX, 
+        startScrollLeft: svgRef.current.scrollLeft 
+      });
+    }
   };
 
   const handleMouseMove = (e) => {
-    if (!isDragging) return;
-    setPan({
-      x: e.clientX - dragStart.x,
-      y: e.clientY - dragStart.y
-    });
+    if (!isDragging || !svgRef.current) return;
+    const dx = e.clientX - dragStart.startX;
+    svgRef.current.scrollLeft = dragStart.startScrollLeft - dx;
   };
 
   const handleMouseUp = () => {
@@ -298,7 +301,9 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
 
   const handleFitView = () => {
     setZoom(1);
-    setPan({ x: 0, y: 0 });
+    if (svgRef.current) {
+      svgRef.current.scrollLeft = 0;
+    }
   };
 
   // Paths rendering builder based on active workspace state
@@ -551,18 +556,27 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
 
       {/* ── SVG Canvas Viewport */}
       <div 
-        className="w-full relative overflow-hidden bg-slate-950/20 border border-white/[0.03] rounded-xl cursor-grab active:cursor-grabbing flex-1 min-h-[300px]"
+        className={`w-full relative overflow-x-auto overflow-y-hidden bg-slate-950/20 border border-white/[0.03] rounded-xl cursor-grab active:cursor-grabbing flex-1 custom-scrollbar ${isDragging ? '' : 'scroll-smooth'}`}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         ref={svgRef}
+        style={{ 
+          height: `${380 * zoom}px`,
+          minHeight: '340px',
+          transition: 'height 0.15s ease-out'
+        }}
       >
         <svg
-          viewBox="0 0 960 380"
-          preserveAspectRatio="xMidYMid meet"
-          className="w-full h-full select-none"
-          style={{ minHeight: '340px' }}
+          viewBox={`0 0 ${contentWidth} 380`}
+          width={contentWidth * zoom}
+          height={380 * zoom}
+          preserveAspectRatio="xMinYMin meet"
+          className="select-none"
+          style={{ 
+            transition: 'width 0.15s ease-out, height 0.15s ease-out'
+          }}
         >
           <defs>
             {/* Dotted Grid Pattern */}
@@ -582,14 +596,8 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
           {/* Grid Background */}
           <rect width="100%" height="100%" fill="url(#dotGrid)" className="pointer-events-none" />
 
-          {/* Wrapper Group for Pan & Zoom */}
-          <g 
-            transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}
-            style={{ 
-              transformOrigin: 'center',
-              transition: isDragging ? 'none' : 'transform 0.15s ease-out' 
-            }}
-          >
+          {/* Wrapper Group for commits and paths */}
+          <g>
             
             {/* ── BRANCH ANNOTATIONS (3 commits ago / Branch point or Diverged Alert) */}
             {!hasRealCommits ? (
@@ -661,7 +669,7 @@ export default function GitGraph({ state = 'normal', onNodeSelect, commits = [],
                   return (
                     <g key={`branch-pill-${branch.name}`}>
                       {/* Lane Track Background line */}
-                      <line x1={20} y1={trackY} x2={940} y2={trackY} stroke={branch.color} strokeWidth={1.0} strokeDasharray="3 6" opacity={0.22} />
+                      <line x1={20} y1={trackY} x2={contentWidth - 20} y2={trackY} stroke={branch.color} strokeWidth={1.0} strokeDasharray="3 6" opacity={0.22} />
                       {/* Branch Name Badge */}
                       <g transform={`translate(20, ${trackY - 12})`}>
                         <rect width={pillWidth} height={24} rx={6} fill="var(--graph-pill-bg, #0b0f19)" />

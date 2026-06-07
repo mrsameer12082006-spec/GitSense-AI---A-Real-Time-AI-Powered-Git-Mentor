@@ -44,7 +44,7 @@ This document summarizes the project's tech stack, architecture, key components,
 
 ### ✅ Development Servers Running
 - Backend: ✅ Running on `http://localhost:5000` (ESM, Node watch mode)
-- Frontend: ✅ Running on `http://localhost:5173` (Vite dev server)
+- Frontend: ✅ Running on `http://localhost:5000` (Vite dev server)
 - Both servers responsive and stable
 
 ### ✅ Recent Implementations (Completed & Verified)
@@ -57,7 +57,7 @@ This document summarizes the project's tech stack, architecture, key components,
      - **App Preferences**: Two checkboxes (Git Tips, Repo Insights) with "Save Preferences" button for localStorage persistence
      - **Danger Zone**: "Clear Local App Data" (resets prefs only) and "Log Out" (clears token and redirects to login)
    - **Testing Status**: ✅ All 4 sections verified working, theme toggle persists across page reloads, localStorage updates confirmed
-   - **Live URL**: `http://localhost:5173/#settings`
+   - **Live URL**: `http://localhost:5000/#settings`
 
 2. **Profile Page Database Integration** (`frontend/src/sections/ProfilePage.jsx`) — **COMPLETE**
    - ✅ Full Name field: Editable, persists to database
@@ -69,7 +69,7 @@ This document summarizes the project's tech stack, architecture, key components,
      - `PUT /api/auth/profile` - Saves name, email, githubLink updates to Neon PostgreSQL
    - ✅ Avatar: Dynamically updates to first letter of user's name
    - **Testing Status**: ✅ Database persistence verified — Changed name "Sarah Chen" → "Dr. Sarah Chen PhD", saved successfully, page refresh confirmed data persisted in PostgreSQL, Settings page shows updated name
-   - **Live URL**: `http://localhost:5173/#profile`
+   - **Live URL**: `http://localhost:5000/#profile`
 
 3. **GitHub OAuth Account Connection** (`backend/src/routes/github.js`, `frontend/src/components/RepoConnectModal.jsx`) — **COMPLETE**
    - ✅ GitHub OAuth Flow:
@@ -91,7 +91,7 @@ This document summarizes the project's tech stack, architecture, key components,
      - Import button for each repo with loading/success states
      - Disconnect option to revoke access
    - ✅ Environment Variables:
-     - Updated `.env`: `GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback` (fixed from localhost:3001)
+      - Updated `.env`: `GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback` (fixed from localhost:3001)
      - Added `BACKEND_URL` and `FRONTEND_URL` variables
      - Updated `.env.example` with safe placeholder values
    - ✅ Security:
@@ -172,11 +172,11 @@ This document summarizes the project's tech stack, architecture, key components,
 - ✅ PostgreSQL: Profile updates persist across browser sessions
 - ✅ localStorage: Theme preference persists across page reloads
 - ✅ localStorage: Session token and user data maintained during session
-- ✅ Cross-origin requests: CORS enabled for http://localhost:5173
+- ✅ Cross-origin requests: CORS enabled for http://localhost:5000
 
 ### Test Environment
 - Backend Server: http://localhost:5000 (Express, Node.js)
-- Frontend Dev Server: http://localhost:5173 (Vite)
+- Frontend Dev Server: http://localhost:5000 (Vite)
 - Database: Neon PostgreSQL (via Prisma)
 - Browser: Chrome (Playwright automated testing)
 
@@ -187,7 +187,7 @@ The GitHub OAuth implementation is complete but requires manual testing with rea
 1. Create GitHub OAuth App: https://github.com/settings/developers → New OAuth App
 2. Set Authorization callback URL to: `http://localhost:5000/api/github/callback`
 3. Copy Client ID and Client Secret into `backend/.env`
-4. Ensure both servers are running (backend on :5000, frontend on :5173)
+4. Ensure both servers are running (backend on :5000, frontend on :5000)
 
 **Testing Steps:**
 1. ✓ Backend ready: `/api/github/connect` endpoint active
@@ -195,7 +195,7 @@ The GitHub OAuth implementation is complete but requires manual testing with rea
 3. Frontend ready: RepoConnectModal shows "Connect GitHub Account" button when not authenticated
 4. Click button → redirected to GitHub OAuth consent page
 5. Authorize app → redirected back to `http://localhost:5000/api/github/callback`
-6. Frontend should redirect to `http://localhost:5173/#dashboard?github=connected`
+6. Frontend should redirect to `http://localhost:5000/#dashboard?github=connected`
 7. Modal should now show repository list with "Import" buttons
 8. Import a repository → saved to database as connected repo
 9. Repository persists after page refresh
@@ -249,11 +249,11 @@ npm run dev
 ```bash
 cd frontend
 npm run dev
-# Starts on http://localhost:5173
+# Starts on http://localhost:5000
 ```
 
 **3. Access the Application**
-- Open http://localhost:5173 in your browser
+- Open http://localhost:5000 in your browser
 - Create an account or login with test credentials
 - Navigate to #settings or #profile to test new features
 
@@ -396,7 +396,7 @@ POST /api/github/disconnect     → Revoke GitHub access
 2. Click "New OAuth App"
 3. Fill in application details:
    - **Application name**: GitSense AI Local (or your choice)
-   - **Homepage URL**: http://localhost:5173
+   - **Homepage URL**: http://localhost:5000
    - **Authorization callback URL**: http://localhost:5000/api/github/callback
 4. Copy **Client ID** and **Client Secret**
 
@@ -415,7 +415,7 @@ npm run dev
 ```
 
 ### Step 4: Test OAuth Flow
-1. Frontend already running on http://localhost:5173
+1. Frontend already running on http://localhost:5000
 2. Login to GitSense.AI
 3. Go to Dashboard
 4. Click "Connect / Import GitHub Repo" button
@@ -435,6 +435,6 @@ npm run dev
 - Versions and dependency lists were read from `package.json` files in the workspace.
 - This file is a snapshot as of 2026-06-06 and reflects actual tested behavior.
 - All features documented have been manually tested end-to-end with real user accounts.
-- Backend is stable on port 5000, frontend dev server stable on port 5173.
+- Backend is stable on port 5000, frontend dev server stable on port 5000.
 - Deployment considerations (production builds, environment configs) not yet addressed.
 

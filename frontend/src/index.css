@@ -76,7 +76,7 @@ body {
 }
 
 /* ─── Scrollbar ─────────────────────────────────────── */
-::-webkit-scrollbar        { width: 8px; }
+::-webkit-scrollbar        { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track  { background: var(--bg-darker); }
 ::-webkit-scrollbar-thumb  {
   background: rgba(124, 92, 255, 0.35);
@@ -84,6 +84,13 @@ body {
   border: 2px solid var(--bg-darker);
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(124, 92, 255, 0.65); }
+
+/* Firefox Scrollbar Styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 92, 255, 0.35) var(--bg-darker);
+}
+
 
 /* ─── Typography ────────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
@@ -718,5 +725,16 @@ html.light input:-webkit-autofill:active {
   -webkit-text-fill-color: #111827 !important;
   caret-color: #111827 !important;
 }
+
+/* Monaco Git Gutter Changes Indicators */
+.git-line-added {
+  border-left: 3px solid #10B981 !important; /* Green */
+  margin-left: 2px;
+}
+.git-line-modified {
+  border-left: 3px solid #00D4FF !important; /* Cyan */
+  margin-left: 2px;
+}
+
 
 

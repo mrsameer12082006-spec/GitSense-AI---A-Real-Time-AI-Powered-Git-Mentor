@@ -96,7 +96,7 @@ User table:
 ```bash
 # Start servers
 cd backend && npm run dev        # Port 5000
-cd frontend && npm run dev       # Port 5173
+cd frontend && npm run dev       # Port 5000 (auto-falls back to 5001 if run together)
 
 # Browser tests
 [ ] Settings page loads at /#settings

@@ -142,7 +142,7 @@ Successfully implemented TASK 1 (Simplified Settings Page) and TASK 2 (Profile P
 
 ### ✅ Passed Tests
 1. ✅ Backend running on port 5000
-2. ✅ Frontend running on port 5173
+2. ✅ Frontend running on port 5000 (auto-falls back to 5001 if run together)
 3. ✅ Settings page loads without errors
 4. ✅ Settings page displays Account Settings section
 5. ✅ Settings page displays Appearance section with theme toggle
@@ -221,11 +221,11 @@ npm run dev
 ```bash
 cd frontend
 npm run dev
-# Frontend running on http://localhost:5173
+# Frontend running on http://localhost:5000
 ```
 
 ### 3. Test Settings Page
-- Navigate to http://localhost:5173/#settings
+- Navigate to http://localhost:5000/#settings
 - Verify all sections display correctly
 - Click "Edit Profile" button → should navigate to Profile page
 - Toggle Dark Theme → localStorage updated
@@ -233,7 +233,7 @@ npm run dev
 - Click "Clear Local App Data" → resets preferences (not profile)
 
 ### 4. Test Profile Page (With Active Session)
-- Navigate to http://localhost:5173/#profile
+- Navigate to http://localhost:5000/#profile
 - If logged in, form should populate with current profile data
 - Edit name field
 - Edit GitHub URL field

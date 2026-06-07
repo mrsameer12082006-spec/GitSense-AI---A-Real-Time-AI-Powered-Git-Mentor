@@ -6,6 +6,11 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 import { Server as SocketIO } from 'socket.io';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Route imports
 import authRoutes from './src/routes/auth.routes.js';
@@ -16,6 +21,7 @@ import activityRoutes from './src/routes/activity.js';
 import kbRoutes from './src/routes/kb.js';
 import githubRoutes from './src/routes/github.js';
 import ingestionRoutes from './src/routes/ingestion.js';
+import workspaceRoutes from './src/routes/workspace.js';
 import aiService from './src/services/ai.js';
 
 const app = express();
@@ -115,10 +121,23 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/kb', kbRoutes);
+app.use('/api/workspace', workspaceRoutes);
+
+// Serve static assets from frontend
+const frontendDistPath = path.join(__dirname, '../frontend/dist');
+app.use(express.static(frontendDistPath));
 
 // ── 404 handler ──
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'API route not found' });
+});
+
+// Fallback all non-API requests to frontend index.html
+app.get('/*splat', (req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return next();
+  }
+  res.sendFile(path.join(frontendDistPath, 'index.html'));
 });
 
 // ── Global Error Handler ──

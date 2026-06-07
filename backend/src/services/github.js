@@ -350,7 +350,7 @@ class GitHubService {
     try {
       const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/actions/runs`, {
         headers: this._headers(token),
-        params: { per_page: 5 },
+        params: { per_page: 10 },
       });
 
       const runs = (data.workflow_runs || []).map((r) => ({
@@ -409,14 +409,14 @@ class GitHubService {
         issues: issuesCount,
         contributors: totalContributors || contributors.length || 0,
         securityStatus: 'Clean', // Placeholder — would need Security API
-        latestCommits: commits.slice(0, 3),
-        activePRs: prs.slice(0, 3).map((pr) => ({
+        latestCommits: commits.slice(0, 10),
+        activePRs: prs.slice(0, 10).map((pr) => ({
           id: pr.id,
           title: pr.title,
           status: pr.status,
           author: pr.author,
         })),
-        pipelines: workflows.slice(0, 3).map((w) => ({
+        pipelines: workflows.slice(0, 10).map((w) => ({
           name: w.name,
           status: w.status,
         })),
