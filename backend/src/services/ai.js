@@ -15,16 +15,59 @@ class AIService {
   }
 
   /**
-   * Helper to dynamically get config for TrueGen AI.
-   * Groq fallback has been permanently removed.
+   * Helper to dynamically get config for TruGen AI and Groq.
+   * Auto-detects if TruGen API key starts with gsk_ (indicating a Groq key).
    */
   _getAIConfig() {
-    const apiKey = process.env.TRUGEN_API_KEY || process.env.GROQ_API_KEY;
-    
-    const baseURL = process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1';
-    const model = process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile';
-      
-    return { apiKey, baseURL, model, isGroq: false };
+    const trugenKey = process.env.TRUGEN_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY;
+
+    let primary = null;
+    let fallback = null;
+
+    const trugenBaseURL = process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1';
+    const trugenModel = process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile';
+
+    const groqBaseURL = 'https://api.groq.com/openai/v1';
+    const groqModel = 'llama-3.3-70b-versatile';
+
+    // If TRUGEN_API_KEY starts with gsk_, treat it as a Groq key
+    if (trugenKey && trugenKey.startsWith('gsk_')) {
+      primary = {
+        apiKey: trugenKey,
+        baseURL: groqBaseURL,
+        model: groqModel,
+        isGroq: true,
+        name: 'Groq (via TruGen Key)'
+      };
+    } else if (trugenKey) {
+      primary = {
+        apiKey: trugenKey,
+        baseURL: trugenBaseURL,
+        model: trugenModel,
+        isGroq: false,
+        name: 'TruGen'
+      };
+      if (groqKey) {
+        fallback = {
+          apiKey: groqKey,
+          baseURL: groqBaseURL,
+          model: groqModel,
+          isGroq: true,
+          name: 'Groq'
+        };
+      }
+    } else if (groqKey) {
+      primary = {
+        apiKey: groqKey,
+        baseURL: groqBaseURL,
+        model: groqModel,
+        isGroq: true,
+        name: 'Groq'
+      };
+    }
+
+    return { primary, fallback };
   }
 
   /**
@@ -33,7 +76,7 @@ class AIService {
   _buildSystemPrompt(repoContext = '', personaLevel = 2, repoName = '') {
     const personaRules = personaClassifier.getPersonaRules(personaLevel);
 
-    return `You are GitSense AI, an expert Git repository analyst with deep knowledge of the connected codebase. You answer questions using only the verified repository data provided below. You never invent commit hashes, file names, branch names, function names, or any technical details that are not explicitly present in the context. If the answer is not in the context, say I do not have enough repository data to answer this accurately and suggest what action the user should take to get more information.
+    return `You are TruGen AI (powered by Huma-2 for conversational logic and Hawkeye-1 for visual code analysis), an expert Git repository analyst with deep knowledge of the connected codebase. You answer questions using only the verified repository data provided below. You never invent commit hashes, file names, branch names, function names, or any technical details that are not explicitly present in the context. If the answer is not in the context, say I do not have enough repository data to answer this accurately and suggest what action the user should take to get more information.
 
 ## RULE 1 — STRICT GITHUB AND REPOSITORY ONLY BOUNDARY
 Your entire knowledge and purpose is limited to the following domains only:
@@ -105,12 +148,13 @@ REPOSITORY CONTEXT END`;
 
   /**
    * Helper to fetch completion stream.
+   * Attempts primary configuration, falls back to Groq if configured and TruGen fails.
    */
   async getCompletionStream(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '') {
-    const { apiKey, baseURL, model, isGroq } = this._getAIConfig();
+    const { primary, fallback } = this._getAIConfig();
 
-    if (!apiKey) {
-      throw new Error('TRUGEN_API_KEY is not set. Add it to your .env file.');
+    if (!primary) {
+      throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
     const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName);
@@ -130,19 +174,39 @@ REPOSITORY CONTEXT END`;
 
     messages.push({ role: 'user', content: userMessage });
 
+    try {
+      console.log(`[AI] Attempting stream using primary provider: ${primary.name}`);
+      return await this._executeStreamCall(primary, messages);
+    } catch (err) {
+      console.error(`[AI] Primary provider ${primary.name} failed:`, err.message);
+      if (fallback) {
+        console.log(`[AI] Reverting/falling back to secondary provider: ${fallback.name}`);
+        try {
+          return await this._executeStreamCall(fallback, messages);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
+          throw new Error(`AI API failed for both primary (${primary.name}) and fallback (${fallback.name}): ${fallbackErr.message}`);
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  async _executeStreamCall(config, messages) {
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${config.apiKey}`,
     };
-    if (!isGroq) {
-      headers['x-api-key'] = apiKey;
+    if (!config.isGroq) {
+      headers['x-api-key'] = config.apiKey;
     }
 
-    const response = await fetch(`${baseURL}/chat/completions`, {
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model,
+        model: config.model,
         messages,
         temperature: 0.3,
         stream: true,
@@ -152,7 +216,7 @@ REPOSITORY CONTEXT END`;
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`AI API failed with status ${response.status}: ${errText}`);
+      throw new Error(`API failed with status ${response.status}: ${errText}`);
     }
 
     return response.body; // ReadableStream
@@ -162,10 +226,10 @@ REPOSITORY CONTEXT END`;
    * Non-streaming response generator (fallback/testing).
    */
   async generateResponse(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '') {
-    const { apiKey, baseURL, model, isGroq } = this._getAIConfig();
+    const { primary, fallback } = this._getAIConfig();
 
-    if (!apiKey) {
-      throw new Error('TRUGEN_API_KEY is not set. Add it to your .env file.');
+    if (!primary) {
+      throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
     const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName);
@@ -185,59 +249,74 @@ REPOSITORY CONTEXT END`;
 
     messages.push({ role: 'user', content: userMessage });
 
+    try {
+      console.log(`[AI] Attempting generateResponse using primary provider: ${primary.name}`);
+      return await this._executeResponseCall(primary, messages);
+    } catch (err) {
+      console.error(`[AI] Primary provider ${primary.name} failed:`, err.message);
+      if (fallback) {
+        console.log(`[AI] Reverting/falling back to secondary provider: ${fallback.name}`);
+        try {
+          return await this._executeResponseCall(fallback, messages);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
+          throw fallbackErr;
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  async _executeResponseCall(config, messages) {
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${config.apiKey}`,
     };
-    if (!isGroq) {
-      headers['x-api-key'] = apiKey;
+    if (!config.isGroq) {
+      headers['x-api-key'] = config.apiKey;
     }
 
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        temperature: 0.3,
+        response_format: { type: 'json_object' }
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API failed with status ${response.status}: ${errText}`);
+    }
+
+    const parsedData = await response.json();
+    const responseText = parsedData.choices[0]?.message?.content || '';
+
     try {
-      const response = await fetch(`${baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.3,
-          response_format: { type: 'json_object' }
-        }),
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`AI API failed with status ${response.status}: ${errText}`);
-      }
-
-      const parsedData = await response.json();
-      const responseText = parsedData.choices[0]?.message?.content || '';
-
-      try {
-        const parsed = JSON.parse(responseText);
-        return {
-          text: parsed.text || 'I apologize, I could not generate a response.',
-          insight: parsed.insight || null,
-          recommendation: parsed.recommendation || null,
-          codeBlock: parsed.codeBlock || null,
-          commandBlock: parsed.commandBlock || null,
-          diff: parsed.diff || null,
-          conflictResolution: parsed.conflictResolution || null,
-        };
-      } catch {
-        return {
-          text: responseText,
-          insight: null,
-          recommendation: null,
-          codeBlock: null,
-          commandBlock: null,
-          diff: null,
-          conflictResolution: null,
-        };
-      }
-    } catch (err) {
-      console.error('[AI] generateResponse error:', err);
-      throw err;
+      const parsed = JSON.parse(responseText);
+      return {
+        text: parsed.text || 'I apologize, I could not generate a response.',
+        insight: parsed.insight || null,
+        recommendation: parsed.recommendation || null,
+        codeBlock: parsed.codeBlock || null,
+        commandBlock: parsed.commandBlock || null,
+        diff: parsed.diff || null,
+        conflictResolution: parsed.conflictResolution || null,
+      };
+    } catch {
+      return {
+        text: responseText,
+        insight: null,
+        recommendation: null,
+        codeBlock: null,
+        commandBlock: null,
+        diff: null,
+        conflictResolution: null,
+      };
     }
   }
 
@@ -245,92 +324,127 @@ REPOSITORY CONTEXT END`;
    * General-purpose completion helper for non-mentorship tasks (like query expansion).
    */
   async generateCompletion(messages, temperature = 0.5) {
-    const { apiKey, baseURL, model, isGroq } = this._getAIConfig();
+    const { primary, fallback } = this._getAIConfig();
 
-    if (!apiKey) {
-      throw new Error('TRUGEN_API_KEY is not set.');
-    }
-
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    };
-    if (!isGroq) {
-      headers['x-api-key'] = apiKey;
+    if (!primary) {
+      throw new Error('No AI provider API key is set.');
     }
 
     try {
-      const response = await fetch(`${baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature,
-        }),
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`AI API failed with status ${response.status}: ${errText}`);
-      }
-
-      const parsedData = await response.json();
-      return parsedData.choices[0]?.message?.content || '';
+      console.log(`[AI] Attempting generateCompletion using primary provider: ${primary.name}`);
+      return await this._executeCompletionCall(primary, messages, temperature);
     } catch (err) {
-      console.error('[AI] generateCompletion error:', err);
-      throw err;
+      console.error(`[AI] Primary provider ${primary.name} failed:`, err.message);
+      if (fallback) {
+        console.log(`[AI] Reverting/falling back to secondary provider: ${fallback.name}`);
+        try {
+          return await this._executeCompletionCall(fallback, messages, temperature);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
+          throw fallbackErr;
+        }
+      } else {
+        throw err;
+      }
     }
+  }
+
+  async _executeCompletionCall(config, messages, temperature) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`,
+    };
+    if (!config.isGroq) {
+      headers['x-api-key'] = config.apiKey;
+    }
+
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API failed with status ${response.status}: ${errText}`);
+    }
+
+    const parsedData = await response.json();
+    return parsedData.choices[0]?.message?.content || '';
   }
 
   /**
    * Generate a short title for a conversation based on the first message.
    */
   async generateTitle(firstMessage) {
-    const { apiKey, baseURL, isGroq } = this._getAIConfig();
-    const model = isGroq ? 'llama-3.1-8b-instant' : (process.env.TRUGEN_MODEL || 'llama-3.1-8b-instant');
+    const { primary, fallback } = this._getAIConfig();
 
-    if (!apiKey) return 'New Conversation';
-
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    };
-    if (!isGroq) {
-      headers['x-api-key'] = apiKey;
-    }
+    if (!primary) return 'New Conversation';
 
     try {
-      const response = await fetch(`${baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: 'Generate a very short title (max 6 words) for a git-related conversation that starts with the message below. Return only the title text, nothing else.',
-            },
-            { role: 'user', content: firstMessage },
-          ],
-          temperature: 0.5,
-          max_tokens: 20,
-        }),
-      });
-
-      if (!response.ok) return 'New Conversation';
-      const parsedData = await response.json();
-      return parsedData.choices[0]?.message?.content?.trim() || 'New Conversation';
-    } catch {
+      return await this._executeTitleCall(primary, firstMessage);
+    } catch (err) {
+      console.error(`[AI] Primary provider ${primary.name} title generation failed:`, err.message);
+      if (fallback) {
+        console.log(`[AI] Reverting/falling back for title generation to: ${fallback.name}`);
+        try {
+          return await this._executeTitleCall(fallback, firstMessage);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} title generation also failed:`, fallbackErr.message);
+        }
+      }
       return firstMessage.length > 30
         ? firstMessage.substring(0, 30) + '...'
         : firstMessage;
     }
   }
+
+  async _executeTitleCall(config, firstMessage) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`,
+    };
+    if (!config.isGroq) {
+      headers['x-api-key'] = config.apiKey;
+    }
+
+    const model = config.isGroq ? 'llama-3.1-8b-instant' : config.model;
+
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: 'Generate a very short title (max 6 words) for a git-related conversation that starts with the message below. Return only the title text, nothing else.',
+          },
+          { role: 'user', content: firstMessage },
+        ],
+        temperature: 0.5,
+        max_tokens: 20,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API failed with status ${response.status}`);
+    }
+    const parsedData = await response.json();
+    return parsedData.choices[0]?.message?.content?.trim() || 'New Conversation';
+  }
+
+  /**
+   * Diagnose issues from automated scanning.
+   */
   async diagnoseIssues(issues, userLevel = 'intermediate') {
-    const { apiKey, baseURL, model } = this._getProviderConfig();
+    const { primary, fallback } = this._getAIConfig();
     
-    if (!apiKey) {
+    if (!primary) {
       console.warn('[AIService] No API key, skipping diagnosis');
       return issues.map(i => ({
         ...i,
@@ -339,7 +453,7 @@ REPOSITORY CONTEXT END`;
       }));
     }
 
-    const systemPrompt = `You are GitSense AI's issue diagnosis writer. You receive structured data about real repository issues detected by automated scans. For each issue, write two sections. Section one called What is the issue should explain the problem in plain English using the exact real values provided in the data object. Section two called How this happened should explain the root cause using the real context provided. Never add technical details not present in the data. Never invent commit hashes, file names, or contributor names. Write for a developer audience by default but if the userLevel field in the data is set to beginner write using plain non-technical analogies.
+    const systemPrompt = `You are TruGen AI powered by Huma-2 and Hawkeye-1. You are GitSense AI's issue diagnosis writer. You receive structured data about real repository issues detected by automated scans. For each issue, write two sections. Section one called What is the issue should explain the problem in plain English using the exact real values provided in the data object. Section two called How this happened should explain the root cause using the real context provided. Never add technical details not present in the data. Never invent commit hashes, file names, or contributor names. Write for a developer audience by default but if the userLevel field in the data is set to beginner write using plain non-technical analogies.
 
 Output your response as a valid JSON object matching this schema:
 {
@@ -352,75 +466,71 @@ Output your response as a valid JSON object matching this schema:
   ]
 }`;
 
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.provider === 'anthropic') {
-      headers['x-api-key'] = apiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    } else {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-    
     try {
-      const messages = [
-        {
-          role: 'user',
-          content: JSON.stringify({ userLevel, issues })
-        }
-      ];
-
-      let reqBody;
-      if (this.provider === 'anthropic') {
-        reqBody = {
-          model,
-          system: systemPrompt,
-          messages,
-          max_tokens: 1500,
-          temperature: 0.3
-        };
-      } else {
-        reqBody = {
-          model,
-          messages: [{ role: 'system', content: systemPrompt }, ...messages],
-          response_format: { type: 'json_object' },
-          temperature: 0.3
-        };
-      }
-
-      const response = await fetch(`${baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(reqBody)
-      });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      const content = this.provider === 'anthropic' 
-        ? data.content[0].text 
-        : data.choices[0].message.content;
-
-      const parsed = JSON.parse(content);
-      const diagnosisMap = new Map(parsed.diagnoses.map(d => [d.id, d]));
-
-      return issues.map(issue => {
-        const diag = diagnosisMap.get(issue.id);
-        return {
-          ...issue,
-          whatIsTheIssue: diag ? diag.whatIsTheIssue : `Issue detected: ${issue.title}`,
-          howThisHappened: diag ? diag.howThisHappened : `Automated scan found this issue.`
-        };
-      });
-
+      console.log(`[AI] Attempting diagnoseIssues using primary provider: ${primary.name}`);
+      return await this._executeDiagnosisCall(primary, systemPrompt, issues, userLevel);
     } catch (err) {
-      console.error('[AIService] Failed to diagnose issues:', err);
+      console.error(`[AI] Primary provider ${primary.name} diagnosis failed:`, err.message);
+      if (fallback) {
+        console.log(`[AI] Reverting/falling back for diagnosis to: ${fallback.name}`);
+        try {
+          return await this._executeDiagnosisCall(fallback, systemPrompt, issues, userLevel);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} diagnosis also failed:`, fallbackErr.message);
+        }
+      }
       return issues.map(i => ({
         ...i,
         whatIsTheIssue: `Issue detected: ${i.title}`,
         howThisHappened: `Automated scan found this issue.`
       }));
     }
+  }
+
+  async _executeDiagnosisCall(config, systemPrompt, issues, userLevel) {
+    const headers = { 
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`
+    };
+    if (!config.isGroq) {
+      headers['x-api-key'] = config.apiKey;
+    }
+    
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: JSON.stringify({ userLevel, issues }) }
+    ];
+
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0.3
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errText}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+
+    const parsed = JSON.parse(content);
+    const diagnosisMap = new Map(parsed.diagnoses.map(d => [d.id, d]));
+
+    return issues.map(issue => {
+      const diag = diagnosisMap.get(issue.id);
+      return {
+        ...issue,
+        whatIsTheIssue: diag ? diag.whatIsTheIssue : `Issue detected: ${issue.title}`,
+        howThisHappened: diag ? diag.howThisHappened : `Automated scan found this issue.`
+      };
+    });
   }
 }
 

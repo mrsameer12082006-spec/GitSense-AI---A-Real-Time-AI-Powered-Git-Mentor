@@ -74,29 +74,32 @@ app.get('/api/health', (_req, res) => {
 // ── AI Provider Connection Test ──
 app.get('/api/test-ai', async (_req, res) => {
   try {
-    const apiKey = process.env.TRUGEN_API_KEY;
+    const apiKey = process.env.TRUGEN_API_KEY || process.env.GROQ_API_KEY;
     if (!apiKey) {
       return res.status(401).json({
         status: 'error',
-        error: 'TRUGEN_API_KEY environment variable is not defined in .env'
+        error: 'Neither TRUGEN_API_KEY nor GROQ_API_KEY environment variable is defined in .env'
       });
     }
 
-    console.log('[Test-AI] Sending test ping request to TrueGen AI...');
+    console.log('[Test-AI] Sending test ping request...');
     const result = await aiService.generateResponse('Hello');
-    console.log('[Test-AI] TrueGen AI connection test result:', result);
+    console.log('[Test-AI] AI connection test result:', result);
+
+    const config = aiService._getAIConfig();
+    const activeProvider = config.primary?.isGroq ? 'groq' : 'truegen';
 
     res.json({
       status: 'success',
       apiKeyConfigured: true,
-      provider: 'truegen',
+      provider: activeProvider,
       result
     });
   } catch (err) {
     console.error('[Test-AI] Error during test connection:', err);
     res.status(500).json({
       status: 'error',
-      apiKeyConfigured: !!process.env.TRUGEN_API_KEY,
+      apiKeyConfigured: !!(process.env.TRUGEN_API_KEY || process.env.GROQ_API_KEY),
       error: err.message || String(err)
     });
   }
