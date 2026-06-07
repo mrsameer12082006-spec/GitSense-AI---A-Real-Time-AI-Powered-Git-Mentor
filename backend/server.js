@@ -15,6 +15,7 @@ import conversationRoutes from './src/routes/conversations.js';
 import activityRoutes from './src/routes/activity.js';
 import kbRoutes from './src/routes/kb.js';
 import githubRoutes from './src/routes/github.js';
+import ingestionRoutes from './src/routes/ingestion.js';
 import aiService from './src/services/ai.js';
 
 const app = express();
@@ -104,6 +105,7 @@ app.get('/api/test-ai', async (_req, res) => {
 // ── API Routes ──
 app.use('/api/auth', authRoutes);
 app.use('/api/repos', repoRoutes);
+app.use('/api/repos', ingestionRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/conversations', conversationRoutes);

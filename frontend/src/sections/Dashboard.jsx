@@ -6,7 +6,7 @@ import {
   RefreshCw, Plus, HelpCircle, Play, ArrowRight, Lock, GitCommit, GitPullRequest, 
   Sparkles, Terminal, Check, Copy, X, ShieldAlert, Cpu, Eye, MessageSquare, Database,
   ChevronLeft, ChevronRight, Download, Link as LinkIcon, Trash2, Loader2, MicOff,
-  ExternalLink, BookOpen, Code, RotateCw
+  ExternalLink, BookOpen, Code, RotateCw, Wand2
 } from 'lucide-react';
 import {
   githubImportOptions,
@@ -101,97 +101,79 @@ export default function Dashboard() {
   }, []);
 
   // ── Repository Health & Autonomous Fix State ──
-  const [repoHealth, setRepoHealth] = useState(null);
-  const [isHealthLoading, setIsHealthLoading] = useState(false);
+  const [issues, setIssues] = useState([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanSteps, setScanSteps] = useState([]);
+  const [expandedIssueIds, setExpandedIssueIds] = useState(new Set());
   const [timelineSteps, setTimelineSteps] = useState([]);
   const [activeFixingIssueId, setActiveFixingIssueId] = useState(null);
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalFixData, setApprovalFixData] = useState(null);
 
-  const fetchHealthData = useCallback(async (repoId) => {
-    if (!repoId) return;
-    setIsHealthLoading(true);
-    try {
-      const res = await apiFetch(`/repos/${repoId}/health`);
-      const data = await res.json();
-      if (data.health) {
-        setRepoHealth(data.health);
-      }
-    } catch (err) {
-      console.error('[Health] Failed to fetch repo health:', err);
-    } finally {
-      setIsHealthLoading(false);
+  const handleScanRepo = async () => {
+    if (!connectedRepo) return;
+    setIsScanning(true);
+    setScanSteps([
+      { label: 'Initializing scanner', status: 'active' },
+      { label: 'Checking local git state', status: 'pending' },
+      { label: 'Analyzing commit history', status: 'pending' },
+      { label: 'Verifying repository quality', status: 'pending' },
+      { label: 'Generating AI diagnosis', status: 'pending' }
+    ]);
+    
+    // Animate steps
+    const stepTimes = [600, 800, 700, 900];
+    for (let i = 0; i < stepTimes.length; i++) {
+      await new Promise(r => setTimeout(r, stepTimes[i]));
+      setScanSteps(prev => prev.map((s, idx) => {
+        if (idx === i) return { ...s, status: 'success' };
+        if (idx === i + 1) return { ...s, status: 'active' };
+        return s;
+      }));
     }
-  }, []);
+
+    try {
+      const res = await apiFetch(`/repos/${connectedRepo.id}/scan`, { method: 'POST' });
+      const data = await res.json();
+      if (data.issues) {
+        setIssues(data.issues);
+      }
+      
+      setScanSteps(prev => prev.map(s => s.status === 'active' || s.status === 'pending' ? { ...s, status: 'success' } : s));
+      await new Promise(r => setTimeout(r, 800));
+    } catch (err) {
+      console.error('[Scan] Failed to scan repository:', err);
+    } finally {
+      setIsScanning(false);
+      setScanSteps([]);
+    }
+  };
 
   useEffect(() => {
     if (connectedRepo) {
-      fetchHealthData(connectedRepo.id);
+      // Fetch insights on mount
+      apiFetch(`/repos/${connectedRepo.id}/insights`)
+        .then(res => res.json())
+        .then(data => { if (data.insights) setRepoInsights(data.insights); })
+        .catch(() => {});
     } else {
-      setRepoHealth(null);
+      setIssues([]);
     }
-  }, [connectedRepo, fetchHealthData]);
+  }, [connectedRepo, apiFetch]);
+
+  const toggleIssueExpansion = (id) => {
+    setExpandedIssueIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const handleFixIssue = async (issue) => {
     if (!connectedRepo) return;
-    
-    if (!issue.safeToFix) {
-      setApprovalFixData(issue);
-      setShowApprovalModal(true);
-      return;
-    }
-
-    setTimelineSteps([
-      { label: 'Problem Detected', status: 'success' },
-      { label: 'Cause Found', status: 'active' },
-      { label: 'Fix Applied', status: 'pending' },
-      { label: 'Repository Clean', status: 'pending' }
-    ]);
-    setActiveFixingIssueId(issue.id);
-
-    try {
-      await new Promise(resolve => setTimeout(resolve, 800));
-      setTimelineSteps([
-        { label: 'Problem Detected', status: 'success' },
-        { label: 'Cause Found', status: 'success' },
-        { label: 'Fix Applied', status: 'active' },
-        { label: 'Repository Clean', status: 'pending' }
-      ]);
-
-      const res = await apiFetch(`/repos/${connectedRepo.id}/fix`, {
-        method: 'POST',
-        body: JSON.stringify({ issueId: issue.id, action: issue.fixAction }),
-      });
-      const data = await res.json();
-
-      await new Promise(resolve => setTimeout(resolve, 800));
-      setTimelineSteps([
-        { label: 'Problem Detected', status: 'success' },
-        { label: 'Cause Found', status: 'success' },
-        { label: 'Fix Applied', status: 'success' },
-        { label: 'Repository Clean', status: 'active' }
-      ]);
-
-      await new Promise(resolve => setTimeout(resolve, 600));
-      await fetchHealthData(connectedRepo.id);
-      
-      apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
-        if (ins.insights) setRepoInsights(ins.insights);
-      }).catch(() => {});
-
-      setMessages(prev => [...prev, {
-        sender: 'ai',
-        text: `🔧 **Autonomous Doctor Intervention**: I successfully resolved **${issue.title}**.\n\n* **Action**: ${data.activity || 'Applied safe fix workflow.'}\n* **Score Impact**: Health restored.`,
-        insight: 'Pruned redundant branch pointers and workspace clean. Ready for linear merges.',
-        recommendation: 'Verify active checkout.'
-      }]);
-
-    } catch (err) {
-      console.error('[Fix] Error:', err);
-    } finally {
-      setActiveFixingIssueId(null);
-      setTimeout(() => setTimelineSteps([]), 2000);
-    }
+    setApprovalFixData(issue);
+    setShowApprovalModal(true);
   };
 
   const handleConfirmFix = async () => {
@@ -201,82 +183,47 @@ export default function Dashboard() {
     setApprovalFixData(null);
 
     setTimelineSteps([
-      { label: 'Problem Detected', status: 'success' },
-      { label: 'Cause Found', status: 'success' },
-      { label: 'Fix Applied', status: 'active' },
-      { label: 'Repository Clean', status: 'pending' }
+      { label: 'Preparing fix', status: 'success' },
+      { label: 'Applying Git commands', status: 'active' },
+      { label: 'Verifying repository clean', status: 'pending' }
     ]);
     setActiveFixingIssueId(issue.id);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      const res = await apiFetch(`/repos/${connectedRepo.id}/confirm-fix`, {
+      const res = await apiFetch(`/repos/${connectedRepo.id}/fix`, {
         method: 'POST',
-        body: JSON.stringify({ issueId: issue.id, action: issue.fixAction }),
+        body: JSON.stringify({ issueId: issue.id, fixType: issue.fixType, rawState: issue.rawState }),
       });
       const data = await res.json();
 
       setTimelineSteps([
-        { label: 'Problem Detected', status: 'success' },
-        { label: 'Cause Found', status: 'success' },
-        { label: 'Fix Applied', status: 'success' },
-        { label: 'Repository Clean', status: 'active' }
+        { label: 'Preparing fix', status: 'success' },
+        { label: 'Applying Git commands', status: 'success' },
+        { label: 'Verifying repository clean', status: 'active' }
       ]);
       await new Promise(resolve => setTimeout(resolve, 600));
-      await fetchHealthData(connectedRepo.id);
-
-      apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
-        if (ins.insights) setRepoInsights(ins.insights);
-      }).catch(() => {});
-
-      setMessages(prev => [...prev, {
-        sender: 'ai',
-        text: `✅ **Dangerous Action Executed Safely**: I resolved **${issue.title}**.\n\n* **Action**: ${data.activity || 'Completed branch manipulation.'}\n* **Impact**: Verified history safety.`,
-        insight: 'Branch references are now clean.',
-        recommendation: 'Continue linear integration workflows.'
-      }]);
-
-    } catch (err) {
-      console.error('[ConfirmFix] Error:', err);
-    } finally {
-      setActiveFixingIssueId(null);
-      setTimeout(() => setTimelineSteps([]), 2000);
-    }
-  };
-
-  const handleSimulateIssue = async (type) => {
-    if (!connectedRepo) return;
-    try {
-      const res = await apiFetch(`/repos/${connectedRepo.id}/simulate-issue`, {
-        method: 'POST',
-        body: JSON.stringify({ type })
-      });
-      const data = await res.json();
+      
       if (data.success) {
-        await fetchHealthData(connectedRepo.id);
-        
-        apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
-          if (ins.insights) setRepoInsights(ins.insights);
-        }).catch(() => {});
-
-        let msgText = '';
-        if (type === 'uncommitted') {
-          msgText = '⚠️ Simulated **Uncommitted Changes** in local workspace. Pull and checkout operations will warn you of overwrites.';
-        } else if (type === 'detached_head') {
-          msgText = '🔴 Simulated **Detached HEAD State** (commit history will not update branch HEAD).';
-        } else {
-          msgText = '✅ Restored simulated workspace to clean, fully synchronized state.';
-        }
-
+        setIssues(prev => prev.map(i => i.id === issue.id ? { ...i, isFixed: true } : i));
         setMessages(prev => [...prev, {
           sender: 'ai',
-          text: msgText,
-          insight: 'Workspace status synchronized.'
+          text: `✅ **Action Executed Safely**: I resolved **${issue.title}**.\n\n* **Result**: ${data.message}`,
+          insight: 'Repository state is clean.',
+          recommendation: 'Continue linear integration workflows.'
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          sender: 'ai',
+          text: `❌ **Fix Failed**: Could not resolve **${issue.title}**.\n\n* **Error**: ${data.message || data.error}`,
+          insight: 'Manual intervention may be required.',
+          recommendation: 'Check terminal logs for Git conflicts.'
         }]);
       }
     } catch (err) {
-      console.error('[Simulate] Error:', err);
+      console.error('[Fix] Error:', err);
+    } finally {
+      setActiveFixingIssueId(null);
+      setTimeout(() => setTimelineSteps([]), 2000);
     }
   };
 
@@ -414,6 +361,115 @@ export default function Dashboard() {
   const [messages, setMessages] = useState([]);
   const [inputVal, setInputVal] = useState('');
   const [isAiTyping, setIsAiTyping] = useState(false);
+
+  // Ingestion State & Polling
+  const [ingestionState, setIngestionState] = useState({
+    status: 'none',
+    progress: 0,
+    currentStep: 'Not started',
+    errorMessage: null,
+    lastIngestedAt: null,
+    chunkCount: 0
+  });
+
+  const [dismissedSuggestions, setDismissedSuggestions] = useState([]);
+
+  const fetchIngestionStatus = useCallback(async (repoId) => {
+    if (!repoId) return;
+    try {
+      const res = await apiFetch(`/repos/${repoId}/ingestion-status`);
+      const data = await res.json();
+      setIngestionState({
+        status: data.status || 'none',
+        progress: data.progress || 0,
+        currentStep: data.currentStep || 'Not started',
+        errorMessage: data.errorMessage || null,
+        lastIngestedAt: data.lastIngestedAt || null,
+        chunkCount: data.chunkCount || 0
+      });
+      return data;
+    } catch (err) {
+      console.error('[Ingestion] Failed to fetch status:', err);
+    }
+  }, []);
+
+  // Poll ingestion status when running
+  useEffect(() => {
+    if (!connectedRepo) return;
+    
+    fetchIngestionStatus(connectedRepo.id);
+
+    let intervalId = setInterval(async () => {
+      const statusData = await fetchIngestionStatus(connectedRepo.id);
+      if (statusData && (statusData.status === 'completed' || statusData.status === 'failed')) {
+        clearInterval(intervalId);
+        handleScanRepo();
+        apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
+          if (ins.insights) setRepoInsights(ins.insights);
+        }).catch(() => {});
+      }
+    }, 2000);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [connectedRepo, fetchIngestionStatus]);
+
+  const handleSyncRepo = async () => {
+    if (!connectedRepo) return;
+    setIngestionState(prev => ({ ...prev, status: 'running', progress: 0, currentStep: 'Triggering sync...' }));
+    try {
+      await apiFetch(`/repos/${connectedRepo.id}/sync`, { method: 'POST' });
+      fetchIngestionStatus(connectedRepo.id);
+    } catch (err) {
+      console.error('[Sync] Failed:', err);
+    }
+  };
+
+  const getProactiveSuggestions = () => {
+    const suggestions = [];
+
+    if (issues && issues.length > 0) {
+      issues.slice(0, 2).forEach(issue => {
+        suggestions.push({
+          id: `suggestion-issue-${issue.id}`,
+          type: 'issue_detected',
+          title: `Detected: ${issue.title}`,
+          description: issue.whatIsTheIssue || 'An issue was detected in your workspace.',
+          prompt: `Can you help me understand how to fix the issue: "${issue.title}"?`
+        });
+      });
+    }
+
+    if (connectedRepo) {
+      suggestions.push({
+        id: 'suggestion-churn',
+        type: 'high_churn',
+        title: 'High Churn Codebase hotspot',
+        description: `File "backend/src/services/ai.js" has high commit activity recently. Check for stability.`,
+        prompt: `Why has "backend/src/services/ai.js" seen so many updates recently? Please analyze the file history and suggest improvements.`
+      });
+    }
+
+    if (repositoryInsights.issues > 0) {
+      suggestions.push({
+        id: 'suggestion-stale-issue',
+        type: 'stale_issue',
+        title: 'Stale Issue Observation',
+        description: `Open issues exist in this repo with no linked pull request or active branches.`,
+        prompt: `List the open issues in the repository and summarize their current state, advising how we can resolve them.`
+      });
+    }
+
+    return suggestions.filter(s => !dismissedSuggestions.includes(s.id));
+  };
+
+  const handleSelectSuggestion = (suggestion) => {
+    setInputVal(suggestion.prompt);
+    setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, 50);
+  };
   
   // Custom states
   const [copiedIndex, setCopiedIndex] = useState(null);
@@ -565,7 +621,7 @@ export default function Dashboard() {
                   // Refresh history and health status if we finished
                   loadChatHistory();
                   if (connectedRepo) {
-                    fetchHealthData(connectedRepo.id);
+                    handleScanRepo();
                   }
                 }
               } catch (e) {
@@ -928,6 +984,13 @@ export default function Dashboard() {
               <ChevronDown size={12} className={`opacity-60 transition-transform ${isGithubDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
+            {isRepositoryConnected && ingestionState.lastIngestedAt && (
+              <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-[#00E38C]/10 border border-[#00E38C]/20 text-[#00E38C] shadow-[0_0_8px_rgba(0,227,140,0.15)]" title="Vector DB is updated with latest repository codebase details">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
+                Last synced: {new Date(ingestionState.lastIngestedAt).toLocaleDateString()} {new Date(ingestionState.lastIngestedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+              </span>
+            )}
+
             {/* GitHub Import Dropdown */}
             <AnimatePresence>
               {isGithubDropdownOpen && (
@@ -1087,6 +1150,49 @@ export default function Dashboard() {
                   <p className="text-slate-400 text-base mb-8 leading-relaxed">
                     {welcomeSubtitle}
                   </p>
+
+                  {isRepositoryConnected && getProactiveSuggestions().length > 0 && (
+                    <div className="mt-4 w-full flex flex-col gap-4 text-left select-text max-w-[640px]">
+                      <h4 className="text-xs font-bold font-heading uppercase text-slate-500 tracking-wider text-center mb-1 flex items-center justify-center gap-1.5">
+                        <Sparkles size={12} className="text-[#00D4FF]" /> Proactive Repository Observations
+                      </h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {getProactiveSuggestions().map((s) => (
+                          <div
+                            key={s.id}
+                            className="bg-slate-950/40 border border-white/[0.06] hover:border-[#7C5CFF]/30 p-4 rounded-xl flex flex-col justify-between transition-all group relative overflow-hidden backdrop-blur-md"
+                          >
+                            <div className="absolute top-0 right-0 w-16 h-16 bg-[#7C5CFF] opacity-5 filter blur-xl rounded-full group-hover:scale-150 transition-transform duration-500" />
+                            
+                            <div className="flex flex-col gap-1.5 z-10">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-200">{s.title}</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDismissedSuggestions(prev => [...prev, s.id]);
+                                  }}
+                                  className="text-slate-500 hover:text-rose-400 p-0.5 rounded cursor-pointer transition-colors"
+                                  title="Dismiss observation"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                              <p className="text-[11px] text-slate-400 leading-normal">{s.description}</p>
+                            </div>
+                            
+                            <button
+                              onClick={() => handleSelectSuggestion(s)}
+                              className="mt-3 w-full py-1.5 px-3 bg-[#7C5CFF]/10 hover:bg-[#7C5CFF]/20 border border-[#7C5CFF]/20 hover:border-[#7C5CFF]/40 text-[#00D4FF] text-[10px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer z-10"
+                            >
+                              <span>Ask AI About This</span>
+                              <ArrowRight size={10} className="group-hover:translate-x-0.5 transition-transform" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 /* Conversation flow */
@@ -1098,10 +1204,20 @@ export default function Dashboard() {
                         msg.sender === 'user' ? 'justify-end' : 'justify-start'
                       }`}
                     >
-                      {/* Avatar */}
+                      {/* Avatar & Persona Badge */}
                       {msg.sender === 'ai' && (
-                        <div className="w-8 h-8 rounded-lg bg-slate-900 border border-white/[0.1] flex items-center justify-center text-slate-300 flex-shrink-0">
-                          <Sparkles size={14} className="text-[#7C5CFF]" />
+                        <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                          <div className="w-8 h-8 rounded-lg bg-slate-900 border border-white/[0.1] flex items-center justify-center text-slate-300">
+                            <Sparkles size={14} className="text-[#7C5CFF]" />
+                          </div>
+                          {msg.personaLevel && (
+                            <span 
+                              className="text-[8px] font-mono font-bold bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#00D4FF] px-1 py-0.5 rounded scale-95 mt-1 select-none text-center" 
+                              title={`Persona Level ${msg.personaLevel}: ${msg.personaLabel || 'Git Developer'}`}
+                            >
+                              Lvl {msg.personaLevel}
+                            </span>
+                          )}
                         </div>
                       )}
 
@@ -1452,7 +1568,7 @@ export default function Dashboard() {
                       const ins = await res.json();
                       if (ins.insights) setRepoInsights(ins.insights);
                       // Also refetch health data
-                      fetchHealthData(connectedRepo.id);
+                      handleScanRepo();
                     } catch {}
                   }}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -1508,109 +1624,131 @@ export default function Dashboard() {
 
               {activeSidebarTab === 'insights' ? (
                 <>
-                  {/* Repository Health Score Circle Donut */}
+                  {/* Minimal Repo Intelligence Status Bar */}
+                  <div className="flex items-center justify-between bg-slate-950/60 border border-white/[0.06] rounded-xl px-3 py-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-1.5 h-1.5 rounded-full ${ingestionState.status === 'running' ? 'bg-amber-500 animate-pulse' : ingestionState.status === 'failed' ? 'bg-rose-500' : 'bg-[#00E38C]'}`} />
+                      <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Repo Intelligence</span>
+                      <span className={`text-[9px] font-semibold ${ingestionState.status === 'running' ? 'text-amber-400' : ingestionState.status === 'failed' ? 'text-rose-400' : 'text-[#00E38C]'}`}>
+                        {ingestionState.status === 'running' ? 'Indexing' : ingestionState.status === 'failed' ? 'Offline' : 'Active'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {ingestionState.chunkCount > 0 && (
+                        <span className="text-[9px] text-slate-500 font-mono">{ingestionState.chunkCount} chunks</span>
+                      )}
+                      <button
+                        onClick={handleSyncRepo}
+                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                        title="Re-sync Repository Index"
+                      >
+                        <RefreshCw size={10} className={ingestionState.status === 'running' ? 'animate-spin text-amber-400' : ''} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Repository Health Scanner */}
                   <div className="flex flex-col gap-3">
-                    <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                      <ShieldAlert size={13} className="text-[#7C5CFF]" /> Repository Health
-                    </h4>
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                        <ShieldAlert size={13} className="text-[#7C5CFF]" /> Health Scanner
+                      </h4>
+                      <button
+                        onClick={handleScanRepo}
+                        disabled={isScanning}
+                        className="px-3 py-1 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#7C5CFF] text-[10px] font-bold rounded cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1"
+                      >
+                        {isScanning ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                        Scan Repo
+                      </button>
+                    </div>
                     
                     <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                      <div className="flex items-center gap-5">
-                        {/* Circle Donut */}
-                        <div className="relative w-16 h-16 flex-shrink-0 flex items-center justify-center">
-                          <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                            <circle cx="18" cy="18" r="15.915" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="3" />
-                            <circle cx="18" cy="18" r="15.915" fill="none" stroke={
-                              (repoHealth?.score ?? 100) >= 90 ? '#00E38C' :
-                              (repoHealth?.score ?? 100) >= 70 ? '#FFB800' : '#EF4444'
-                            } strokeWidth="3"
-                              strokeDasharray={`${repoHealth?.score ?? 100} 100`}
-                              strokeLinecap="round"
-                              className="transition-all duration-1000 ease-out"
-                            />
-                          </svg>
-                          <span className="absolute font-heading font-bold text-[10px] text-slate-100">{(repoHealth?.score ?? 100)}%</span>
-                        </div>
-
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-xs font-semibold text-slate-200 truncate">
-                            {(repoHealth?.score ?? 100) === 100 ? '✅ Clean Repository' : '⚠️ Requires Attention'}
-                          </span>
-                          <span className="text-[10px] text-slate-500 mt-1">
-                            {repoHealth?.issues?.length || 0} issues detected in current workspace.
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Issues List */}
-                      {repoHealth?.issues && repoHealth.issues.length > 0 && (
-                        <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.05]">
-                          {repoHealth.issues.map((issue) => (
-                            <div key={issue.id} className="bg-slate-900/40 border border-white/[0.04] p-2.5 rounded-xl flex flex-col gap-2 text-left">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-slate-200">{issue.title}</span>
-                                <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                  issue.severity === 'high' ? 'bg-rose-500/10 text-rose-400' :
-                                  issue.severity === 'medium' ? 'bg-amber-500/10 text-amber-400' :
-                                  'bg-slate-850 text-slate-400'
-                                }`}>
-                                  {issue.severity}
-                                </span>
-                              </div>
-                              <p className="text-[10px] text-slate-400 leading-relaxed">{issue.description}</p>
-                              
-                              <button
-                                onClick={() => handleFixIssue(issue)}
-                                disabled={activeFixingIssueId !== null}
-                                className="w-full py-1.5 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 hover:bg-[#7C5CFF]/25 text-[#F8FAFC] text-[10px] font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                              >
-                                {activeFixingIssueId === issue.id ? (
-                                  <Loader2 size={10} className="animate-spin" />
-                                ) : (
-                                  <span>{issue.safeToFix ? 'Fix Issue' : 'Resolve Conflict'}</span>
-                                )}
-                              </button>
+                      {isScanning ? (
+                        <div className="flex flex-col gap-3">
+                          <div className="flex items-center gap-2 text-[#00D4FF] mb-2">
+                            <Activity size={16} className="animate-pulse" />
+                            <span className="text-xs font-bold uppercase tracking-widest animate-pulse">Running Deep Scan...</span>
+                          </div>
+                          {scanSteps.map((step, idx) => (
+                            <div key={idx} className="flex items-center gap-2 text-[10px]">
+                              {step.status === 'success' ? <CheckCircle2 size={12} className="text-[#00E38C]" /> :
+                               step.status === 'active' ? <Loader2 size={12} className="text-amber-400 animate-spin" /> :
+                               <div className="w-3 h-3 rounded-full border border-slate-700" />}
+                              <span className={step.status === 'success' ? 'text-slate-400' : step.status === 'active' ? 'text-amber-400 font-semibold' : 'text-slate-600'}>
+                                {step.label}
+                              </span>
                             </div>
                           ))}
+                        </div>
+                      ) : issues.length > 0 ? (
+                        <div className="flex flex-col gap-3">
+                          <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5">
+                            <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {issues.map(issue => (
+                              <div key={issue.id} className={`bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-50 grayscale' : ''}`}>
+                                {/* Header (Clickable) */}
+                                <button
+                                  onClick={() => toggleIssueExpansion(issue.id)}
+                                  className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : issue.severity === 'warning' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-400'}`}>
+                                      {issue.severity}
+                                    </span>
+                                    <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {issue.isFixed && <span className="text-[9px] text-[#00E38C] border border-[#00E38C]/30 px-1 rounded">FIXED</span>}
+                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
+                                  </div>
+                                </button>
+                                
+                                {/* Expanded Content */}
+                                {expandedIssueIds.has(issue.id) && (
+                                  <div className="p-3 pt-0 border-t border-white/[0.05] flex flex-col gap-4 mt-2">
+                                    <div className="flex flex-col gap-1.5">
+                                      <h5 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-wider">What is the issue?</h5>
+                                      <p className="text-[10px] text-slate-300 leading-relaxed">{issue.whatIsTheIssue}</p>
+                                    </div>
+                                    <div className="flex flex-col gap-1.5">
+                                      <h5 className="text-[9px] font-bold text-[#7C5CFF] uppercase tracking-wider">How this happened</h5>
+                                      <p className="text-[10px] text-slate-300 leading-relaxed">{issue.howThisHappened}</p>
+                                    </div>
+                                    <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded border border-white/[0.05]">
+                                      <h5 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Manual Fix</h5>
+                                      <code className="text-[9px] text-emerald-400 font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
+                                    </div>
+                                    {!issue.isFixed && (
+                                      <button
+                                        onClick={() => handleFixIssue(issue)}
+                                        disabled={activeFixingIssueId !== null}
+                                        className="w-full mt-1 py-1.5 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                      >
+                                        <Wand2 size={12} /> Auto-Fix Issue
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center py-6 gap-2 opacity-60">
+                          <div className="w-10 h-10 rounded-full bg-[#00E38C]/10 flex items-center justify-center mb-1">
+                            <CheckCircle2 size={20} className="text-[#00E38C]" />
+                          </div>
+                          <span className="text-xs font-bold text-slate-300">Repository is Clean</span>
+                          <span className="text-[10px] text-slate-500 text-center max-w-[200px]">No issues detected in the latest scan.</span>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  {/* Doctor Sandbox Controls */}
-                  <div className="flex flex-col gap-3">
-                    <h4 className="font-heading font-bold text-xs tracking-wider text-slate-500 uppercase flex items-center gap-2 text-left">
-                      <Settings size={13} className="text-slate-500" /> Doctor Sandbox
-                    </h4>
-                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-2 text-left">
-                      <p className="text-[10px] text-slate-500 leading-relaxed mb-1">
-                        Simulate workspace problems to test the Autonomous Doctor health diagnostics and mentoring.
-                      </p>
-                      <div className="grid grid-cols-1 gap-2">
-                        <button
-                          onClick={() => handleSimulateIssue('uncommitted')}
-                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                        >
-                          <span>Simulate Uncommitted Changes</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                        </button>
-                        <button
-                          onClick={() => handleSimulateIssue('detached_head')}
-                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#7C5CFF]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                        >
-                          <span>Simulate Detached HEAD</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                        </button>
-                        <button
-                          onClick={() => handleSimulateIssue('clean')}
-                          className="w-full py-1.5 bg-slate-900 border border-white/[0.05] hover:border-[#00E38C]/40 text-slate-300 text-[10px] font-semibold rounded-lg transition-all cursor-pointer text-left px-3 flex justify-between items-center"
-                        >
-                          <span>Restore Clean Repository</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C]" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+
 
                   {/* Repo Summary Card */}
                   <div className="flex flex-col gap-3">
@@ -1836,15 +1974,15 @@ export default function Dashboard() {
 
                 <div className="bg-slate-900/60 border border-white/[0.04] p-4 rounded-2xl flex flex-col gap-2 text-xs">
                   <span className="font-semibold text-slate-300">Operation:</span>
-                  <pre className="p-2.5 bg-slate-950 rounded-xl text-rose-400 font-mono text-xs border border-rose-500/10 overflow-x-auto whitespace-pre-wrap">
-                    {approvalFixData.command}
+                  <pre className="p-2.5 bg-slate-950 rounded-xl text-rose-400 font-mono text-[10px] border border-rose-500/10 overflow-x-auto whitespace-pre-wrap">
+                    {approvalFixData.manualFixCommands?.join('\n')}
                   </pre>
                   
                   <span className="font-semibold text-slate-300 mt-2">Potential Impact:</span>
                   <p className="text-slate-400 leading-relaxed">
-                    {approvalFixData.fixAction === 'resolve_conflict' 
-                      ? 'This will merge code blocks from the source branch into your target branch. It may rewrite local changes and create automatic resolution markers if not fully synced.'
-                      : 'This will checkout a branch and abandon any un-named commits made while in detached HEAD state unless they are cherry-picked first.'}
+                    {approvalFixData.fixDescription}
+                    <br /><br />
+                    <span className="text-rose-400 font-bold">{approvalFixData.fixRiskLevel}</span>
                   </p>
                 </div>
 

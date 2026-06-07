@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/auth.js';
 import githubService from '../services/github.js';
+import ingestionService from '../services/ingestion.js';
+import localGitService from '../services/localGit.js';
+import aiService from '../services/ai.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -78,6 +81,12 @@ router.post('/connect-url', async (req, res) => {
       },
     });
 
+    // Trigger ingestion in background
+    const io = req.app.get('io');
+    ingestionService.ingestRepository(repository.id, req.user.id, io).catch((err) => {
+      console.error('[Repos] Auto-ingestion background task failed:', err);
+    });
+
     res.json({
       message: 'Repository connected successfully.',
       repository: {
@@ -145,6 +154,12 @@ router.post('/connect-github', async (req, res) => {
         defaultBranch: details.defaultBranch,
         connectionMethod: 'oauth',
       },
+    });
+
+    // Trigger ingestion in background
+    const io = req.app.get('io');
+    ingestionService.ingestRepository(repository.id, req.user.id, io).catch((err) => {
+      console.error('[Repos] Auto-ingestion background task failed:', err);
     });
 
     res.json({
@@ -238,9 +253,10 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// ── GET /api/repos/:id/health ───────────────────────────────
-// Get repository health report (calculates from GitHub + simulated workspace)
-router.get('/:id/health', async (req, res) => {
+
+// ── POST /api/repos/:id/scan ────────────────────────────────
+// Real repository health scanning system
+router.post('/:id/scan', async (req, res) => {
   try {
     const repository = await prisma.repository.findFirst({
       where: { id: req.params.id, userId: req.user.id },
@@ -253,126 +269,232 @@ router.get('/:id/health', async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     const token = user?.githubToken || null;
 
-    // 1. Get real remote health issues
-    const remoteHealth = await githubService.getRepoHealth(
-      repository.owner,
-      repository.name,
-      token
-    );
+    let issues = [];
 
-    // 2. Parse current metadata to get simulated workspace state
-    let meta = {};
-    try {
-      meta = repository.metadata ? JSON.parse(repository.metadata) : {};
-    } catch {
-      meta = {};
-    }
+    // Ensure local clone exists
+    await localGitService.ensureClone(repository.id, repository.owner, repository.name, token);
 
-    // Initialize simulated workspace state if not present
-    if (meta.simulatedState === undefined) {
-      meta.simulatedState = {
-        uncommittedChanges: [
-          { file: 'frontend/src/sections/Hero.jsx', status: 'MODIFIED', color: '#7C5CFF' },
-          { file: 'backend/src/routes/auth.js', status: 'MODIFIED', color: '#7C5CFF' }
-        ],
-        stashes: [
-          { id: 'stash@{0}', description: 'WIP on auth flow fixes' }
-        ],
-        detachedHead: false,
-        resolvedIssues: []
-      };
-      
-      // Save it back to db
-      await prisma.repository.update({
-        where: { id: repository.id },
-        data: { metadata: JSON.stringify(meta) }
-      });
-    }
-
-    const sim = meta.simulatedState;
-    const issues = [...remoteHealth.issues];
-
-    // Filter out issues that have been resolved/fixed by the user
-    let finalIssues = issues.filter(issue => !sim.resolvedIssues?.includes(issue.id));
-
-    // Deduct points and append issues from simulated local workspace
-    let score = remoteHealth.score;
-
-    // Check simulated uncommitted changes
-    if (sim.uncommittedChanges && sim.uncommittedChanges.length > 0 && !sim.resolvedIssues?.includes('local-uncommitted-changes')) {
-      score -= 10;
-      finalIssues.push({
-        id: 'local-uncommitted-changes',
-        type: 'uncommitted_changes',
-        title: 'Uncommitted Changes in Workspace',
-        description: `${sim.uncommittedChanges.length} files have uncommitted changes. These might get overwritten if you pull.`,
-        severity: 'medium',
-        safeToFix: true,
-        fixAction: 'stash_changes',
-        payload: { files: sim.uncommittedChanges.map(f => f.file) },
-        command: 'git stash'
-      });
-    }
-
-    // Check simulated stashes
-    if (sim.stashes && sim.stashes.length > 0 && !sim.resolvedIssues?.includes('local-unused-stash')) {
-      score -= 3;
-      finalIssues.push({
-        id: 'local-unused-stash',
-        type: 'unused_stash',
-        title: 'Stashed Changes (Messy Workspace)',
-        description: `You have ${sim.stashes.length} unused stash entry. Clean up your stash stack if no longer needed.`,
-        severity: 'low',
-        safeToFix: true,
-        fixAction: 'prune_stash',
-        payload: {},
-        command: 'git stash clear'
-      });
-    }
-
-    // Check simulated detached HEAD
-    if (sim.detachedHead && !sim.resolvedIssues?.includes('detached-head-state')) {
-      score -= 20;
-      finalIssues.push({
-        id: 'detached-head-state',
-        type: 'detached_head',
+    // Category 1: Git State Issues
+    const gitState = await localGitService.getGitState(repository.id);
+    
+    if (gitState.detachedHead) {
+      issues.push({
+        id: 'git-state-detached-head',
+        category: 'Git State',
+        severity: 'critical',
         title: 'Detached HEAD State',
-        description: 'You are in a detached HEAD state. Commits made here will not update any branch unless checked out to a branch.',
-        severity: 'high',
-        safeToFix: false,
-        fixAction: 'attach_head',
-        payload: { defaultBranch: repository.defaultBranch },
-        command: `git checkout ${repository.defaultBranch}`
+        affectedResource: gitState.headHash || 'HEAD',
+        manualFixCommands: [
+          `# Checkout back to the last known branch`,
+          `git checkout ${gitState.lastBranch || repository.defaultBranch || 'main'}`
+        ],
+        fixType: 'checkout_branch',
+        fixRiskLevel: 'Safe — no data loss',
+        fixDescription: `Check out to ${gitState.lastBranch || repository.defaultBranch || 'main'}.`,
+        isFixed: false,
+        rawState: gitState
       });
     }
 
-    score = Math.max(0, Math.min(100, score));
-    let status = 'Clean Repository';
-    if (score < 70) {
-      status = 'Repository Requires Attention';
-    } else if (score < 100) {
-      status = 'Repository Requires Attention';
+    if (gitState.uncommittedChanges && gitState.uncommittedChanges.length > 0) {
+      issues.push({
+        id: 'git-state-uncommitted',
+        category: 'Git State',
+        severity: 'warning',
+        title: 'Uncommitted Changes',
+        affectedResource: `${gitState.uncommittedChanges.length} files`,
+        manualFixCommands: [
+          `# Stash uncommitted changes`,
+          `git stash`
+        ],
+        fixType: 'stash_changes',
+        fixRiskLevel: 'Safe — no data loss',
+        fixDescription: 'Stash all uncommitted changes safely.',
+        isFixed: false,
+        rawState: gitState
+      });
     }
 
-    res.json({
-      health: {
-        score,
-        status,
-        issues: finalIssues,
-        simulatedState: sim
+    if (gitState.stashes && gitState.stashes.length > 0) {
+      issues.push({
+        id: 'git-state-old-stashes',
+        category: 'Git State',
+        severity: 'info',
+        title: 'Old Stash Entries Found',
+        affectedResource: `${gitState.stashes.length} stashes`,
+        manualFixCommands: [
+          `# View all stashes`,
+          `git stash list`,
+          `# Drop the oldest stash`,
+          `git stash drop ${gitState.stashes[0].id}`
+        ],
+        fixType: 'prune_stashes',
+        fixRiskLevel: 'Safe — no data loss',
+        fixDescription: 'Remove stashes older than 14 days.',
+        isFixed: false,
+        rawState: gitState
+      });
+    }
+
+    // Category 2: Branch Divergence Issues
+    try {
+      const branches = await githubService.getBranches(repository.owner, repository.name, token);
+      for (const branch of branches) {
+        if (branch.name === repository.defaultBranch) continue;
+        const comp = await githubService.getBranchComparison(repository.owner, repository.name, repository.defaultBranch, branch.name, token);
+        if (comp.behindBy > 10) {
+          issues.push({
+            id: `branch-divergence-${branch.name}`,
+            category: 'Branch Divergence',
+            severity: comp.behindBy > 30 ? 'critical' : 'warning',
+            title: `Branch Diverged from ${repository.defaultBranch}`,
+            affectedResource: branch.name,
+            manualFixCommands: [
+              `# Checkout the diverged branch`,
+              `git checkout ${branch.name}`,
+              `# Fetch and merge default branch`,
+              `git fetch origin`,
+              `git merge origin/${repository.defaultBranch}`
+            ],
+            fixType: 'sync_branch',
+            fixRiskLevel: 'May require conflict resolution',
+            fixDescription: `Fetch and merge ${repository.defaultBranch} into ${branch.name}.`,
+            isFixed: false,
+            rawState: { branch: branch.name, behind: comp.behindBy, defaultBranch: repository.defaultBranch }
+          });
+        }
       }
-    });
+    } catch (e) {
+      console.warn('Branch divergence check failed:', e.message);
+    }
+
+    // Category 3: File and Repository Quality Issues
+    try {
+      const tree = await githubService.getFileTree(repository.owner, repository.name, repository.defaultBranch, token);
+      let hasGitIgnore = false;
+      for (const node of tree) {
+        if (node.path === '.gitignore') hasGitIgnore = true;
+        // Large file check > 5MB (5242880 bytes)
+        if (node.type === 'blob' && node.size > 5242880) {
+          issues.push({
+            id: `large-file-${node.path}`,
+            category: 'Repository Quality',
+            severity: 'critical',
+            title: 'Large Binary File Tracked',
+            affectedResource: node.path,
+            manualFixCommands: [
+              `# Remove file from git cache but keep locally`,
+              `git rm --cached "${node.path}"`,
+              `# Add to gitignore`,
+              `echo "${node.path}" >> .gitignore`,
+              `# Commit removal`,
+              `git commit -m "Remove large file ${node.path}"`
+            ],
+            fixType: 'remove_large_file',
+            fixRiskLevel: 'Destructive — creates new commit',
+            fixDescription: `Remove ${node.path} from Git and add it to .gitignore.`,
+            isFixed: false,
+            rawState: { path: node.path, size: node.size }
+          });
+        }
+
+        // Secrets check
+        const isSecret = ['.env', 'secret', 'password', 'key', 'credentials', 'id_rsa'].some(s => node.path.toLowerCase().includes(s));
+        if (node.type === 'blob' && isSecret) {
+          issues.push({
+            id: `secret-file-${node.path}`,
+            category: 'Repository Quality',
+            severity: 'critical',
+            title: 'Potential Secret File Tracked',
+            affectedResource: node.path,
+            manualFixCommands: [
+              `# Remove secret from git cache`,
+              `git rm --cached "${node.path}"`,
+              `# Add to gitignore`,
+              `echo "${node.path}" >> .gitignore`,
+              `git commit -m "Remove secret file ${node.path}"`
+            ],
+            fixType: 'remove_secret_file',
+            fixRiskLevel: 'Destructive — creates new commit',
+            fixDescription: `Remove ${node.path} from Git and add to .gitignore.`,
+            isFixed: false,
+            rawState: { path: node.path }
+          });
+        }
+      }
+
+      if (!hasGitIgnore) {
+        issues.push({
+          id: 'missing-gitignore',
+          category: 'Repository Quality',
+          severity: 'warning',
+          title: 'Missing .gitignore File',
+          affectedResource: '.gitignore',
+          manualFixCommands: [
+            `# Create .gitignore`,
+            `touch .gitignore`,
+            `# Add basic patterns`,
+            `echo "node_modules/\n.env\n.DS_Store" > .gitignore`,
+            `git add .gitignore`,
+            `git commit -m "Add .gitignore"`
+          ],
+          fixType: 'create_gitignore',
+          fixRiskLevel: 'Destructive — creates new commit',
+          fixDescription: 'Create a .gitignore file with standard rules.',
+          isFixed: false,
+          rawState: {}
+        });
+      }
+    } catch (e) {
+      console.warn('Quality check failed:', e.message);
+    }
+
+    // Category 4: Pull Request Issues
+    try {
+      const prs = await githubService.getPullRequests(repository.owner, repository.name, token);
+      const now = new Date();
+      for (const pr of prs) {
+        const prDate = new Date(pr.createdAt);
+        const daysOld = (now - prDate) / (1000 * 60 * 60 * 24);
+        
+        if (daysOld > 14) {
+          issues.push({
+            id: `stale-pr-${pr.number}`,
+            category: 'Pull Requests',
+            severity: 'warning',
+            title: 'Stale Pull Request',
+            affectedResource: `PR #${pr.number}`,
+            manualFixCommands: [
+              `# Review PR on GitHub`,
+              `gh pr view ${pr.number}`
+            ],
+            fixType: 'notify_stale_pr',
+            fixRiskLevel: 'Safe — no data loss',
+            fixDescription: 'Post a comment on the PR tagging the author.',
+            isFixed: false,
+            rawState: { number: pr.number, author: pr.author, daysOld: Math.floor(daysOld) }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('PR check failed:', e.message);
+    }
+
+    // Pass issues through AI layer
+    const diagnosedIssues = await aiService.diagnoseIssues(issues, 'intermediate');
+
+    res.json({ issues: diagnosedIssues });
   } catch (err) {
-    console.error('[Repos] health error:', err);
-    res.status(500).json({ error: 'Failed to calculate repository health.' });
+    console.error('[Repos] scan error:', err);
+    res.status(500).json({ error: 'Failed to scan repository.' });
   }
 });
 
 // ── POST /api/repos/:id/fix ──────────────────────────────────
-// Perform safe autonomous repair actions, or request confirmation for dangerous ones
+// Execute real fixes
 router.post('/:id/fix', async (req, res) => {
   try {
-    const { issueId, action } = req.body;
+    const { issueId, fixType, rawState } = req.body;
     const repository = await prisma.repository.findFirst({
       where: { id: req.params.id, userId: req.user.id },
     });
@@ -381,206 +503,61 @@ router.post('/:id/fix', async (req, res) => {
       return res.status(404).json({ error: 'Repository not found.' });
     }
 
-    // Load simulated state
-    let meta = {};
-    try {
-      meta = repository.metadata ? JSON.parse(repository.metadata) : {};
-    } catch {
-      meta = {};
-    }
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || null;
+
+    // We can use SSE, but for simpler integration, returning JSON with status
+    // Or if SSE is preferred, we need res.setHeader('Content-Type', 'text/event-stream').
+    // Since we don't have the SSE frontend built for this specific path yet, we return JSON.
     
-    if (!meta.simulatedState) {
-      meta.simulatedState = { uncommittedChanges: [], stashes: [], detachedHead: false, resolvedIssues: [] };
-    }
-
-    // Determine if this fix is safe or dangerous
-    let isDangerous = false;
-    let impactText = '';
-
-    if (action === 'resolve_conflict') {
-      isDangerous = true;
-      impactText = 'This will merge code blocks from the source branch into your target branch. It may rewrite local changes and create automatic resolution markers if not fully synced.';
-    } else if (action === 'attach_head') {
-      isDangerous = true;
-      impactText = 'This will checkout a branch and abandon any un-named commits made while in detached HEAD state unless they are cherry-picked first.';
-    }
-
-    if (isDangerous) {
-      return res.json({
-        confirmed: false,
-        requiresConfirmation: true,
-        impact: impactText,
-        message: 'This operation carries potential risks of data loss or history rewriting. Please confirm to proceed.'
-      });
-    }
-
-    // Execute safe operations
-    const sim = meta.simulatedState;
-    if (!sim.resolvedIssues) sim.resolvedIssues = [];
-
-    if (action === 'stash_changes') {
-      sim.stashes.push({ id: `stash@{${sim.stashes.length}}`, description: 'Autostash: Stashed changes' });
-      sim.uncommittedChanges = [];
-      sim.resolvedIssues.push(issueId);
-    } else if (action === 'prune_stash') {
-      sim.stashes = [];
-      sim.resolvedIssues.push(issueId);
-    } else if (action === 'prune_branch') {
-      sim.resolvedIssues.push(issueId);
-    } else {
-      sim.resolvedIssues.push(issueId);
-    }
-
-    // Update db
-    await prisma.repository.update({
-      where: { id: repository.id },
-      data: { metadata: JSON.stringify(meta) }
-    });
-
-    let activityText = '';
-    if (action === 'stash_changes') activityText = 'Stashed uncommitted changes safely.';
-    else if (action === 'prune_stash') activityText = 'Cleared unused workspace stash stack.';
-    else if (action === 'prune_branch') activityText = 'Cleaned stale branches and pruned references.';
-    else activityText = `Executed autonomous repository fix: ${action}.`;
+    let result = { success: true, message: 'Fix applied successfully.' };
 
     try {
-      await prisma.activity.create({
-        data: {
-          repositoryId: repository.id,
-          type: 'branch',
-          payload: JSON.stringify({ message: activityText, author: 'GitSense AI Doctor' })
+      if (fixType === 'checkout_branch') {
+        const branch = rawState?.lastBranch || repository.defaultBranch;
+        await localGitService.checkoutBranch(repository.id, branch);
+      } else if (fixType === 'sync_branch') {
+        const mergeResult = await localGitService.fetchAndMerge(repository.id, rawState.defaultBranch);
+        if (!mergeResult.success) {
+          result = { success: false, message: 'Merge conflict detected.', conflicts: mergeResult.conflicts };
         }
-      });
-    } catch (actErr) {
-      console.error('[Fix] Failed to create activity log:', actErr.message);
-    }
+      } else if (fixType === 'remove_large_file' || fixType === 'remove_secret_file') {
+        await localGitService.removeLargeFile(repository.id, rawState.path);
+      } else if (fixType === 'create_gitignore') {
+        // We'll create via GitHub API
+        const content = Buffer.from('node_modules/\n.env\n.DS_Store\n__pycache__/\ndist/\nbuild/').toString('base64');
+        await fetch(`https://api.github.com/repos/${repository.owner}/${repository.name}/contents/.gitignore`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            message: 'chore: Add .gitignore via GitSense AI',
+            content: content
+          })
+        });
+      } else if (fixType === 'notify_stale_pr') {
+        await fetch(`https://api.github.com/repos/${repository.owner}/${repository.name}/issues/${rawState.number}/comments`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            body: `@${rawState.author} GitSense AI detected that this PR has been open for ${rawState.daysOld} days without review. Please review or close it.`
+          })
+        });
+      }
 
-    res.json({
-      confirmed: true,
-      requiresConfirmation: false,
-      message: 'Autonomous fix executed successfully.',
-      activity: activityText
-    });
+      res.json(result);
+    } catch (execErr) {
+      console.error('[Repos] fix execution error:', execErr);
+      res.status(500).json({ success: false, error: execErr.message });
+    }
   } catch (err) {
-    console.error('[Repos] fix error:', err);
-    res.status(500).json({ error: 'Failed to apply repository fix.' });
-  }
-});
-
-// ── POST /api/repos/:id/confirm-fix ──────────────────────────
-// Execute confirmed dangerous repairs
-router.post('/:id/confirm-fix', async (req, res) => {
-  try {
-    const { issueId, action } = req.body;
-    const repository = await prisma.repository.findFirst({
-      where: { id: req.params.id, userId: req.user.id },
-    });
-
-    if (!repository) {
-      return res.status(404).json({ error: 'Repository not found.' });
-    }
-
-    // Load simulated state
-    let meta = {};
-    try {
-      meta = repository.metadata ? JSON.parse(repository.metadata) : {};
-    } catch {
-      meta = {};
-    }
-    
-    if (!meta.simulatedState) {
-      meta.simulatedState = { uncommittedChanges: [], stashes: [], detachedHead: false, resolvedIssues: [] };
-    }
-
-    const sim = meta.simulatedState;
-    if (!sim.resolvedIssues) sim.resolvedIssues = [];
-
-    let activityText = '';
-    if (action === 'resolve_conflict') {
-      sim.resolvedIssues.push(issueId);
-      activityText = 'Successfully resolved merge conflicts in branch feature/login.';
-    } else if (action === 'attach_head') {
-      sim.detachedHead = false;
-      sim.resolvedIssues.push(issueId);
-      activityText = `Successfully resolved detached HEAD state, checked out to ${repository.defaultBranch}.`;
-    } else {
-      sim.resolvedIssues.push(issueId);
-      activityText = `Executed confirmed git operations for ${action}.`;
-    }
-
-    // Update db
-    await prisma.repository.update({
-      where: { id: repository.id },
-      data: { metadata: JSON.stringify(meta) }
-    });
-
-    try {
-      await prisma.activity.create({
-        data: {
-          repositoryId: repository.id,
-          type: 'branch',
-          payload: JSON.stringify({ message: activityText, author: 'GitSense AI Doctor' })
-        }
-      });
-    } catch (actErr) {
-      console.error('[Confirm-Fix] Failed to create activity log:', actErr.message);
-    }
-
-    res.json({
-      success: true,
-      message: 'Autonomous repair operation successfully applied.',
-      activity: activityText
-    });
-  } catch (err) {
-    console.error('[Repos] confirm-fix error:', err);
-    res.status(500).json({ error: 'Failed to confirm and apply repository fix.' });
-  }
-});
-
-// ── POST /api/repos/:id/simulate-issue ───────────────────────
-// Helper to simulate specific repository issues for demoing
-router.post('/:id/simulate-issue', async (req, res) => {
-  try {
-    const { type } = req.body;
-    const repository = await prisma.repository.findFirst({
-      where: { id: req.params.id, userId: req.user.id },
-    });
-
-    if (!repository) {
-      return res.status(404).json({ error: 'Repository not found.' });
-    }
-
-    let meta = repository.metadata ? JSON.parse(repository.metadata) : {};
-    if (!meta.simulatedState) {
-      meta.simulatedState = { uncommittedChanges: [], stashes: [], detachedHead: false, resolvedIssues: [] };
-    }
-
-    const sim = meta.simulatedState;
-    sim.resolvedIssues = [];
-
-    if (type === 'uncommitted') {
-      sim.uncommittedChanges = [
-        { file: 'frontend/src/sections/Hero.jsx', status: 'MODIFIED', color: '#7C5CFF' },
-        { file: 'backend/src/routes/auth.js', status: 'MODIFIED', color: '#7C5CFF' }
-      ];
-    } else if (type === 'detached_head') {
-      sim.detachedHead = true;
-    } else if (type === 'clean') {
-      sim.uncommittedChanges = [];
-      sim.stashes = [];
-      sim.detachedHead = false;
-      sim.resolvedIssues = [];
-    }
-
-    await prisma.repository.update({
-      where: { id: repository.id },
-      data: { metadata: JSON.stringify(meta) }
-    });
-
-    res.json({ success: true, simulatedState: sim });
-  } catch (err) {
-    console.error('[Repos] simulate-issue error:', err);
-    res.status(500).json({ error: 'Failed to toggle simulation state.' });
+    console.error('[Repos] fix route error:', err);
+    res.status(500).json({ success: false, error: 'Failed to apply fix.' });
   }
 });
 

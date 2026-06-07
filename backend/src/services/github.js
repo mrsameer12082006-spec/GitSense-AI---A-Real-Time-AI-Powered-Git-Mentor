@@ -759,6 +759,142 @@ class GitHubService {
       return { commits: standard, branches: [{ name: defaultBranch, color: '#7C5CFF' }] };
     }
   }
+
+  /**
+   * Get recursive file tree of the repository.
+   */
+  async getFileTree(owner, repo, branch = 'main', token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, {
+        headers: this._headers(token),
+      });
+      return data.tree || [];
+    } catch (err) {
+      console.error('[GitHub] getFileTree error:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get closed issues (excluding pull requests).
+   */
+  async getClosedIssues(owner, repo, token = null, since = null) {
+    try {
+      const params = { state: 'closed', per_page: 50 };
+      if (since) params.since = since;
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/issues`, {
+        headers: this._headers(token),
+        params,
+      });
+      return data
+        .filter((i) => !i.pull_request)
+        .map((i) => ({
+          number: i.number,
+          title: i.title,
+          body: i.body || '',
+          author: i.user?.login || 'unknown',
+          createdAt: i.created_at,
+          closedAt: i.closed_at,
+          url: i.html_url,
+        }));
+    } catch (err) {
+      console.error('[GitHub] getClosedIssues error:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get merged pull requests.
+   */
+  async getMergedPRs(owner, repo, token = null, since = null) {
+    try {
+      const params = { state: 'closed', per_page: 50 };
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/pulls`, {
+        headers: this._headers(token),
+        params,
+      });
+      let prs = data.filter(pr => pr.merged_at);
+      if (since) {
+        const sinceTime = new Date(since).getTime();
+        prs = prs.filter(pr => new Date(pr.merged_at).getTime() >= sinceTime);
+      }
+      return prs.map((pr) => ({
+        number: pr.number,
+        title: pr.title,
+        body: pr.body || '',
+        author: pr.user?.login || 'unknown',
+        createdAt: pr.created_at,
+        mergedAt: pr.merged_at,
+        url: pr.html_url,
+        baseBranch: pr.base.ref,
+        headBranch: pr.head.ref,
+      }));
+    } catch (err) {
+      console.error('[GitHub] getMergedPRs error:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get PR comments/reviews.
+   */
+  async getPRComments(owner, repo, prNumber, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/comments`, {
+        headers: this._headers(token),
+      });
+      return data.map(c => ({
+        id: c.id,
+        body: c.body,
+        author: c.user?.login || 'unknown',
+        path: c.path,
+        createdAt: c.created_at,
+      }));
+    } catch (err) {
+      console.error('[GitHub] getPRComments error:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get issue thread comments.
+   */
+  async getIssueComments(owner, repo, issueNumber, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+        headers: this._headers(token),
+      });
+      return data.map(c => ({
+        id: c.id,
+        body: c.body,
+        author: c.user?.login || 'unknown',
+        createdAt: c.created_at,
+      }));
+    } catch (err) {
+      console.error('[GitHub] getIssueComments error:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get branch ahead/behind comparison stats.
+   */
+  async getBranchComparison(owner, repo, base, head, token = null) {
+    try {
+      const { data } = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${head}`, {
+        headers: this._headers(token),
+      });
+      return {
+        status: data.status,
+        aheadBy: data.ahead_by,
+        behindBy: data.behind_by,
+        totalCommits: data.total_commits,
+      };
+    } catch (err) {
+      console.error('[GitHub] getBranchComparison error:', err.message);
+      return { status: 'unknown', aheadBy: 0, behindBy: 0, totalCommits: 0 };
+    }
+  }
 }
 
 // Singleton export

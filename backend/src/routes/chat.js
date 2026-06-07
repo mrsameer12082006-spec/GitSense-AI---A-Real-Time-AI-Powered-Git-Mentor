@@ -2,11 +2,11 @@ import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/auth.js';
 import aiService from '../services/ai.js';
-import repoContextService from '../services/repoContext.js';
 import githubService from '../services/github.js';
 import userMemoryService from '../services/userMemory.js';
 import ragService from '../services/rag.js';
-import webSearchService from '../services/webSearch.js';
+import personaClassifier from '../services/personaClassifier.js';
+import citationVerifier from '../services/citationVerifier.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -79,31 +79,32 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Build repository context
+    // 1. Classify User Persona
+    const persona = personaClassifier.classify(message, history);
+    console.log(`[Chat] Classified user persona: level ${persona.level} (${persona.label})`);
+
+    // 2. Expand query & Retrieve Repository Chunks using Vector Store
     let repoContext = '';
+    let relevantChunks = [];
     if (repoRecord) {
-      const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-      const token = user?.githubToken || null;
       try {
-        repoContext = await repoContextService.buildContext(
-          { owner: repoRecord.owner, name: repoRecord.name },
-          token
-        );
+        relevantChunks = await ragService.retrieveWithExpansion(message, repoRecord.id);
+        repoContext = ragService.formatChunksForContext(relevantChunks);
       } catch (err) {
-        console.error('[Chat] Failed to build repo context:', err.message);
+        console.error('[Chat] Failed to retrieve repository chunks:', err.message);
         repoContext = `Repository: ${repoRecord.fullName} (context unavailable)`;
       }
     }
 
-    // Build unified context (Priority order)
-    let unifiedContext = `## 1. CURRENT REPOSITORY CONTEXT:\n`;
+    // Build unified context
+    let unifiedContext = ``;
     if (repoRecord) {
-      unifiedContext += `${repoContext || 'Repository connection is active, but live metadata is loading.'}\n\n`;
+      unifiedContext += `${repoContext}\n\n`;
     } else {
       unifiedContext += `No connected repository. Answer based on general Git knowledge.\n\n`;
     }
 
-    // 2. Add User Memory Context (Phase 4)
+    // Add Past Conversation Memory if any
     let crossConversationContext = '';
     let repositoryMemoryContext = '';
     try {
@@ -116,40 +117,10 @@ router.post('/', async (req, res) => {
     }
 
     if (crossConversationContext || repositoryMemoryContext) {
-      unifiedContext += `## 2. PAST CONVERSATION MEMORY:\n`;
+      unifiedContext += `### PAST CONVERSATION MEMORY:\n`;
       if (crossConversationContext) unifiedContext += crossConversationContext;
       if (repositoryMemoryContext) unifiedContext += repositoryMemoryContext;
       unifiedContext += `\n`;
-    }
-
-    // 3. Add RAG Context (Phase 4)
-    let ragContext = '';
-    try {
-      const relevantChunks = await ragService.retrieveRelevantChunks(message, 3);
-      ragContext = ragService.formatChunksForContext(relevantChunks);
-    } catch (err) {
-      console.error('[Chat] Failed to retrieve RAG chunks:', err.message);
-    }
-
-    if (ragContext) {
-      unifiedContext += `## 3. PDF KNOWLEDGE BASE CONTEXT:\n${ragContext}\n`;
-    }
-
-    // 4. Add Web Search fallback context (Phase 4)
-    let webSearchContext = '';
-    const queryLower = message.toLowerCase();
-    const shouldSearch = !repoRecord || queryLower.includes('how') || queryLower.includes('why') || queryLower.includes('error') || queryLower.includes('failed') || queryLower.includes('git') || queryLower.includes('github') || queryLower.includes('setup') || queryLower.includes('config');
-    if (shouldSearch) {
-      try {
-        const searchResults = await webSearchService.search(message);
-        webSearchContext = webSearchService.formatResultsForContext(searchResults);
-      } catch (err) {
-        console.error('[Chat] Web search failed:', err.message);
-      }
-    }
-
-    if (webSearchContext) {
-      unifiedContext += `## 4. WEB SEARCH FALLBACK CONTEXT:\n${webSearchContext}\n`;
     }
 
     // Set headers for Server-Sent Events
@@ -157,8 +128,14 @@ router.post('/', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Get completion stream from AI Service
-    const stream = await aiService.getCompletionStream(message, unifiedContext, history);
+    // Get completion stream from AI Service with persona level
+    const stream = await aiService.getCompletionStream(
+      message,
+      unifiedContext,
+      history,
+      persona.level,
+      repoRecord?.name || ''
+    );
 
     // Read and pipe the stream to res
     const reader = stream.getReader();
@@ -211,9 +188,7 @@ router.post('/', async (req, res) => {
         const chunk = decoder.decode(value, { stream: !done });
         streamBuffer += chunk;
 
-        // Extract raw JSON stream tokens (data: {...})
         const lines = streamBuffer.split('\n');
-        // Keep the last incomplete line in streamBuffer
         streamBuffer = lines.pop();
 
         for (const line of lines) {
@@ -224,10 +199,8 @@ router.post('/', async (req, res) => {
               const parsedData = JSON.parse(cleanLine.substring(6));
               const delta = parsedData.choices?.[0]?.delta?.content || '';
               
-              // Accumulate raw completion buffer
               aiCompletionText += delta;
               
-              // Extract current mapped "text" property
               const currentFullText = extractTextFromPartialJson(aiCompletionText);
               if (currentFullText.length > lastSentText.length) {
                 const tokenToSend = currentFullText.substring(lastSentText.length);
@@ -235,14 +208,13 @@ router.post('/', async (req, res) => {
                 lastSentText = currentFullText;
               }
             } catch (err) {
-              // Ignore line parsing errors on incomplete buffers
+              // Ignore line parsing errors
             }
           }
         }
       }
     }
 
-    // Process remainder of streamBuffer if any
     const finalLines = streamBuffer.split('\n');
     for (const line of finalLines) {
       const cleanLine = line.trim();
@@ -256,7 +228,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Extract complete JSON object from the fully accumulated completion
+    // Extract complete JSON object
     let parsedAI = { text: 'I apologize, I could not generate a response.' };
     try {
       parsedAI = JSON.parse(aiCompletionText);
@@ -269,13 +241,25 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Fallback if parsedAI.text is empty or undefined/null
     if (!parsedAI || typeof parsedAI !== 'object' || !parsedAI.text || !parsedAI.text.trim()) {
       const fallbackText = extractTextFromPartialJson(aiCompletionText);
       parsedAI = {
         ...parsedAI,
         text: fallbackText || aiCompletionText || 'I apologize, I could not generate a response.'
       };
+    }
+
+    // 3. Post-Process: Citation Verification against retrieved chunks
+    if (relevantChunks.length > 0) {
+      try {
+        const verification = citationVerifier.verify(parsedAI.text, relevantChunks);
+        parsedAI.text = verification.verifiedText;
+        if (!verification.isClean) {
+          console.log('[Chat] Citation verifier flagged and modified references:', verification.flaggedItems);
+        }
+      } catch (err) {
+        console.error('[Chat] Citation verification failed:', err.message);
+      }
     }
 
     // Fetch repository issues (Self-diagnosis)
@@ -306,7 +290,10 @@ router.post('/', async (req, res) => {
 
     // Save AI response in database
     if (conversation) {
-      const metadata = {};
+      const metadata = {
+        personaLevel: persona.level,
+        personaLabel: persona.label
+      };
       if (parsedAI.insight) metadata.insight = parsedAI.insight;
       if (parsedAI.recommendation) metadata.recommendation = parsedAI.recommendation;
       if (parsedAI.codeBlock) metadata.codeBlock = parsedAI.codeBlock;
@@ -355,6 +342,8 @@ router.post('/', async (req, res) => {
         diff: parsedAI.diff,
         conflictResolution: parsedAI.conflictResolution,
         diagnosedIssue,
+        personaLevel: persona.level,
+        personaLabel: persona.label
       }
     })}\n\n`);
 

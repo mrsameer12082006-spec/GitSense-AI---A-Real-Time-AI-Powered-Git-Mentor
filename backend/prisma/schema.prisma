@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// GitSense AI — Database Schema (Neon PostgreSQL)
+// GitSense AI — Database Schema (SQLite)
 // ─────────────────────────────────────────────────────────────
 
 generator client {
@@ -42,12 +42,17 @@ model Repository {
   isConnected      Boolean  @default(true)
   connectionMethod String   @default("url")
   metadata         String?
+  lastIngestedAt   DateTime?
+  ingestionStatus  String   @default("none")
+  chunkCount       Int      @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-  activities    Activity[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations  Conversation[]
+  activities     Activity[]
+  repoChunks     RepoChunk[]
+  ingestionJobs  IngestionJob[]
 
   @@unique([userId, fullName])
 }
@@ -95,4 +100,38 @@ model KnowledgeChunk {
   filename  String
   content   String
   createdAt DateTime @default(now())
+}
+
+// ── Repository RAG Chunks (Tatva-style vector store) ──────
+model RepoChunk {
+  id           String   @id @default(cuid())
+  repositoryId String
+  sourceType   String   // commit | file | pr | issue | branch | readme | config
+  sourceId     String   // commit sha, file path, PR number, etc.
+  content      String   // The chunk text
+  embedding    String   @default("[]") // JSON array of floats (384-dim vector)
+  metadata     String   @default("{}") // JSON metadata
+  priority     Int      @default(0)    // Higher = more important
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, sourceType])
+}
+
+// ── Ingestion Job Tracking ────────────────────────────────
+model IngestionJob {
+  id              String    @id @default(cuid())
+  repositoryId    String
+  status          String    @default("pending")
+  progress        Int       @default(0)
+  currentStep     String    @default("")
+  totalChunks     Int       @default(0)
+  processedChunks Int       @default(0)
+  errorMessage    String?
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 }
