@@ -326,30 +326,3 @@ export default function RepoConnectModal({ isOpen, onClose, apiFetch, onConnectS
     </AnimatePresence>
   );
 }
-                      <div
-                        key={repo.fullName}
-                        className="flex items-center justify-between bg-slate-900/40 hover:bg-slate-900 border border-white/[0.04] hover:border-white/[0.08] p-3.5 rounded-xl transition-all duration-200"
-                      >
-                        <div className="flex flex-col min-w-0 text-left">
-                          <span className="text-xs font-semibold text-slate-200 truncate">{repo.name}</span>
-                          <span className="text-[10px] text-slate-500 font-mono truncate">{repo.fullName}</span>
-                        </div>
-                        <button
-                          onClick={() => handleConnectRepo(repo.fullName)}
-                          disabled={loading}
-                          className="px-3.5 py-1.5 bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#7C5CFF] hover:bg-[#7C5CFF] hover:text-white rounded-xl text-[10px] font-bold transition-all cursor-pointer disabled:opacity-50"
-                        >
-                          Connect
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </motion.div>
-      </div>
-    </AnimatePresence>
-  );
-}

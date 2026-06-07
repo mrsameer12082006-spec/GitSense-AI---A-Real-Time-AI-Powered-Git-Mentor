@@ -110,42 +110,134 @@ export default function Dashboard() {
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalFixData, setApprovalFixData] = useState(null);
 
+  const [scanSummary, setScanSummary] = useState(null);
+  const [scanCompleted, setScanCompleted] = useState(null);
+  const [scanChecks, setScanChecks] = useState(null);
+  const [rateLimitResetTime, setRateLimitResetTime] = useState(null);
+  const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
+  const [scanError, setScanError] = useState(null);
+
+  useEffect(() => {
+    if (!rateLimitResetTime) {
+      setRateLimitCountdown(0);
+      return;
+    }
+
+    const updateCountdown = () => {
+      const diff = Math.max(0, Math.floor((rateLimitResetTime - Date.now()) / 1000));
+      setRateLimitCountdown(diff);
+      if (diff === 0) {
+        clearInterval(timer);
+      }
+    };
+
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, [rateLimitResetTime]);
+
+  const formatCountdown = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   const handleScanRepo = async () => {
     if (!connectedRepo) return;
     setIsScanning(true);
-    setScanSteps([
-      { label: 'Initializing scanner', status: 'active' },
-      { label: 'Checking local git state', status: 'pending' },
-      { label: 'Analyzing commit history', status: 'pending' },
-      { label: 'Verifying repository quality', status: 'pending' },
-      { label: 'Generating AI diagnosis', status: 'pending' }
-    ]);
+    setScanCompleted(null);
+    setRateLimitResetTime(null);
+    setScanChecks(null);
+    setScanError(null);
     
-    // Animate steps
-    const stepTimes = [600, 800, 700, 900];
-    for (let i = 0; i < stepTimes.length; i++) {
-      await new Promise(r => setTimeout(r, stepTimes[i]));
-      setScanSteps(prev => prev.map((s, idx) => {
-        if (idx === i) return { ...s, status: 'success' };
-        if (idx === i + 1) return { ...s, status: 'active' };
-        return s;
-      }));
-    }
+    setScanSteps([
+      { label: 'Fetching repository metadata', status: 'active', key: 'metadata' },
+      { label: 'Retrieving repository branches', status: 'pending', key: 'branches' },
+      { label: 'Comparing branches against base', status: 'pending', key: 'branchComparison' },
+      { label: 'Retrieving pull requests', status: 'pending', key: 'pullRequests' },
+      { label: 'Verifying PR mergeability', status: 'pending', key: 'prDetails' },
+      { label: 'Checking .gitignore rules', status: 'pending', key: 'gitignore' },
+      { label: 'Scanning files for issues', status: 'pending', key: 'largeFiles' },
+      { label: 'Verifying CI/CD status', status: 'pending', key: 'ciWorkflow' },
+      { label: 'Generating AI explanations', status: 'pending', key: 'ai' }
+    ]);
+
+    // Animate steps placeholder sequentially
+    let isRequestRunning = true;
+    const runAnimation = async () => {
+      for (let i = 0; i < 8; i++) {
+        if (!isRequestRunning) break;
+        await new Promise(r => setTimeout(r, 450));
+        setScanSteps(prev => {
+          return prev.map((s, idx) => {
+            if (idx === i && s.status === 'active') return { ...s, status: 'success' };
+            if (idx === i + 1 && s.status === 'pending') return { ...s, status: 'active' };
+            return s;
+          });
+        });
+      }
+    };
+    
+    const animationPromise = runAnimation();
 
     try {
-      const res = await apiFetch(`/repos/${connectedRepo.id}/scan`, { method: 'POST' });
+      const owner = connectedRepo.owner;
+      const repo = connectedRepo.name;
+      const token = currentUser?.githubToken || '';
+
+      const res = await apiFetch(`/repo/scan`, {
+        method: 'POST',
+        body: JSON.stringify({ owner, repo, token })
+      });
+
+      if (!res.ok) {
+        let errMsg = 'Failed to scan repository';
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        setScanError(errMsg);
+        throw new Error(errMsg);
+      }
+
       const data = await res.json();
-      if (data.issues) {
-        setIssues(data.issues);
+      isRequestRunning = false;
+      
+      setIssues(data.issues || []);
+      setScanSummary(data.summary || null);
+      setScanCompleted(data.scanCompleted);
+      setScanChecks(data.checks || null);
+      
+      if (data.scanCompleted === false && data.rateLimitResetTime) {
+        setRateLimitResetTime(data.rateLimitResetTime);
       }
       
-      setScanSteps(prev => prev.map(s => s.status === 'active' || s.status === 'pending' ? { ...s, status: 'success' } : s));
-      await new Promise(r => setTimeout(r, 800));
+      // Update steps status instantly based on checks results
+      if (data.checks) {
+        setScanSteps(prev => prev.map(s => {
+          if (s.key === 'ai') {
+            return { ...s, status: data.scanCompleted ? 'success' : 'skipped' };
+          }
+          const checkStatus = data.checks[s.key];
+          return {
+            ...s,
+            status: checkStatus === 'success' ? 'success' :
+                    checkStatus === 'rate_limited' ? 'failed' :
+                    checkStatus === 'skipped' ? 'skipped' : s.status
+          };
+        }));
+      } else {
+        setScanSteps(prev => prev.map(s => ({ ...s, status: 'success' })));
+      }
+      
     } catch (err) {
+      isRequestRunning = false;
       console.error('[Scan] Failed to scan repository:', err);
+      // Ensure we have set an error message in state
+      setScanError(prev => prev || err.message || 'Failed to connect to the backend server.');
     } finally {
+      await animationPromise;
       setIsScanning(false);
-      setScanSteps([]);
     }
   };
 
@@ -1665,7 +1757,7 @@ export default function Dashboard() {
                     
                     <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
                       {isScanning ? (
-                        <div className="flex flex-col gap-3">
+                        <div className="flex flex-col gap-3 text-left">
                           <div className="flex items-center gap-2 text-[#00D4FF] mb-2">
                             <Activity size={16} className="animate-pulse" />
                             <span className="text-xs font-bold uppercase tracking-widest animate-pulse">Running Deep Scan...</span>
@@ -1674,6 +1766,8 @@ export default function Dashboard() {
                             <div key={idx} className="flex items-center gap-2 text-[10px]">
                               {step.status === 'success' ? <CheckCircle2 size={12} className="text-[#00E38C]" /> :
                                step.status === 'active' ? <Loader2 size={12} className="text-amber-400 animate-spin" /> :
+                               step.status === 'failed' ? <AlertTriangle size={12} className="text-rose-400" /> :
+                               step.status === 'skipped' ? <div className="w-3 h-3 rounded-full border border-slate-600 flex items-center justify-center text-[8px] text-slate-500 font-bold">-</div> :
                                <div className="w-3 h-3 rounded-full border border-slate-700" />}
                               <span className={step.status === 'success' ? 'text-slate-400' : step.status === 'active' ? 'text-amber-400 font-semibold' : 'text-slate-600'}>
                                 {step.label}
@@ -1681,9 +1775,110 @@ export default function Dashboard() {
                             </div>
                           ))}
                         </div>
+                      ) : scanError ? (
+                        <div className="flex flex-col gap-3 text-left">
+                          <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-2">
+                            <AlertTriangle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                            <div className="flex flex-col gap-1">
+                              <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Scan Error</span>
+                              <p className="text-[11px] text-slate-300 leading-normal">
+                                {scanError}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={handleScanRepo}
+                            className="w-full py-1.5 bg-gradient-to-r from-rose-500 to-rose-600 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <RefreshCw size={10} />
+                            Retry Scan
+                          </button>
+                        </div>
+                      ) : scanCompleted === false ? (
+                        <div className="flex flex-col gap-3 text-left">
+                          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-2">
+                            <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
+                            <div className="flex flex-col gap-1">
+                              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Rate Limit Warning</span>
+                              <p className="text-[10px] text-slate-400 leading-normal">
+                                GitHub API rate limit reached. Some checks were skipped. Results may be incomplete.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1.5 bg-slate-900/60 p-3 rounded-xl border border-white/[0.04] text-[10px]">
+                            <span className="text-slate-500 font-bold uppercase tracking-wider">Checks Run</span>
+                            {scanSteps.map(step => {
+                              const status = scanChecks ? scanChecks[step.key] : step.status;
+                              return (
+                                <div key={step.key} className="flex items-center justify-between text-[10px]">
+                                  <span className="text-slate-400">{step.label}</span>
+                                  <div className="flex items-center gap-1.5 font-mono text-[9px]">
+                                    {status === 'success' && <span className="text-[#00E38C]">PASSED</span>}
+                                    {status === 'rate_limited' && <span className="text-rose-400">LIMIT</span>}
+                                    {status === 'skipped' && <span className="text-slate-600 font-bold">SKIP</span>}
+                                    {status === 'failed' && <span className="text-rose-500">FAILED</span>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex flex-col gap-2 mt-2">
+                            <div className="text-[10px] text-slate-500 text-center font-mono">
+                              Rate limit resets in: <span className="text-amber-400 font-bold">{formatCountdown(rateLimitCountdown)}</span>
+                            </div>
+                            <button
+                              onClick={handleScanRepo}
+                              disabled={rateLimitCountdown > 0 || isScanning}
+                              className="w-full py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <RefreshCw size={10} className={isScanning ? 'animate-spin' : ''} />
+                              Resume Scan
+                            </button>
+                          </div>
+
+                          {issues.length > 0 && (
+                            <div className="flex flex-col gap-2 border-t border-white/[0.05] pt-3 mt-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Partial Scan Issues ({issues.length})</span>
+                              {issues.map(issue => (
+                                <div key={issue.id} className="bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col">
+                                  <button
+                                    onClick={() => toggleIssueExpansion(issue.id)}
+                                    className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                                        {issue.severity}
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
+                                    </div>
+                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
+                                  </button>
+                                  {expandedIssueIds.has(issue.id) && (
+                                    <div className="p-3 pt-0 border-t border-white/[0.05] flex flex-col gap-4 mt-2">
+                                      <div className="flex flex-col gap-1.5">
+                                        <h5 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-wider">What is the issue?</h5>
+                                        <p className="text-[10px] text-slate-300 leading-relaxed">{issue.whatIsTheIssue}</p>
+                                      </div>
+                                      <div className="flex flex-col gap-1.5">
+                                        <h5 className="text-[9px] font-bold text-[#7C5CFF] uppercase tracking-wider">How this happened</h5>
+                                        <p className="text-[10px] text-slate-300 leading-relaxed">{issue.howThisHappened}</p>
+                                      </div>
+                                      <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded border border-white/[0.05]">
+                                        <h5 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Manual Fix</h5>
+                                        <code className="text-[9px] text-emerald-400 font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       ) : issues.length > 0 ? (
                         <div className="flex flex-col gap-3">
-                          <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5">
+                          <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
                             <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
                           </div>
                           <div className="flex flex-col gap-2">
@@ -1719,7 +1914,7 @@ export default function Dashboard() {
                                     </div>
                                     <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded border border-white/[0.05]">
                                       <h5 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Manual Fix</h5>
-                                      <code className="text-[9px] text-emerald-400 font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
+                                      <code className="text-[9px] text-[#00E38C] font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
                                     </div>
                                     {!issue.isFixed && (
                                       <button
@@ -1737,12 +1932,23 @@ export default function Dashboard() {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-col items-center justify-center py-6 gap-2 opacity-60">
+                        <div className="flex flex-col items-center justify-center py-6 gap-2 text-center">
                           <div className="w-10 h-10 rounded-full bg-[#00E38C]/10 flex items-center justify-center mb-1">
                             <CheckCircle2 size={20} className="text-[#00E38C]" />
                           </div>
-                          <span className="text-xs font-bold text-slate-300">Repository is Clean</span>
-                          <span className="text-[10px] text-slate-500 text-center max-w-[200px]">No issues detected in the latest scan.</span>
+                          <span className="text-xs font-bold text-slate-300">Repository looks healthy</span>
+                          {scanSummary ? (
+                            <div className="flex flex-col gap-1 mt-1 text-[10px] text-slate-500 font-mono">
+                              <div>Branches Checked: {scanSummary.branchesChecked}</div>
+                              <div>PRs Checked: {scanSummary.prsChecked}</div>
+                              <div>Files Scanned: {scanSummary.filesScanned}</div>
+                              <div className="mt-1 text-[9px] opacity-75">
+                                Timestamp: {new Date(scanSummary.timestamp).toLocaleTimeString()}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-slate-500 text-center max-w-[200px]">No issues detected in the latest scan.</span>
+                          )}
                         </div>
                       )}
                     </div>

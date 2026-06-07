@@ -5,6 +5,8 @@ import githubService from '../services/github.js';
 import ingestionService from '../services/ingestion.js';
 import localGitService from '../services/localGit.js';
 import aiService from '../services/ai.js';
+import axios from 'axios';
+import { scanRepository } from '../services/githubScanner.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -254,8 +256,34 @@ router.delete('/:id', async (req, res) => {
 });
 
 
-// ── POST /api/repos/:id/scan ────────────────────────────────
-// Real repository health scanning system
+// Helper to limit concurrency
+// ── POST /api/repos/:id/scan & /api/repo/scan ─────────────────
+router.post('/scan', async (req, res) => {
+  try {
+    const { owner, repo, token } = req.body;
+    const finalToken = token || process.env.GITHUB_TOKEN;
+    
+    console.log(`[Scan API] Start scan:`, {
+      owner,
+      repo,
+      tokenPresent: !!finalToken,
+      tokenPrefix: finalToken ? finalToken.substring(0, 10) + '...' : 'none'
+    });
+
+    if (!owner || !repo || !finalToken) {
+      console.warn(`[Scan API] Missing params: owner=${owner}, repo=${repo}, tokenPresent=${!!finalToken}`);
+      return res.status(400).json({ error: 'owner, repo, and token are all required.' });
+    }
+
+    const result = await scanRepository(owner, repo, finalToken);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error(`[Scan API] Uncaught scan error:`, err);
+    return res.status(500).json({ error: err.message || 'Internal server error during repository scan' });
+  }
+});
+
+// Backwards compatibility endpoint for repo ID route
 router.post('/:id/scan', async (req, res) => {
   try {
     const repository = await prisma.repository.findFirst({
@@ -269,224 +297,16 @@ router.post('/:id/scan', async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     const token = user?.githubToken || null;
 
-    let issues = [];
-
-    // Ensure local clone exists
-    await localGitService.ensureClone(repository.id, repository.owner, repository.name, token);
-
-    // Category 1: Git State Issues
-    const gitState = await localGitService.getGitState(repository.id);
-    
-    if (gitState.detachedHead) {
-      issues.push({
-        id: 'git-state-detached-head',
-        category: 'Git State',
-        severity: 'critical',
-        title: 'Detached HEAD State',
-        affectedResource: gitState.headHash || 'HEAD',
-        manualFixCommands: [
-          `# Checkout back to the last known branch`,
-          `git checkout ${gitState.lastBranch || repository.defaultBranch || 'main'}`
-        ],
-        fixType: 'checkout_branch',
-        fixRiskLevel: 'Safe — no data loss',
-        fixDescription: `Check out to ${gitState.lastBranch || repository.defaultBranch || 'main'}.`,
-        isFixed: false,
-        rawState: gitState
-      });
+    if (!token) {
+      return res.status(400).json({ error: 'GitHub authorization token is missing. Please connect your GitHub account.' });
     }
 
-    if (gitState.uncommittedChanges && gitState.uncommittedChanges.length > 0) {
-      issues.push({
-        id: 'git-state-uncommitted',
-        category: 'Git State',
-        severity: 'warning',
-        title: 'Uncommitted Changes',
-        affectedResource: `${gitState.uncommittedChanges.length} files`,
-        manualFixCommands: [
-          `# Stash uncommitted changes`,
-          `git stash`
-        ],
-        fixType: 'stash_changes',
-        fixRiskLevel: 'Safe — no data loss',
-        fixDescription: 'Stash all uncommitted changes safely.',
-        isFixed: false,
-        rawState: gitState
-      });
-    }
-
-    if (gitState.stashes && gitState.stashes.length > 0) {
-      issues.push({
-        id: 'git-state-old-stashes',
-        category: 'Git State',
-        severity: 'info',
-        title: 'Old Stash Entries Found',
-        affectedResource: `${gitState.stashes.length} stashes`,
-        manualFixCommands: [
-          `# View all stashes`,
-          `git stash list`,
-          `# Drop the oldest stash`,
-          `git stash drop ${gitState.stashes[0].id}`
-        ],
-        fixType: 'prune_stashes',
-        fixRiskLevel: 'Safe — no data loss',
-        fixDescription: 'Remove stashes older than 14 days.',
-        isFixed: false,
-        rawState: gitState
-      });
-    }
-
-    // Category 2: Branch Divergence Issues
-    try {
-      const branches = await githubService.getBranches(repository.owner, repository.name, token);
-      for (const branch of branches) {
-        if (branch.name === repository.defaultBranch) continue;
-        const comp = await githubService.getBranchComparison(repository.owner, repository.name, repository.defaultBranch, branch.name, token);
-        if (comp.behindBy > 10) {
-          issues.push({
-            id: `branch-divergence-${branch.name}`,
-            category: 'Branch Divergence',
-            severity: comp.behindBy > 30 ? 'critical' : 'warning',
-            title: `Branch Diverged from ${repository.defaultBranch}`,
-            affectedResource: branch.name,
-            manualFixCommands: [
-              `# Checkout the diverged branch`,
-              `git checkout ${branch.name}`,
-              `# Fetch and merge default branch`,
-              `git fetch origin`,
-              `git merge origin/${repository.defaultBranch}`
-            ],
-            fixType: 'sync_branch',
-            fixRiskLevel: 'May require conflict resolution',
-            fixDescription: `Fetch and merge ${repository.defaultBranch} into ${branch.name}.`,
-            isFixed: false,
-            rawState: { branch: branch.name, behind: comp.behindBy, defaultBranch: repository.defaultBranch }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('Branch divergence check failed:', e.message);
-    }
-
-    // Category 3: File and Repository Quality Issues
-    try {
-      const tree = await githubService.getFileTree(repository.owner, repository.name, repository.defaultBranch, token);
-      let hasGitIgnore = false;
-      for (const node of tree) {
-        if (node.path === '.gitignore') hasGitIgnore = true;
-        // Large file check > 5MB (5242880 bytes)
-        if (node.type === 'blob' && node.size > 5242880) {
-          issues.push({
-            id: `large-file-${node.path}`,
-            category: 'Repository Quality',
-            severity: 'critical',
-            title: 'Large Binary File Tracked',
-            affectedResource: node.path,
-            manualFixCommands: [
-              `# Remove file from git cache but keep locally`,
-              `git rm --cached "${node.path}"`,
-              `# Add to gitignore`,
-              `echo "${node.path}" >> .gitignore`,
-              `# Commit removal`,
-              `git commit -m "Remove large file ${node.path}"`
-            ],
-            fixType: 'remove_large_file',
-            fixRiskLevel: 'Destructive — creates new commit',
-            fixDescription: `Remove ${node.path} from Git and add it to .gitignore.`,
-            isFixed: false,
-            rawState: { path: node.path, size: node.size }
-          });
-        }
-
-        // Secrets check
-        const isSecret = ['.env', 'secret', 'password', 'key', 'credentials', 'id_rsa'].some(s => node.path.toLowerCase().includes(s));
-        if (node.type === 'blob' && isSecret) {
-          issues.push({
-            id: `secret-file-${node.path}`,
-            category: 'Repository Quality',
-            severity: 'critical',
-            title: 'Potential Secret File Tracked',
-            affectedResource: node.path,
-            manualFixCommands: [
-              `# Remove secret from git cache`,
-              `git rm --cached "${node.path}"`,
-              `# Add to gitignore`,
-              `echo "${node.path}" >> .gitignore`,
-              `git commit -m "Remove secret file ${node.path}"`
-            ],
-            fixType: 'remove_secret_file',
-            fixRiskLevel: 'Destructive — creates new commit',
-            fixDescription: `Remove ${node.path} from Git and add to .gitignore.`,
-            isFixed: false,
-            rawState: { path: node.path }
-          });
-        }
-      }
-
-      if (!hasGitIgnore) {
-        issues.push({
-          id: 'missing-gitignore',
-          category: 'Repository Quality',
-          severity: 'warning',
-          title: 'Missing .gitignore File',
-          affectedResource: '.gitignore',
-          manualFixCommands: [
-            `# Create .gitignore`,
-            `touch .gitignore`,
-            `# Add basic patterns`,
-            `echo "node_modules/\n.env\n.DS_Store" > .gitignore`,
-            `git add .gitignore`,
-            `git commit -m "Add .gitignore"`
-          ],
-          fixType: 'create_gitignore',
-          fixRiskLevel: 'Destructive — creates new commit',
-          fixDescription: 'Create a .gitignore file with standard rules.',
-          isFixed: false,
-          rawState: {}
-        });
-      }
-    } catch (e) {
-      console.warn('Quality check failed:', e.message);
-    }
-
-    // Category 4: Pull Request Issues
-    try {
-      const prs = await githubService.getPullRequests(repository.owner, repository.name, token);
-      const now = new Date();
-      for (const pr of prs) {
-        const prDate = new Date(pr.createdAt);
-        const daysOld = (now - prDate) / (1000 * 60 * 60 * 24);
-        
-        if (daysOld > 14) {
-          issues.push({
-            id: `stale-pr-${pr.number}`,
-            category: 'Pull Requests',
-            severity: 'warning',
-            title: 'Stale Pull Request',
-            affectedResource: `PR #${pr.number}`,
-            manualFixCommands: [
-              `# Review PR on GitHub`,
-              `gh pr view ${pr.number}`
-            ],
-            fixType: 'notify_stale_pr',
-            fixRiskLevel: 'Safe — no data loss',
-            fixDescription: 'Post a comment on the PR tagging the author.',
-            isFixed: false,
-            rawState: { number: pr.number, author: pr.author, daysOld: Math.floor(daysOld) }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('PR check failed:', e.message);
-    }
-
-    // Pass issues through AI layer
-    const diagnosedIssues = await aiService.diagnoseIssues(issues, 'intermediate');
-
-    res.json({ issues: diagnosedIssues });
+    console.log(`[Scan Compatibility API] Starting scan for repository ${repository.fullName}`);
+    const result = await scanRepository(repository.owner, repository.name, token);
+    return res.status(200).json(result);
   } catch (err) {
-    console.error('[Repos] scan error:', err);
-    res.status(500).json({ error: 'Failed to scan repository.' });
+    console.error(`[Scan Compatibility API] Error during scan:`, err);
+    return res.status(500).json({ error: err.message || 'Internal server error during repository scan' });
   }
 });
 

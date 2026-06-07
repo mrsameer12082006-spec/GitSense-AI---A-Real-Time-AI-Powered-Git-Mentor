@@ -1,0 +1,510 @@
+import aiService from './ai.js';
+
+/**
+ * Clean human-readable time formatter for rate limit reset.
+ */
+function formatResetTime(resetTimeSec) {
+  return new Date(resetTimeSec * 1000).toLocaleTimeString();
+}
+
+/**
+ * Core HTTP Fetcher with Auth, Logging, and Error Handling.
+ */
+export async function fetchWithAuth(url, token) {
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'GitSense-AI'
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  console.log(`[GitHub API] Calling URL: ${url}`);
+  
+  try {
+    const res = await fetch(url, { headers });
+    console.log(`[GitHub API] URL: ${url} -> Status: ${res.status}`);
+
+    // Read body text for logging and error reporting
+    const bodyText = await res.text();
+    console.log(`[GitHub API] URL: ${url} -> Response preview: ${bodyText.substring(0, 200)}`);
+
+    if (res.status === 401) {
+      throw new Error(`GitHub token is invalid or missing for this URL: ${url}`);
+    }
+
+    if (res.status === 403) {
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      if (remaining === '0') {
+        const reset = res.headers.get('x-ratelimit-reset');
+        throw new Error(`GitHub API rate limit exceeded, resets at ${formatResetTime(reset)}`);
+      }
+    }
+
+    if (res.status === 404) {
+      throw new Error(`Resource not found at this URL: ${url}`);
+    }
+
+    if (res.status >= 400) {
+      throw new Error(`GitHub API error status code ${res.status} at this URL: ${url}`);
+    }
+
+    return JSON.parse(bodyText);
+  } catch (err) {
+    console.error(`[GitHub API] Error calling URL: ${url} -> ${err.message}`);
+    throw err;
+  }
+}
+
+/**
+ * Sleep helper for throttling.
+ */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Independent Gitignore Detector.
+ */
+export async function detectMissingGitignore(owner, repo, token) {
+  try {
+    const res = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/contents/.gitignore`, token);
+    console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists.`);
+    return null; // File exists, no issue
+  } catch (err) {
+    if (err.message.includes('not found') || err.message.includes('404')) {
+      console.log(`[Detector] Missing Gitignore -> 404 confirmed. Reporting issue.`);
+      return {
+        id: 'missing-gitignore',
+        category: 'Repository Quality',
+        severity: 'warning',
+        title: 'Missing .gitignore File',
+        affectedResource: '.gitignore',
+        manualFixCommands: [
+          `touch .gitignore`,
+          `echo "node_modules/\n.env" >> .gitignore`,
+          `git add .gitignore`,
+          `git commit -m "Add .gitignore"`
+        ],
+        fixType: 'create_gitignore',
+        fixRiskLevel: 'Safe',
+        fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
+        isFixed: false,
+        rawState: { status: 404 }
+      };
+    }
+    // Rate limit or auth error -> return null to avoid false positive
+    console.warn(`[Detector] Missing Gitignore check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Independent Merge Conflict Detector.
+ */
+export async function detectMergeConflicts(owner, repo, token) {
+  try {
+    const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=100`, token);
+    if (!Array.isArray(prs) || prs.length === 0) {
+      return null;
+    }
+
+    const conflicts = [];
+    for (const pr of prs) {
+      let prDetail = null;
+      // Retry logic for mergeable status
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const detail = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}`, token);
+        if (detail.mergeable !== null) {
+          prDetail = detail;
+          break;
+        }
+        console.log(`[Detector] PR #${pr.number} mergeable is null. Waiting 2s before retry (Attempt ${attempt}/3)`);
+        await sleep(2000);
+      }
+
+      if (prDetail && prDetail.mergeable === false) {
+        // Fetch conflict files
+        const filesRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}/files`, token);
+        const fileNames = (filesRes || []).map(f => f.filename);
+
+        conflicts.push({
+          prNumber: pr.number,
+          title: pr.title,
+          headBranch: prDetail.head.ref,
+          baseBranch: prDetail.base.ref,
+          author: pr.user?.login || 'unknown',
+          conflictingFiles: fileNames
+        });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      return {
+        id: 'pr-merge-conflicts',
+        category: 'Pull Requests',
+        severity: 'critical',
+        title: `${conflicts.length} Pull Request(s) Have Merge Conflicts`,
+        affectedResource: conflicts.map(c => `PR #${c.prNumber}`).join(', '),
+        manualFixCommands: conflicts.map(c => 
+          `# Resolve conflicts for PR #${c.prNumber} (${c.headBranch} -> ${c.baseBranch})\n` +
+          `git checkout ${c.headBranch}\n` +
+          `git fetch origin\n` +
+          `git merge origin/${c.baseBranch}\n` +
+          `# Fix conflict markers in: ${c.conflictingFiles.join(', ')}\n` +
+          `git add .\n` +
+          `git commit -m "Resolve merge conflicts with ${c.baseBranch}"\n` +
+          `git push origin ${c.headBranch}`
+        ),
+        fixType: 'resolve_merge_conflicts',
+        fixRiskLevel: 'Requires manual merging',
+        fixDescription: 'Merge the base target branch into the PR branch, resolve the conflict lines, and push updates.',
+        isFixed: false,
+        rawState: { conflicts }
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Detector] Merge conflicts check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Independent Branch Divergence Detector.
+ */
+export async function detectBranchDivergence(owner, repo, token, defaultBranch) {
+  try {
+    const branches = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`, token);
+    const branchesToCompare = branches.filter(b => b.name !== defaultBranch);
+    if (branchesToCompare.length === 0) return null;
+
+    const diverged = [];
+
+    // Slice into batches of 5
+    for (let i = 0; i < branchesToCompare.length; i += 5) {
+      const batch = branchesToCompare.slice(i, i + 5);
+      
+      const batchPromises = batch.map(async (branch) => {
+        try {
+          const comp = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/compare/${defaultBranch}...${branch.name}`, token);
+          const behindBy = comp.behind_by || 0;
+          const aheadBy = comp.ahead_by || 0;
+          const status = comp.status || 'unknown';
+
+          if (behindBy > 10) {
+            // Fetch recent commits to get changed files
+            const commits = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch.name}&per_page=3`, token);
+            const commitFiles = new Set();
+
+            for (const commit of commits) {
+              try {
+                const detail = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/commits/${commit.sha}`, token);
+                if (detail.files) {
+                  detail.files.forEach(f => commitFiles.add(f.filename));
+                }
+              } catch (e) {
+                // Ignore single commit detail fail
+              }
+            }
+
+            const compareFiles = (comp.files || []).map(f => f.filename);
+            const conflictRiskFiles = compareFiles.filter(f => commitFiles.has(f));
+
+            diverged.push({
+              branchName: branch.name,
+              behindBy,
+              aheadBy,
+              status,
+              conflictRiskFiles
+            });
+          }
+        } catch (e) {
+          // Skip if branch compare fails (e.g. no common ancestor / 404)
+          console.warn(`[Detector] Branch Compare failed for ${branch.name}: ${e.message}`);
+        }
+      });
+
+      await Promise.all(batchPromises);
+      if (i + 5 < branchesToCompare.length) {
+        console.log(`[Detector] Divergence -> Pausing 500ms between branch comparison batches...`);
+        await sleep(500);
+      }
+    }
+
+    if (diverged.length > 0) {
+      return {
+        id: 'branch-divergence',
+        category: 'Branch Divergence',
+        severity: diverged.some(d => d.behindBy > 30) ? 'critical' : 'warning',
+        title: `${diverged.length} Branch(es) Have Diverged From Base`,
+        affectedResource: diverged.map(d => d.branchName).join(', '),
+        manualFixCommands: diverged.map(d => 
+          `# Re-sync branch '${d.branchName}'\n` +
+          `git checkout ${d.branchName}\n` +
+          `git fetch origin\n` +
+          `git merge origin/${defaultBranch}`
+        ),
+        fixType: 'sync_branches',
+        fixRiskLevel: 'Medium - May require merge conflicts resolution',
+        fixDescription: `Fetch and merge the base branch '${defaultBranch}' into the diverged branch files.`,
+        isFixed: false,
+        rawState: { diverged }
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Detector] Branch divergence check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Independent Stale Branch Detector.
+ */
+export async function detectStaleBranches(owner, repo, token, defaultBranch) {
+  try {
+    const branches = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`, token);
+    const branchesToCheck = branches.filter(b => b.name !== defaultBranch);
+    if (branchesToCheck.length === 0) return null;
+
+    const stale = [];
+
+    for (const branch of branchesToCheck) {
+      try {
+        const commits = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch.name}&per_page=1`, token);
+        if (commits && commits.length > 0) {
+          const firstCommit = commits[0];
+          const dateStr = firstCommit.commit.committer?.date || firstCommit.commit.author?.date;
+          if (dateStr) {
+            const ageDays = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+            if (ageDays > 30) {
+              // Verify if fully merged
+              const comp = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/compare/${defaultBranch}...${branch.name}`, token);
+              if (comp.ahead_by > 0) {
+                stale.push({
+                  branchName: branch.name,
+                  lastCommitDate: dateStr,
+                  authorName: firstCommit.commit.author?.name || 'unknown',
+                  aheadBy: comp.ahead_by
+                });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[Detector] Stale Check failed for ${branch.name}: ${e.message}`);
+      }
+    }
+
+    if (stale.length > 0) {
+      return {
+        id: 'stale-branches',
+        category: 'Multi-Branch Quality',
+        severity: 'warning',
+        title: `${stale.length} Forgotten Unmerged Branch(es) Found`,
+        affectedResource: stale.map(s => s.branchName).join(', '),
+        manualFixCommands: stale.map(s => 
+          `# Review and prune unmerged stale branch '${s.branchName}'\n` +
+          `git checkout ${s.branchName}\n` +
+          `# If safe, delete remote branch\n` +
+          `git push origin --delete ${s.branchName}`
+        ),
+        fixType: 'prune_stale_branches',
+        fixRiskLevel: 'Safe - Prunes abandoned remote branches',
+        fixDescription: 'Review stale and forgotten branches with the author and delete remote branches.',
+        isFixed: false,
+        rawState: { stale }
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Detector] Stale branches check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Independent Cross-branch Collision Detector.
+ */
+export async function detectBranchCollisions(owner, repo, token) {
+  try {
+    const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=100`, token);
+    if (!prs || prs.length === 0) return null;
+
+    const fileMap = new Map(); // path -> Array of PR numbers
+
+    for (const pr of prs) {
+      try {
+        const files = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}/files`, token);
+        for (const file of files) {
+          const arr = fileMap.get(file.filename) || [];
+          arr.push(pr.number);
+          fileMap.set(file.filename, arr);
+        }
+      } catch (e) {
+        console.warn(`[Detector] File list fetch failed for PR #${pr.number}: ${e.message}`);
+      }
+    }
+
+    const collisions = [];
+    for (const [filePath, prNumbers] of fileMap.entries()) {
+      if (prNumbers.length >= 2) {
+        collisions.push({
+          filePath,
+          prNumbers
+        });
+      }
+    }
+
+    if (collisions.length > 0) {
+      return {
+        id: 'cross-branch-collisions',
+        category: 'Multi-Branch Quality',
+        severity: 'warning',
+        title: `${collisions.length} Cross-Branch Collision File(s) Detected`,
+        affectedResource: collisions.map(c => c.filePath).join(', '),
+        manualFixCommands: collisions.map(c => 
+          `# Compare changes between conflict PRs touching '${c.filePath}'\n` +
+          `# PR Numbers: ${c.prNumbers.join(', ')}`
+        ),
+        fixType: 'coordinate_collisions',
+        fixRiskLevel: 'Safe - Communication only',
+        fixDescription: 'Coordinate developers working on the same files concurrently to align commits and avoid downstream conflicts.',
+        isFixed: false,
+        rawState: { collisions }
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Detector] Branch collision check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Independent CI Failure Detector.
+ */
+export async function detectCIFailures(owner, repo, token, defaultBranch) {
+  try {
+    const runsRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/actions/runs?branch=${defaultBranch}&per_page=10`, token);
+    if (!runsRes || !runsRes.workflow_runs || runsRes.workflow_runs.length === 0) {
+      return null;
+    }
+
+    const completedRuns = runsRes.workflow_runs.filter(r => r.status === 'completed');
+    if (completedRuns.length === 0) return null;
+
+    const latestRun = completedRuns[0];
+    if (latestRun.conclusion === 'failure' || latestRun.conclusion === 'timed_out') {
+      let failedJob = 'unknown';
+      let failedStep = 'unknown';
+
+      try {
+        const jobsRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${latestRun.id}/jobs`, token);
+        const job = (jobsRes.jobs || []).find(j => j.conclusion === 'failure');
+        if (job) {
+          failedJob = job.name;
+          const step = (job.steps || []).find(s => s.conclusion === 'failure');
+          if (step) {
+            failedStep = step.name;
+          }
+        }
+      } catch (e) {
+        // job detail call failed
+      }
+
+      return {
+        id: 'ci-pipeline-failure',
+        category: 'CI/CD Pipelines',
+        severity: 'critical',
+        title: `CI Run Fail: Job '${failedJob}', Step '${failedStep}'`,
+        affectedResource: latestRun.name,
+        manualFixCommands: [
+          `# Inspect failed Action logs\n` +
+          `gh run view ${latestRun.id} --log`
+        ],
+        fixType: 'resolve_ci_failure',
+        fixRiskLevel: 'Investigation required',
+        fixDescription: `Check build configurations and logs for job '${failedJob}', step '${failedStep}'.`,
+        isFixed: false,
+        rawState: {
+          runId: latestRun.id,
+          conclusion: latestRun.conclusion,
+          failedJob,
+          failedStep
+        }
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Detector] CI failures check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Main Repository Scan Orchestrator.
+ */
+export async function scanRepository(owner, repo, token) {
+  const startTime = new Date();
+  console.log(`\n=================== SCAN STARTED ===================`);
+  console.log(`Timestamp: ${startTime.toISOString()}`);
+  console.log(`Repository: ${owner}/${repo}`);
+  console.log(`Token Present: ${token ? 'YES' : 'NO'}`);
+  if (token) {
+    console.log(`Token Prefix: ${token.substring(0, 10)}...`);
+  }
+  console.log(`====================================================\n`);
+
+  // Call Repo Metadata
+  const metadata = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}`, token);
+  const defaultBranch = metadata.default_branch || 'main';
+
+  // Fetch branches and PRs count for scan stats
+  let totalBranchesChecked = 0;
+  let totalPRsChecked = 0;
+  try {
+    const branches = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=1`, token);
+    totalBranchesChecked = branches.length;
+    const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=1`, token);
+    totalPRsChecked = prs.length;
+  } catch (e) {
+    // Ignore stats fails
+  }
+
+  // Run all detectors in parallel using Promise.allSettled
+  const results = await Promise.allSettled([
+    detectMissingGitignore(owner, repo, token),
+    detectMergeConflicts(owner, repo, token),
+    detectBranchDivergence(owner, repo, token, defaultBranch),
+    detectStaleBranches(owner, repo, token, defaultBranch),
+    detectBranchCollisions(owner, repo, token),
+    detectCIFailures(owner, repo, token, defaultBranch)
+  ]);
+
+  const rawIssues = [];
+  results.forEach((res, idx) => {
+    if (res.status === 'fulfilled' && res.value !== null) {
+      rawIssues.push(res.value);
+    } else if (res.status === 'rejected') {
+      console.error(`[Scan] Detector ${idx} failed to run:`, res.reason);
+    }
+  });
+
+  // Diagnose issues with AI service
+  const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate');
+
+  console.log(`\n=================== SCAN COMPLETED ===================`);
+  console.log(`Timestamp: ${new Date().toISOString()}`);
+  console.log(`Issues Found: ${diagnosedIssues.length}`);
+  console.log(`======================================================\n`);
+
+  return {
+    issues: diagnosedIssues,
+    scanTimestamp: new Date().toISOString(),
+    defaultBranch,
+    totalBranchesChecked,
+    totalPRsChecked,
+    scanned: true
+  };
+}

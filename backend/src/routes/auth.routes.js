@@ -141,6 +141,7 @@ router.get('/me', authenticate, async (req, res) => {
         name: true,
         email: true,
         githubLink: true,
+        githubToken: true,
         createdAt: true,
       },
     });
