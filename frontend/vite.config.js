@@ -12,9 +12,10 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5000,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:5001',
+        target: 'http://127.0.0.1:5000',
         changeOrigin: true,
       },
     },
