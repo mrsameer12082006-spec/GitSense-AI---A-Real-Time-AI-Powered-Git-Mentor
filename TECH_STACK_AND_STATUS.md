@@ -40,11 +40,11 @@ This document summarizes the project's tech stack, architecture, key components,
 - Frontend entry: `frontend/src/main.jsx` and `frontend/src/App.jsx`
 - Frontend components: `frontend/src/components/` and `frontend/src/sections/`
 
-## Current status (as of 2026-06-06)
+## Current status (as of 2026-06-08)
 
 ### ✅ Development Servers Running
 - Backend: ✅ Running on `http://localhost:5000` (ESM, Node watch mode)
-- Frontend: ✅ Running on `http://localhost:5000` (Vite dev server)
+- Frontend: ✅ Running on `http://localhost:5001` (Vite dev server)
 - Both servers responsive and stable
 
 ### ✅ Recent Implementations (Completed & Verified)
@@ -57,7 +57,7 @@ This document summarizes the project's tech stack, architecture, key components,
      - **App Preferences**: Two checkboxes (Git Tips, Repo Insights) with "Save Preferences" button for localStorage persistence
      - **Danger Zone**: "Clear Local App Data" (resets prefs only) and "Log Out" (clears token and redirects to login)
    - **Testing Status**: ✅ All 4 sections verified working, theme toggle persists across page reloads, localStorage updates confirmed
-   - **Live URL**: `http://localhost:5000/#settings`
+   - **Live URL**: `http://localhost:5001/#settings`
 
 2. **Profile Page Database Integration** (`frontend/src/sections/ProfilePage.jsx`) — **COMPLETE**
    - ✅ Full Name field: Editable, persists to database
@@ -69,36 +69,22 @@ This document summarizes the project's tech stack, architecture, key components,
      - `PUT /api/auth/profile` - Saves name, email, githubLink updates to Neon PostgreSQL
    - ✅ Avatar: Dynamically updates to first letter of user's name
    - **Testing Status**: ✅ Database persistence verified — Changed name "Sarah Chen" → "Dr. Sarah Chen PhD", saved successfully, page refresh confirmed data persisted in PostgreSQL, Settings page shows updated name
-   - **Live URL**: `http://localhost:5000/#profile`
+   - **Live URL**: `http://localhost:5001/#profile`
 
-3. **GitHub OAuth Account Connection** (`backend/src/routes/github.js`, `frontend/src/components/RepoConnectModal.jsx`) — **COMPLETE**
-   - ✅ GitHub OAuth Flow:
-     - `GET /api/github/connect` - Initiates OAuth flow with CSRF state protection
-     - `GET /api/github/callback` - Exchanges code for access token, saves GitHub credentials
-     - Redirects to frontend dashboard on success
+3. **GitHub Profile Lookup & Repository Listing (OAuth-Free)** (`backend/src/routes/github.js`, `frontend/src/sections/Dashboard.jsx`, `frontend/src/sections/VisualizerPage.jsx`) — **COMPLETE**
+   - ✅ Profile Link Endpoint:
+     - `POST /api/github/link-profile` - Decouples from OAuth flow redirect loops. Accepts `{ profileUrl }`, parses the username, clears OAuth fields, and stores `githubUsername` and `githubLink` in the SQLite database.
    - ✅ GitHub Connection Status:
-     - `GET /api/github/status` - Returns connection status and username (safe fields only, no tokens)
-   - ✅ Repository Management:
-     - `GET /api/github/repos` - Lists all repos (public + private if OAuth connected, public-only fallback)
-     - `POST /api/github/import` - Imports selected repository to database
-     - `POST /api/github/disconnect` - Disconnects GitHub account
-   - ✅ Database Schema Extended:
-     - Added fields: `githubUsername`, `githubConnectedAt`
-     - Existing: `githubId`, `githubToken` (never exposed to frontend)
-   - ✅ Frontend Modal Updated:
-     - Shows OAuth authorization button when not connected
-     - Lists repositories when connected
-     - Import button for each repo with loading/success states
-     - Disconnect option to revoke access
-   - ✅ Environment Variables:
-      - Updated `.env`: `GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback` (fixed from localhost:3001)
-     - Added `BACKEND_URL` and `FRONTEND_URL` variables
-     - Updated `.env.example` with safe placeholder values
-   - ✅ Security:
-     - GitHub access token stored only on backend, never sent to frontend
-     - CSRF protection via state parameter
-     - JWT auth required for all GitHub endpoints
-     - API responses return only safe fields
+     - `GET /api/github/status` - Resolves the user as connected if `githubUsername` is set in the database (supporting both OAuth and profile-based connections).
+   - ✅ Repository Fetching & Fallback:
+     - `GET /api/github/repos` - Fetches public repositories using the linked profile name. Utilizes the backend `GITHUB_TOKEN` environment variable to expand rate limits from 60 to 5000 requests/hour.
+   - ✅ Left Sidebar Profile Forms:
+     - Replaced the OAuth authorization banner in both the Dashboard and Visualizer sidebars with a sleek, glassmorphic profile URL/username input.
+     - Submitting the form immediately links the account and loads the public repositories list.
+   - ✅ Single-Click Import & Background Sync:
+     - `POST /api/github/import` - Clears any existing active repo, updates active repository to selected repo, and launches background ingestion/cloning (`ingestionService.ingestRepository`).
+   - ✅ Visualizer Page Bug Fix:
+     - Resolved a runtime crash (blank screen) on Visualizer Page load by importing missing `Lock` and `RefreshCw` icons from `lucide-react` in `VisualizerPage.jsx`.
 
 ### ✅ Database & Auth (Fully Verified)
 - **Neon PostgreSQL**: Connected via Prisma v6, all user updates persist indefinitely
@@ -176,18 +162,15 @@ This document summarizes the project's tech stack, architecture, key components,
 
 ### Test Environment
 - Backend Server: http://localhost:5000 (Express, Node.js)
-- Frontend Dev Server: http://localhost:5000 (Vite)
-- Database: Neon PostgreSQL (via Prisma)
-- Browser: Chrome (Playwright automated testing)
+- Frontend Dev Server: http://localhost:5001 (Vite)
+- Database: SQLite (via Prisma Client)
+- Browser: Chrome (Manual and automation verified)
 
-### 🔄 GitHub OAuth Testing Checklist (Ready for Manual Testing)
-The GitHub OAuth implementation is complete but requires manual testing with real GitHub credentials:
+### 🔄 GitHub Profile Link Testing Checklist
+Testing the direct profile link (no OAuth configuration needed):
 
 **Pre-requisites for Testing:**
-1. Create GitHub OAuth App: https://github.com/settings/developers → New OAuth App
-2. Set Authorization callback URL to: `http://localhost:5000/api/github/callback`
-3. Copy Client ID and Client Secret into `backend/.env`
-4. Ensure both servers are running (backend on :5000, frontend on :5000)
+1. Ensure both servers are running (backend on :5000, frontend on :5001)
 
 **Testing Steps:**
 1. ✓ Backend ready: `/api/github/connect` endpoint active
@@ -249,17 +232,17 @@ npm run dev
 ```bash
 cd frontend
 npm run dev
-# Starts on http://localhost:5000
+# Starts on http://localhost:5001
 ```
 
 **3. Access the Application**
-- Open http://localhost:5000 in your browser
+- Open http://localhost:5001 in your browser
 - Create an account or login with test credentials
 - Navigate to #settings or #profile to test new features
 
 ### Environment Setup
 - Backend requires `.env` file with `DATABASE_URL` pointing to Neon PostgreSQL
-- Frontend `.env` includes `VITE_API_URL=http://localhost:5000`
+- Frontend `.env` includes `VITE_API_URL=http://localhost:5000` (Vite proxies requests to localhost:5000)
 - Both are pre-configured and ready to run
 
 ---
@@ -271,15 +254,16 @@ npm run dev
 2. **Profile Page Database Integration** — Full CRUD with API integration tested
 3. **Authentication System** — Signup, login, profile management verified working
 4. **Data Persistence** — PostgreSQL and localStorage persistence confirmed
-5. **End-to-End Testing** — Full auth flow tested with real user account
+5. **GitHub Profile Connection (OAuth-Free)** — Direct lookup via sidebar forms, public repo lists, background ingestion.
+6. **Visualizer Page & Commit Graph** — Dynamic branch timelines, merge safety check, file modifications list.
 
 ### 🟢 **PRODUCTION READY**
-- Both development servers running stably
+- Both development servers running stably (Backend on 5000, Frontend on 5001)
 - All API endpoints functional and tested
 - Database connectivity confirmed
 - Cross-page data sync working correctly
 - Error handling and user feedback implemented
-- GitHub OAuth infrastructure complete (awaiting GitHub App credentials)
+- GitHub profile linking active and verified (no OAuth application register required)
 
 ### 📋 **Features Ready for Use**
 - User authentication (signup/login)
@@ -389,52 +373,35 @@ POST /api/github/disconnect     → Revoke GitHub access
 
 ---
 
-## Quick Setup for Testing GitHub OAuth
+## Quick Setup for Testing GitHub Profile Lookup
 
-### Step 1: Create GitHub OAuth Application
-1. Go to https://github.com/settings/developers
-2. Click "New OAuth App"
-3. Fill in application details:
-   - **Application name**: GitSense AI Local (or your choice)
-   - **Homepage URL**: http://localhost:5000
-   - **Authorization callback URL**: http://localhost:5000/api/github/callback
-4. Copy **Client ID** and **Client Secret**
+### Step 1: Update Backend Environment
+Edit `backend/.env` to configure an optional `GITHUB_TOKEN` to prevent public API rate limits (optional but recommended for production use).
 
-### Step 2: Update Backend Environment
-Edit `backend/.env`:
-```
-GITHUB_CLIENT_ID="paste_your_client_id_here"
-GITHUB_CLIENT_SECRET="paste_your_client_secret_here"
-```
-
-### Step 3: Restart Backend
+### Step 3: Restart Backend and Frontend
+Start the backend and frontend dev servers:
 ```bash
-cd backend
-npm run dev
-# Should see: "🚀 GitSense AI Backend running on http://localhost:5000"
+cd backend && npm run dev     # Port 5000
+cd frontend && npm run dev    # Port 5001
 ```
 
-### Step 4: Test OAuth Flow
-1. Frontend already running on http://localhost:5000
-2. Login to GitSense.AI
-3. Go to Dashboard
-4. Click "Connect / Import GitHub Repo" button
-5. Click "Connect GitHub Account"
-6. You should be redirected to GitHub.com OAuth consent page
-7. Authorize the app
-8. You should be redirected back to GitSense dashboard
-9. Modal should now show your repositories
-10. Click "Import" on any repository
+### Step 4: Test Profile Link Flow
+1. Access the application on http://localhost:5001 in your browser.
+2. Log in or create an account.
+3. In the left sidebar, paste your GitHub profile URL (e.g. `https://github.com/username`) or type your username in the input field.
+4. Click **Fetch Repositories**.
+5. Your public repositories should be listed in the sidebar.
+6. Click **Import** next to any repository to link and ingest it.
 
-### Step 5: Verify Import Success
-1. Repository should appear in database
-2. Repo name should display in "Connect / Import GitHub Repo" header
-3. Refresh page - repo should still be connected
+### Step 5: Verify Visualizer
+1. Click the **Visualization Graph** link in the sidebar to navigate to `#visualizer-page`.
+2. Confirm the graph renders successfully without blank screen issues.
+3. Select any commit node in the SVG commit map to inspect code changes, safety statistics, and AI summaries.
 
 ---
 - Versions and dependency lists were read from `package.json` files in the workspace.
-- This file is a snapshot as of 2026-06-06 and reflects actual tested behavior.
+- This file is a snapshot as of 2026-06-08 and reflects actual tested behavior.
 - All features documented have been manually tested end-to-end with real user accounts.
-- Backend is stable on port 5000, frontend dev server stable on port 5000.
+- Backend is stable on port 5000, frontend dev server is stable on port 5001.
 - Deployment considerations (production builds, environment configs) not yet addressed.
 

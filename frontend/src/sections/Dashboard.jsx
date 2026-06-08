@@ -77,9 +77,19 @@ export default function Dashboard() {
   });
 
   // ── Repository State ──
-  const [connectedRepo, setConnectedRepo] = useState(null);
+  const [connectedRepo, setConnectedRepo] = useState(undefined);
   const [repoInsights, setRepoInsights] = useState(null);
   const [isRepoLoading, setIsRepoLoading] = useState(false);
+
+  // ── GitHub Account & Repository List State ──
+  const [isGithubConnected, setIsGithubConnected] = useState(false);
+  const [githubUsername, setGithubUsername] = useState('');
+  const [githubRepos, setGithubRepos] = useState([]);
+  const [isLoadingRepos, setIsLoadingRepos] = useState(false);
+  const [githubError, setGithubError] = useState('');
+  const [importingRepo, setImportingRepo] = useState(null);
+  const [profileInput, setProfileInput] = useState('');
+  const [isLinking, setIsLinking] = useState(false);
   const [activeSection, setActiveSection] = useState(() => {
     const hash = window.location.hash;
     if (hash.includes('section=ide')) return 'ide';
@@ -669,6 +679,113 @@ export default function Dashboard() {
   const [pdfUploading, setPdfUploading] = useState(false);
 
   // ── Load user profile on mount ──
+  // ── GitHub status & repository fetching helpers ──
+  const checkGithubStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch('/github/status');
+      const data = await res.json();
+      setIsGithubConnected(data.connected);
+      if (data.connected) {
+        setGithubUsername(data.githubUsername);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to check GitHub status:', err.message);
+      setIsGithubConnected(false);
+      return false;
+    }
+  }, [apiFetch]);
+
+  const fetchGithubRepos = useCallback(async () => {
+    setIsLoadingRepos(true);
+    setGithubError('');
+    try {
+      const res = await apiFetch('/github/repos');
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to load repositories.');
+      }
+      setGithubRepos(data.repos || []);
+    } catch (err) {
+      setGithubError(err.message || 'Failed to fetch repositories.');
+    } finally {
+      setIsLoadingRepos(false);
+    }
+  }, [apiFetch]);
+
+  const handleLinkProfile = async (e) => {
+    if (e) e.preventDefault();
+    if (!profileInput.trim()) return;
+    
+    setIsLinking(true);
+    setGithubError('');
+    try {
+      const res = await apiFetch('/github/link-profile', {
+        method: 'POST',
+        body: JSON.stringify({ profileUrl: profileInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to link GitHub profile.');
+      }
+      setIsGithubConnected(true);
+      setGithubUsername(data.githubUsername);
+      setProfileInput('');
+      
+      // Fetch repositories immediately
+      setIsLoadingRepos(true);
+      const repoRes = await apiFetch('/github/repos');
+      const repoData = await repoRes.json();
+      if (repoRes.ok) {
+        setGithubRepos(repoData.repos || []);
+      }
+    } catch (err) {
+      setGithubError(err.message || 'Failed to link GitHub profile.');
+    } finally {
+      setIsLinking(false);
+    }
+  };
+
+  const handleImportRepo = async (repo) => {
+    setImportingRepo(repo.fullName);
+    setGithubError('');
+    try {
+      const res = await apiFetch('/github/import', {
+        method: 'POST',
+        body: JSON.stringify({ fullName: repo.fullName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to import repository.');
+      }
+      setConnectedRepo(data.repository);
+      setShowConnectSuccess(true);
+      setTimeout(() => setShowConnectSuccess(false), 2500);
+    } catch (err) {
+      setGithubError(err.message || 'Failed to import repository.');
+      alert(err.message || 'Failed to import repository.');
+    } finally {
+      setImportingRepo(null);
+    }
+  };
+
+  const handleDisconnectGithub = async () => {
+    if (!window.confirm('Are you sure you want to disconnect your GitHub account?')) return;
+    try {
+      const res = await apiFetch('/github/disconnect', { method: 'POST' });
+      if (res.ok) {
+        setIsGithubConnected(false);
+        setGithubUsername('');
+        setGithubRepos([]);
+        setConnectedRepo(null);
+        alert('GitHub account disconnected.');
+      }
+    } catch (err) {
+      alert('Failed to disconnect GitHub account.');
+    }
+  };
+
   useEffect(() => {
     const token = getToken();
     if (!token) return;
@@ -690,26 +807,66 @@ export default function Dashboard() {
         const token = event.data.token;
         localStorage.setItem('gitsense_token', token);
         window.location.reload();
+      } else if (event.data && event.data.type === 'GITSENSE_GITHUB_CONNECTED') {
+        checkGithubStatus().then(connected => {
+          if (connected) {
+            fetchGithubRepos();
+          }
+        });
       }
     };
     window.addEventListener('message', handleOAuthMessage);
     return () => window.removeEventListener('message', handleOAuthMessage);
-  }, []);
+  }, [checkGithubStatus, fetchGithubRepos]);
+
+  // ── Handle hash changes for redirect-based OAuth callback ──
+  useEffect(() => {
+    const handleHashCheck = () => {
+      const hash = window.location.hash;
+      if (hash.includes('github=connected')) {
+        window.location.hash = hash.replace(/[?&]github=connected/, '');
+        checkGithubStatus().then(connected => {
+          if (connected) {
+            fetchGithubRepos();
+          }
+        });
+      }
+    };
+    handleHashCheck();
+    window.addEventListener('hashchange', handleHashCheck);
+    return () => window.removeEventListener('hashchange', handleHashCheck);
+  }, [checkGithubStatus, fetchGithubRepos]);
 
   // ── Load connected repo on mount ──
   useEffect(() => {
     const token = getToken();
-    if (!token) return;
-    apiFetch('/repos/current').then(r => r.json()).then(data => {
-      if (data.connected && data.repository) {
-        setConnectedRepo(data.repository);
-        // Fetch insights
-        apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
-          if (ins.insights) setRepoInsights(ins.insights);
-        }).catch(() => {});
+    if (!token) {
+      setConnectedRepo(null);
+      return;
+    }
+    apiFetch('/repos/current')
+      .then(r => r.json())
+      .then(data => {
+        if (data.connected && data.repository) {
+          setConnectedRepo(data.repository);
+          apiFetch(`/repos/${data.repository.id}/insights`).then(r => r.json()).then(ins => {
+            if (ins.insights) setRepoInsights(ins.insights);
+          }).catch(() => {});
+        } else {
+          setConnectedRepo(null);
+        }
+      })
+      .catch(() => {
+        setConnectedRepo(null);
+      });
+
+    // Check GitHub Connection status on mount
+    checkGithubStatus().then(connected => {
+      if (connected) {
+        fetchGithubRepos();
       }
-    }).catch(() => {});
-  }, []);
+    });
+  }, [apiFetch, checkGithubStatus, fetchGithubRepos]);
 
   // ── Auto focus after repository connection ──
   useEffect(() => {
@@ -1286,6 +1443,146 @@ export default function Dashboard() {
             </button>
           </div>
 
+          {/* GitHub Repositories Section */}
+          <div className="px-3 py-2 border-t border-white/[0.05] mt-2 flex-shrink-0">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider">GitHub Repositories</span>
+              {isGithubConnected && (
+                <button
+                  onClick={fetchGithubRepos}
+                  disabled={isLoadingRepos}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Refresh Repositories"
+                >
+                  <RefreshCw size={10} className={isLoadingRepos ? 'animate-spin' : ''} />
+                </button>
+              )}
+            </div>
+
+            {!isGithubConnected ? (
+              <form onSubmit={handleLinkProfile} className="bg-gradient-to-b from-slate-950 to-slate-900/40 border border-white/[0.05] p-3.5 rounded-xl flex flex-col gap-3 shadow-lg text-left">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-200">Connect GitHub Profile</span>
+                  <span className="text-[10px] text-slate-400 leading-normal">
+                    Enter your username or profile URL to fetch public repositories.
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. github.com/username"
+                    value={profileInput}
+                    onChange={(e) => setProfileInput(e.target.value)}
+                    disabled={isLinking}
+                    className="w-full bg-slate-900/80 border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-[#7C5CFF]/50 transition-all"
+                  />
+                  {githubError && (
+                    <span className="text-[9px] text-rose-400 px-1">{githubError}</span>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={isLinking || !profileInput.trim()}
+                    className="w-full py-2 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] text-white rounded-lg text-[10px] font-bold transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1 hover:shadow-[0_0_12px_rgba(124,92,255,0.25)]"
+                  >
+                    {isLinking ? (
+                      <RefreshCw size={10} className="animate-spin" />
+                    ) : (
+                      <GitBranch size={10} />
+                    )}
+                    <span>{isLinking ? 'Linking...' : 'Fetch Repositories'}</span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
+                {githubError && (
+                  <span className="text-[9px] text-rose-400 px-1">{githubError}</span>
+                )}
+                {isLoadingRepos && githubRepos.length === 0 ? (
+                  <div className="flex items-center justify-center py-4 gap-2 text-slate-500 text-[10px]">
+                    <RefreshCw size={12} className="animate-spin text-[#7C5CFF]" />
+                    <span>Loading...</span>
+                  </div>
+                ) : githubRepos.length === 0 ? (
+                  <span className="text-[10px] text-slate-500 text-center py-2">No repositories found.</span>
+                ) : (
+                  githubRepos.map((repo) => {
+                    const isActive = connectedRepo && connectedRepo.fullName === repo.fullName;
+                    const isImportingThis = importingRepo === repo.fullName;
+
+                    return (
+                      <div
+                        key={repo.fullName}
+                        className={`group/repo flex items-center justify-between bg-slate-900/40 hover:bg-slate-900/80 border rounded-lg px-2.5 py-2 transition-all min-w-0 ${
+                          isActive 
+                            ? 'border-[#00E38C]/30 bg-[#00E38C]/5 shadow-[0_0_8px_rgba(0,227,140,0.05)]' 
+                            : 'border-white/[0.04] hover:border-white/[0.08]'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0 pr-2 text-left">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span 
+                              className={`text-[11px] font-semibold truncate block ${
+                                isActive ? 'text-white' : 'text-slate-300 group-hover/repo:text-white'
+                              }`} 
+                              title={repo.fullName}
+                            >
+                              {repo.name}
+                            </span>
+                            {repo.isPrivate && (
+                              <Lock size={9} className="text-amber-400 shrink-0" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[9px] text-slate-500">
+                            {repo.language && (
+                              <span className="truncate max-w-[50px]">{repo.language}</span>
+                            )}
+                            {repo.stars > 0 && (
+                              <span>⭐ {repo.stars}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {isActive ? (
+                          <div className="flex items-center gap-1 text-[9px] text-[#00E38C] font-semibold shrink-0 select-none">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#00E38C] animate-pulse" />
+                            <span>Active</span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleImportRepo(repo)}
+                            disabled={!!importingRepo}
+                            className={`px-2 py-1 border text-[9px] font-bold rounded-md transition-all shrink-0 cursor-pointer disabled:opacity-50 flex items-center gap-0.5 ${
+                              isImportingThis 
+                                ? 'bg-[#7C5CFF]/10 border-[#7C5CFF]/25 text-[#7C5CFF]'
+                                : 'bg-slate-800/60 border-white/[0.08] hover:border-[#7C5CFF]/40 hover:bg-[#7C5CFF]/20 text-slate-300 hover:text-white'
+                            }`}
+                          >
+                            {isImportingThis ? (
+                              <RefreshCw size={8} className="animate-spin" />
+                            ) : (
+                              <Download size={8} />
+                            )}
+                            <span>{isImportingThis ? 'Cloning' : 'Import'}</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+                <div className="flex items-center justify-between border-t border-white/[0.04] pt-1.5 mt-1 px-1">
+                  <span className="text-[9px] text-slate-500 font-mono">@{githubUsername}</span>
+                  <button
+                    onClick={handleDisconnectGithub}
+                    className="text-[9px] text-slate-500 hover:text-rose-400 transition-colors underline cursor-pointer"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Chat History Section */}
           <div className="px-3 py-2 border-t border-white/[0.05] mt-2">
             <div className="flex items-center justify-between mb-2">
@@ -1431,11 +1728,29 @@ export default function Dashboard() {
                         onClick={() => {
                           setIsGithubDropdownOpen(false);
                           if (option.id === 'connect') {
-                            // GitHub OAuth flow
-                            apiFetch('/auth/github').then(r => r.json()).then(data => {
-                              if (data.url) window.open(data.url, '_blank', 'width=600,height=700');
-                              else alert('GitHub OAuth not configured. Add GITHUB_CLIENT_ID to backend/.env');
-                            }).catch(() => alert('Backend not running. Start with: cd backend && npm run dev'));
+                            const urlOrUsername = prompt('Enter your GitHub profile URL or Username:');
+                            if (urlOrUsername && urlOrUsername.trim()) {
+                              setIsLoadingRepos(true);
+                              apiFetch('/github/link-profile', {
+                                method: 'POST',
+                                body: JSON.stringify({ profileUrl: urlOrUsername.trim() }),
+                              }).then(r => r.json()).then(data => {
+                                if (data.githubUsername) {
+                                  setIsGithubConnected(true);
+                                  setGithubUsername(data.githubUsername);
+                                  apiFetch('/github/repos').then(r => r.json()).then(repoData => {
+                                    setGithubRepos(repoData.repos || []);
+                                    setIsLoadingRepos(false);
+                                  }).catch(() => setIsLoadingRepos(false));
+                                } else {
+                                  alert(data.error || 'Failed to link profile.');
+                                  setIsLoadingRepos(false);
+                                }
+                              }).catch(() => {
+                                alert('Failed to link profile.');
+                                setIsLoadingRepos(false);
+                              });
+                            }
                           } else if (option.id === 'paste') {
                             setShowPasteUrlModal(true);
                             setPasteUrlValue('');

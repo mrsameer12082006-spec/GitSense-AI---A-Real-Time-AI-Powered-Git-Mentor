@@ -18,6 +18,8 @@ import {
   postCollisionComment,
   rerunFailedJobs
 } from '../services/fixEngine.js';
+import path from 'path';
+import fs from 'fs/promises';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -663,7 +665,7 @@ router.get('/:id/contents', async (req, res) => {
 });
 
 // ── GET /api/repos/:id/contents/file ─────────────────────────
-// Fetch file raw content
+// Fetch file raw content (try local clone first, then fallback to GitHub API)
 router.get('/:id/contents/file', async (req, res) => {
   try {
     const repository = await prisma.repository.findFirst({
@@ -674,15 +676,27 @@ router.get('/:id/contents/file', async (req, res) => {
       return res.status(404).json({ error: 'Repository not found.' });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    const token = user?.githubToken || null;
-    const path = req.query.path;
-
-    if (!path) {
+    const pathQuery = req.query.path;
+    if (!pathQuery) {
       return res.status(400).json({ error: 'File path is required.' });
     }
 
-    const fileContent = await githubService.getFileContent(repository.owner, repository.name, path, token);
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const token = user?.githubToken || process.env.GITHUB_TOKEN || null;
+
+    // 1. Ensure local clone exists, and read from it (offline-first, includes local edits)
+    try {
+      const repoPath = await localGitService.ensureClone(repository.id, repository.owner, repository.name, token);
+      const safePath = path.normalize(pathQuery).replace(/^(\.\.[\/\\])+/, '');
+      const fullFilePath = path.join(repoPath, safePath);
+      const fileContent = await fs.readFile(fullFilePath, 'utf8');
+      return res.json({ content: fileContent });
+    } catch (localErr) {
+      console.warn(`[Repos] Local read/clone failed for ${pathQuery}, falling back to GitHub API:`, localErr.message);
+    }
+
+    // 2. Fallback to GitHub API
+    const fileContent = await githubService.getFileContent(repository.owner, repository.name, pathQuery, token);
     res.json({ content: fileContent });
   } catch (err) {
     console.error('[Repos] Fetch file content error:', err);

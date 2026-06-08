@@ -20,9 +20,9 @@ router.post('/signup', async (req, res) => {
     const { name, email, githubLink, password } = req.body;
 
     // Validate all fields
-    if (!name || !email || !githubLink || !password) {
+    if (!name || !email || !password) {
       return res.status(400).json({
-        error: 'All fields are required: name, email, githubLink, password.',
+        error: 'All fields are required: name, email, password.',
       });
     }
 
@@ -48,7 +48,7 @@ router.post('/signup', async (req, res) => {
       data: {
         name: name.trim(),
         email: normalizedEmail,
-        githubLink: githubLink.trim(),
+        githubLink: githubLink ? githubLink.trim() : "",
         passwordHash,
       },
     });
