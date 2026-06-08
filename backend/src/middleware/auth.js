@@ -23,6 +23,15 @@ export function authenticate(req, res, next) {
   }
 
   if (!token) {
+    if (req.session && req.session.isAuthenticated && req.session.accessToken) {
+      req.user = {
+        id: req.session.user.id,
+        email: req.session.user.email,
+        name: req.session.user.name,
+        githubScopes: req.session.tokenScopes || ''
+      };
+      return next();
+    }
     return res.status(401).json({ error: 'Authentication required. Please provide a valid token.' });
   }
 

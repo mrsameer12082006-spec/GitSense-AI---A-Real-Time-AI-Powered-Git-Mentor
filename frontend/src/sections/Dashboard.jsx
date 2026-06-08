@@ -21,6 +21,7 @@ const apiFetch = async (path, options = {}) => {
   const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -128,6 +129,11 @@ export default function Dashboard() {
     }
   });
   const [activeSSEFixId, setActiveSSEFixId] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [githubToken, setGithubToken] = useState('');
+  const [tokenScopes, setTokenScopes] = useState('');
   const [sseProgressSteps, setSseProgressSteps] = useState([]);
   const [sseStatus, setSseStatus] = useState(null);
   const [ciDiagnostics, setCiDiagnostics] = useState({});
@@ -291,6 +297,73 @@ export default function Dashboard() {
     const BACKEND_URL = '/api';
     window.location.href = `${BACKEND_URL}/auth/github?force_reauth=true`;
   };
+
+  const fetchAuthState = async () => {
+    setAuthLoading(true);
+    try {
+      const response = await fetch('/api/auth/me', {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        setAuthLoading(false);
+        if (response.status === 401) {
+          setIsAuthenticated(false);
+        }
+        return;
+      }
+
+      const data = await response.json();
+      if (data.isAuthenticated) {
+        const u = data.user ? { 
+          ...data.user, 
+          githubToken: data.token, 
+          githubScopes: data.scopes,
+          avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U'
+        } : null;
+        setCurrentUser(u);
+        if (u) {
+          localStorage.setItem('gitsense_user', JSON.stringify(u));
+        }
+        setGithubToken(data.token || '');
+        setHasWriteAccess(data.hasWriteAccess || false);
+        setTokenScopes(data.scopes || '');
+        setIsAuthenticated(true);
+      } else {
+        setIsAuthenticated(false);
+      }
+      setAuthLoading(false);
+    } catch (err) {
+      console.error('[fetchAuthState] Error:', err);
+      setAuthLoading(false);
+      setAuthError(err.message || 'Error fetching authentication state.');
+    }
+  };
+
+  useEffect(() => {
+    const hash = window.location.hash;
+    let auth = null;
+    let reason = null;
+
+    if (hash.includes('?')) {
+      const parts = hash.split('?');
+      const queryString = parts[1];
+      const params = new URLSearchParams(queryString);
+      auth = params.get('auth');
+      reason = params.get('reason');
+    }
+
+    if (auth === 'success') {
+      window.history.replaceState(null, '', '#dashboard');
+      fetchAuthState();
+    } else if (auth === 'error') {
+      window.history.replaceState(null, '', '#dashboard');
+      setAuthError(`Authentication failed: ${reason || 'unknown error'}`);
+      setAuthLoading(false);
+    } else {
+      fetchAuthState();
+    }
+  }, []);
 
   const executeSSEFix = (issue, action, extraParams = {}) => {
     if (!connectedRepo) return;
@@ -1390,7 +1463,7 @@ export default function Dashboard() {
               onClick={() => setIsAvatarDropdownOpen(!isAvatarDropdownOpen)}
               className="w-8 h-8 rounded-full border border-white/[0.08] bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-xs font-heading font-bold hover:scale-105 transition-all cursor-pointer shadow-[0_0_10px_rgba(124,92,255,0.2)]"
             >
-              {currentUser.avatarInitial}
+              {currentUser?.avatarInitial}
             </button>
 
             {/* Profile Dropdown */}
@@ -1406,8 +1479,8 @@ export default function Dashboard() {
                   >
                     {/* Header info */}
                     <div className="px-3 py-2.5 border-b border-white/[0.06] mb-1 flex flex-col">
-                      <span className="text-xs font-semibold text-slate-100">{currentUser.name}</span>
-                      <span className="text-[10px] text-slate-500 font-mono">{currentUser.email}</span>
+                      <span className="text-xs font-semibold text-slate-100">{currentUser?.name}</span>
+                      <span className="text-[10px] text-slate-500 font-mono">{currentUser?.email}</span>
                     </div>
 
                     {[
@@ -1495,7 +1568,7 @@ export default function Dashboard() {
                   </motion.div>
                   
                   <h3 className="text-3xl font-bold font-heading text-slate-100 mb-3">
-                    {getGreeting(currentUser.name)}
+                    {getGreeting(currentUser?.name)}
                   </h3>
                   <p className="text-slate-400 text-base mb-8 leading-relaxed">
                     {welcomeSubtitle}
@@ -1687,7 +1760,7 @@ export default function Dashboard() {
                       {/* User Avatar */}
                       {msg.sender === 'user' && (
                         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7C5CFF] to-[#00D4FF] flex items-center justify-center text-white text-xs font-heading font-bold flex-shrink-0">
-                          {currentUser.avatarInitial}
+                          {currentUser?.avatarInitial}
                         </div>
                       )}
                     </div>

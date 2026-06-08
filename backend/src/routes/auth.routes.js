@@ -132,34 +132,77 @@ router.post('/login', async (req, res) => {
 });
 
 // ── GET /api/auth/me ────────────────────────────────────────
-router.get('/me', authenticate, async (req, res) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        githubLink: true,
-        githubToken: true,
-        createdAt: true,
-      },
+router.get('/me', async (req, res) => {
+  // Check if session has auth state
+  if (req.session && req.session.isAuthenticated && req.session.accessToken) {
+    return res.status(200).json({
+      isAuthenticated: true,
+      user: req.session.user,
+      token: req.session.accessToken,
+      hasWriteAccess: req.session.hasWriteAccess ?? false,
+      scopes: req.session.tokenScopes ?? ''
     });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    res.json({
-      user: {
-        ...user,
-        githubScopes: req.user.githubScopes || ''
-      }
-    });
-  } catch (err) {
-    console.error('[Auth] Me error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch user profile.' });
   }
+
+  // Fallback to JWT authentication from header or query parameter
+  let token = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
+
+  if (token) {
+    try {
+      const jwt = (await import('jsonwebtoken')).default;
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.id },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          githubLink: true,
+          githubToken: true,
+          avatarUrl: true,
+          createdAt: true,
+        },
+      });
+
+      if (user) {
+        req.session = req.session || {};
+        req.session.accessToken = user.githubToken || '';
+        req.session.user = {
+          id: user.id,
+          login: user.name,
+          name: user.name,
+          avatar_url: user.avatarUrl || '',
+          email: user.email
+        };
+        req.session.tokenScopes = decoded.githubScopes || '';
+        req.session.hasWriteAccess = (decoded.githubScopes || '').includes('repo');
+        req.session.isAuthenticated = true;
+
+        return res.status(200).json({
+          isAuthenticated: true,
+          user: req.session.user,
+          token: user.githubToken || token,
+          hasWriteAccess: req.session.hasWriteAccess,
+          scopes: req.session.tokenScopes
+        });
+      }
+    } catch (err) {
+      console.warn('[Auth /me] JWT validation fallback failed:', err.message);
+    }
+  }
+
+  return res.status(401).json({
+    isAuthenticated: false,
+    user: null,
+    token: null
+  });
 });
 
 // ── PUT /api/auth/profile ────────────────────────────────────
@@ -214,7 +257,7 @@ router.put('/profile', authenticate, async (req, res) => {
 router.get('/github', (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const callbackUrl = process.env.GITHUB_CALLBACK_URL;
-  const forceReauth = req.query.force_reauth === 'true';
+  const forceReauth = req.query.force_reauth === 'true' || req.query.force_reauth === '1';
 
   if (!clientId) {
     return res.status(500).json({ error: 'GitHub OAuth is not configured. Set GITHUB_CLIENT_ID in .env' });
@@ -228,97 +271,135 @@ router.get('/github', (req, res) => {
     return res.redirect(url);
   }
 
+  // If this is a direct browser navigation requesting HTML, redirect them directly
+  if (req.accepts('html') && !req.xhr) {
+    return res.redirect(url);
+  }
+
   res.json({ url });
 });
 
 // ── GET /api/auth/github/callback ───────────────────────────
-// Exchanges authorization code for access token
 router.get('/github/callback', async (req, res) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const dashboardUrl = `${frontendUrl}/#dashboard`;
+
   try {
-    const { code } = req.query;
+    const { code, error } = req.query;
+
+    if (error) {
+      return res.redirect(`${dashboardUrl}?auth=error&reason=${encodeURIComponent(error)}`);
+    }
 
     if (!code) {
-      return res.status(400).json({ error: 'Authorization code missing.' });
+      return res.redirect(`${dashboardUrl}?auth=error&reason=no_code`);
     }
 
-    // Exchange code for token
-    const tokenResponse = await axios.post(
-      'https://github.com/login/oauth/access_token',
-      {
+    console.log('[Auth Callback] Exchanges code for access token');
+    const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
         client_id: process.env.GITHUB_CLIENT_ID,
         client_secret: process.env.GITHUB_CLIENT_SECRET,
-        code,
-      },
-      { headers: { Accept: 'application/json' } }
-    );
-
-    // Debug: log token response when things fail to help diagnose redirect/credential issues
-    const accessToken = tokenResponse.data.access_token;
-    if (!accessToken) {
-      console.error('[Auth] GitHub token response:', tokenResponse.data);
-      const message = tokenResponse.data.error_description || tokenResponse.data.error || 'Failed to obtain access token from GitHub.';
-      return res.status(400).json({ error: message });
-    }
-
-    // Fetch user info from GitHub
-    const userResponse = await axios.get('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${accessToken}` },
+        code
+      })
     });
 
-    const ghUser = userResponse.data;
+    const tokenData = await tokenResponse.json();
 
-    // Fetch email if not public
-    let email = ghUser.email;
+    if (tokenData.error || !tokenData.access_token) {
+      const reason = tokenData.error || 'no_token';
+      console.error('[Auth Callback] Error or no token received:', tokenData);
+      return res.redirect(`${dashboardUrl}?auth=error&reason=${encodeURIComponent(reason)}`);
+    }
+
+    const accessToken = tokenData.access_token;
+    console.log('[Auth Callback] Token received');
+
+    // Fetch user details
+    const userResponse = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+
+    if (!userResponse.ok) {
+      console.error('[Auth Callback] User profile fetch failed');
+      return res.redirect(`${dashboardUrl}?auth=error&reason=user_fetch_failed`);
+    }
+
+    const githubUser = await userResponse.json();
+    const scopes = userResponse.headers.get('X-OAuth-Scopes') || '';
+    console.log(`[Auth Callback] GitHub user: ${githubUser.login}, scopes: ${scopes}`);
+
+    let email = githubUser.email;
     if (!email) {
       try {
-        const emailsResponse = await axios.get('https://api.github.com/user/emails', {
-          headers: { Authorization: `Bearer ${accessToken}` },
+        const emailsResponse = await fetch('https://api.github.com/user/emails', {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/vnd.github+json'
+          }
         });
-        const primaryEmail = emailsResponse.data.find((e) => e.primary);
-        email = primaryEmail?.email || `${ghUser.login}@github.com`;
-      } catch (emailErr) {
-        email = `${ghUser.login}@github.com`;
+        if (emailsResponse.ok) {
+          const emails = await emailsResponse.json();
+          const primaryEmail = emails.find(e => e.primary);
+          email = primaryEmail?.email || `${githubUser.login}@github.com`;
+        } else {
+          email = `${githubUser.login}@github.com`;
+        }
+      } catch (err) {
+        email = `${githubUser.login}@github.com`;
       }
     }
 
-    // Hash dummy password to satisfy prisma required passwordHash field
-    const dummyHash = await bcrypt.hash(`github-oauth-${ghUser.id}`, 12);
-
-    const scopesResponse = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const scopes = scopesResponse.headers.get('X-OAuth-Scopes') || '';
-    req.session = req.session || {};
-    req.session.tokenScopes = scopes;
-    req.session.hasWriteAccess = scopes.includes('repo');
-
-    // Upsert user in database
-    const user = await prisma.user.upsert({
-      where: { githubId: String(ghUser.id) },
+    const dummyHash = await bcrypt.hash(`github-oauth-${githubUser.id}`, 12);
+    await prisma.user.upsert({
+      where: { githubId: String(githubUser.id) },
       update: {
         githubToken: accessToken,
-        name: ghUser.name || ghUser.login,
-        avatarUrl: ghUser.avatar_url,
+        name: githubUser.name || githubUser.login,
+        avatarUrl: githubUser.avatar_url,
       },
       create: {
         email,
-        name: ghUser.name || ghUser.login,
-        githubId: String(ghUser.id),
+        name: githubUser.name || githubUser.login,
+        githubId: String(githubUser.id),
         githubToken: accessToken,
-        avatarUrl: ghUser.avatar_url,
+        avatarUrl: githubUser.avatar_url,
         passwordHash: dummyHash,
       },
     });
 
-    const token = generateToken(user, scopes);
+    req.session.accessToken = accessToken;
+    req.session.user = {
+      id: githubUser.id,
+      login: githubUser.login,
+      name: githubUser.name || githubUser.login,
+      avatar_url: githubUser.avatar_url,
+      email: email
+    };
+    req.session.tokenScopes = scopes;
+    req.session.hasWriteAccess = scopes.includes('repo');
+    req.session.isAuthenticated = true;
 
-    // Redirect back to frontend with token
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/#dashboard?token=${token}`);
+    req.session.save((err) => {
+      if (err) {
+        console.error('[Auth Callback] Session save error:', err);
+        return res.redirect(`${dashboardUrl}?auth=error&reason=session_save_failed`);
+      }
+      console.log('[Auth Callback] Session saved successfully. Redirecting to dashboard.');
+      res.redirect(`${dashboardUrl}?auth=success`);
+    });
+
   } catch (err) {
-    console.error('[Auth] GitHub callback error:', err);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/#login?error=github_auth_failed`);
+    console.error('[Auth Callback] Critical error:', err.stack);
+    res.redirect(`${dashboardUrl}?auth=error&reason=server_error`);
   }
 });
 
