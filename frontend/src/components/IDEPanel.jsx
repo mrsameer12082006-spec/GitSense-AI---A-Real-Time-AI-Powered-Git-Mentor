@@ -9,7 +9,7 @@ import {
 
 export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   // --- Workspace & Sandbox State ---
-  const [isDemoMode, setIsDemoMode] = useState(!connectedRepo);
+  const isDemoMode = !connectedRepo;
   const [currentPath, setCurrentPath] = useState('');
   const [contents, setContents] = useState([]);
   const [loadingTree, setLoadingTree] = useState(false);
@@ -43,6 +43,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
 
   // --- Action Button Visual Feedback State ---
   const [isRunning, setIsRunning] = useState(false);
+  const [runningProcessType, setRunningProcessType] = useState(null); // 'run' | 'exec' | null
   const [isFormatting, setIsFormatting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
@@ -55,6 +56,50 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
   const decorationsRef = useRef([]);
+
+  // Stream reader helper for NDJSON lines
+  const readExecutionStream = async (res, onChunk, onExit) => {
+    const reader = res.body?.getReader();
+    if (!reader) {
+      onExit();
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            onChunk(data);
+          } catch (e) {
+            console.error('Error parsing NDJSON chunk:', line, e);
+          }
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer);
+          onChunk(data);
+        } catch (e) {
+          console.error('Error parsing remaining NDJSON chunk:', buffer, e);
+        }
+      }
+    } catch (err) {
+      console.error('Stream reading error:', err);
+    } finally {
+      onExit();
+    }
+  };
 
   // ─── HELPER: Workspace API call ───
   const workspaceFetch = useCallback(async (endpoint, options = {}) => {
@@ -157,6 +202,12 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
     }
   }, [isDemoMode, connectedRepo, workspaceFetch]);
 
+  // Reset open tabs when changing repositories
+  useEffect(() => {
+    setOpenTabs([]);
+    setActiveTabPath('');
+  }, [connectedRepo]);
+
   // Auto-open first file on load
   useEffect(() => {
     fetchContents('');
@@ -180,13 +231,16 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
 
   // Auto-open the first file in explorer once loaded
   useEffect(() => {
-    if (contents.length > 0 && openTabs.length === 0) {
+    if (!loadingTree && contents.length > 0 && openTabs.length === 0) {
+      // Prevent opening demo files if we are in live mode (transitioning)
+      if (!isDemoMode && contents === demoFiles) return;
+
       const firstFile = contents.find(c => c.type === 'file' || c.type === 'blob');
       if (firstFile) {
         loadFileContent(firstFile);
       }
     }
-  }, [contents]);
+  }, [contents, openTabs, loadingTree, isDemoMode]);
 
   // --- Loading File Content ---
   const loadFileContent = async (fileItem) => {
@@ -361,6 +415,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   const handleRunCode = async () => {
     if (!activeTab) return;
     setIsRunning(true);
+    setRunningProcessType('run');
     setActiveTerminalTab('TERMINAL');
 
     const lang = selectedLang === 'python' ? 'python' : 'javascript';
@@ -372,6 +427,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
         appendLog('terminal', '[Sandbox] Code execution requires a connected repo.');
         appendLog('terminal', '[Sandbox] Connect a GitHub repo to run code on the server.');
         setIsRunning(false);
+        setRunningProcessType(null);
       }, 500);
       return;
     }
@@ -382,27 +438,41 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: activeTab.content, language: lang }),
       });
-      const data = await res.json();
 
-      if (data.stdout) {
-        data.stdout.split('\n').filter(Boolean).forEach(line => {
-          appendLog('terminal', line);
-        });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to start execution');
       }
-      if (data.stderr) {
-        data.stderr.split('\n').filter(Boolean).forEach(line => {
-          setTerminalLogs(prev => [...prev, { text: line, type: 'error' }]);
-        });
-      }
-      if (data.exitCode === 0) {
-        appendLog('terminal', `✓ Process exited with code 0.`);
-      } else {
-        setTerminalLogs(prev => [...prev, { text: `✗ Process exited with code ${data.exitCode}.`, type: 'error' }]);
-      }
+
+      await readExecutionStream(
+        res,
+        (data) => {
+          if (data.type === 'stdout') {
+            data.text.split('\n').forEach(line => {
+              if (line) appendLog('terminal', line);
+            });
+          } else if (data.type === 'stderr') {
+            data.text.split('\n').forEach(line => {
+              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'error' }]);
+            });
+          } else if (data.type === 'exit') {
+            if (data.exitCode === 0) {
+              appendLog('terminal', `✓ Process exited with code 0.`);
+            } else {
+              setTerminalLogs(prev => [...prev, { text: `✗ Process exited with code ${data.exitCode}.`, type: 'error' }]);
+            }
+          }
+        },
+        () => {
+          setIsRunning(false);
+          setRunningProcessType(null);
+        }
+      );
+
     } catch (err) {
       setTerminalLogs(prev => [...prev, { text: `✗ Run error: ${err.message}`, type: 'error' }]);
-    } finally {
       setIsRunning(false);
+      setRunningProcessType(null);
     }
   };
 
@@ -670,17 +740,55 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
     }
   };
 
+  // ─── REAL: Kill Process ───
+  const handleKillProcess = async (type) => {
+    if (isDemoMode) return;
+    appendLog('terminal', '^C');
+    try {
+      await workspaceFetch('/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type }),
+      });
+      setTerminalLogs(prev => [...prev, { text: `✓ Process terminated by user.`, type: 'info' }]);
+    } catch (err) {
+      setTerminalLogs(prev => [...prev, { text: `✗ Error killing process: ${err.message}`, type: 'error' }]);
+    }
+  };
+
   // ─── REAL: Terminal Command Execution ───
   const handleTerminalSubmit = async (e) => {
     e.preventDefault();
-    if (!terminalCommand.trim()) return;
+    if (!terminalCommand.trim() && terminalCommand !== '') return;
 
-    const cmd = terminalCommand.trim();
+    const cmd = terminalCommand;
+    setTerminalCommand('');
+
+    // If a process is already running, treat terminal command as stdin input!
+    if (runningProcessType) {
+      setTerminalLogs(prev => [...prev, { text: cmd, type: 'info' }]);
+      if (isDemoMode) {
+        setTerminalLogs(prev => [...prev, { text: '[Sandbox] Cannot send stdin in demo mode.', type: 'error' }]);
+        return;
+      }
+      try {
+        await workspaceFetch('/input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: cmd, type: runningProcessType }),
+        });
+      } catch (err) {
+        setTerminalLogs(prev => [...prev, { text: `✗ Failed to send stdin: ${err.message}`, type: 'error' }]);
+      }
+      return;
+    }
+
+    if (!cmd.trim()) return;
+
     const prompt = selectedTerm === 'PowerShell' ? 'PS>' : '$';
     setTerminalLogs(prev => [...prev, { text: `${prompt} ${cmd}`, type: 'info' }]);
     setCommandHistory(prev => [cmd, ...prev.slice(0, 50)]);
     setHistoryIndex(-1);
-    setTerminalCommand('');
 
     // Handle local commands
     if (cmd.toLowerCase() === 'clear' || cmd.toLowerCase() === 'cls') {
@@ -720,46 +828,63 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
       return;
     }
 
-    // ─── EXECUTE REAL COMMAND ON BACKEND ───
+    setRunningProcessType('exec');
+
+    // ─── EXECUTE REAL COMMAND ON BACKEND (Streaming) ───
     try {
       const res = await workspaceFetch('/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd }),
+        body: JSON.stringify({ command: cmd, shell: selectedTerm }),
       });
-      const data = await res.json();
 
-      if (res.status === 403) {
-        setTerminalLogs(prev => [...prev, { text: `✗ Blocked: ${data.error}`, type: 'error' }]);
-        return;
-      }
-
-      if (data.stdout) {
-        data.stdout.split('\n').forEach(line => {
-          setTerminalLogs(prev => [...prev, { text: line, type: 'info' }]);
-        });
-      }
-      if (data.stderr) {
-        data.stderr.split('\n').filter(Boolean).forEach(line => {
-          setTerminalLogs(prev => [...prev, { text: line, type: data.exitCode !== 0 ? 'error' : 'info' }]);
-        });
-      }
-      if (!data.stdout && !data.stderr && data.exitCode === 0) {
-        setTerminalLogs(prev => [...prev, { text: '(command completed with no output)', type: 'info' }]);
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to execute command');
       }
 
-      // Refresh git status after git commands
-      const lowerCmd = cmd.toLowerCase();
-      if (lowerCmd.startsWith('git ')) {
-        fetchGitStatus();
-      }
+      await readExecutionStream(
+        res,
+        (data) => {
+          if (data.type === 'stdout') {
+            data.text.split('\n').forEach(line => {
+              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'info' }]);
+            });
+          } else if (data.type === 'stderr') {
+            data.text.split('\n').filter(Boolean).forEach(line => {
+              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'error' }]);
+            });
+          } else if (data.type === 'exit') {
+            if (data.exitCode !== 0) {
+              setTerminalLogs(prev => [...prev, { text: `✗ Command exited with code ${data.exitCode}`, type: 'error' }]);
+            }
+          }
+        },
+        () => {
+          setRunningProcessType(null);
+          // Refresh git status after git commands
+          const lowerCmd = cmd.toLowerCase();
+          if (lowerCmd.startsWith('git ')) {
+            fetchGitStatus();
+          }
+        }
+      );
+
     } catch (err) {
-      setTerminalLogs(prev => [...prev, { text: `✗ Error: ${err.message}`, type: 'error' }]);
+      setTerminalLogs(prev => [...prev, { text: `✗ Execution error: ${err.message}`, type: 'error' }]);
+      setRunningProcessType(null);
     }
   };
 
   // Terminal keyboard navigation (up/down for history)
   const handleTerminalKeyDown = (e) => {
+    if (e.key === 'c' && e.ctrlKey) {
+      if (runningProcessType) {
+        e.preventDefault();
+        handleKillProcess(runningProcessType);
+      }
+      return;
+    }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (commandHistory.length > 0) {
@@ -784,6 +909,17 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   useEffect(() => {
     terminalBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [terminalLogs, activeTerminalTab]);
+
+  if (connectedRepo === undefined) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-[#070b19] text-slate-400 gap-3 min-h-full">
+        <Loader2 className="animate-spin text-[#7C5CFF]" size={36} />
+        <span className="text-[10px] font-bold tracking-widest uppercase text-slate-500 font-sans">
+          Loading IDE Workspace...
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex overflow-hidden h-full text-slate-300 relative">
@@ -995,20 +1131,30 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
             {/* Action Buttons: Run Code, Format, Save, Commit Changes */}
             <div className="flex items-center gap-2 border-l border-white/[0.06] pl-2.5">
               
-              {/* RUN CODE */}
-              <button
-                onClick={handleRunCode}
-                disabled={isRunning || !activeTab}
-                className="relative px-2.5 py-1.5 rounded-xl text-[10.5px] font-bold text-slate-200 hover:text-white transition-all duration-300 cursor-pointer flex items-center gap-1 bg-[#060913]/60 hover:bg-slate-950/80 border border-white/[0.08] hover:border-transparent shadow-[0_4px_12px_rgba(0,0,0,0.3)] hover:shadow-[0_0_15px_rgba(0,212,255,0.2)] hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:pointer-events-none group"
-              >
-                <div className="absolute inset-0 rounded-xl p-[1px] bg-gradient-to-r from-[#7C5CFF]/20 to-[#00D4FF]/20 group-hover:from-[#7C5CFF] group-hover:to-[#00D4FF] transition-all duration-300" style={{
-                  WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
-                  WebkitMaskComposite: 'xor',
-                  maskComposite: 'exclude',
-                }} />
-                {isRunning ? <Loader2 size={10} className="animate-spin text-[#00D4FF]" /> : <Play size={10} className="text-[#00D4FF] fill-[#00D4FF]/20" />}
-                <span>{isRunning ? 'Running...' : 'Run'}</span>
-              </button>
+              {/* RUN CODE / STOP CODE */}
+              {isRunning ? (
+                <button
+                  onClick={() => handleKillProcess(runningProcessType || 'run')}
+                  className="relative px-2.5 py-1.5 rounded-xl text-[10.5px] font-bold text-red-200 hover:text-white transition-all duration-300 cursor-pointer flex items-center gap-1 bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 hover:border-red-500 shadow-[0_4px_12px_rgba(0,0,0,0.3)] hover:shadow-[0_0_15px_rgba(239,68,68,0.2)] hover:scale-[1.02] active:scale-95 group"
+                >
+                  <X size={10} className="text-red-400" />
+                  <span>Stop</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleRunCode}
+                  disabled={!activeTab}
+                  className="relative px-2.5 py-1.5 rounded-xl text-[10.5px] font-bold text-slate-200 hover:text-white transition-all duration-300 cursor-pointer flex items-center gap-1 bg-[#060913]/60 hover:bg-slate-950/80 border border-white/[0.08] hover:border-transparent shadow-[0_4px_12px_rgba(0,0,0,0.3)] hover:shadow-[0_0_15px_rgba(0,212,255,0.2)] hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:pointer-events-none group"
+                >
+                  <div className="absolute inset-0 rounded-xl p-[1px] bg-gradient-to-r from-[#7C5CFF]/20 to-[#00D4FF]/20 group-hover:from-[#7C5CFF] group-hover:to-[#00D4FF] transition-all duration-300" style={{
+                    WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                    WebkitMaskComposite: 'xor',
+                    maskComposite: 'exclude',
+                  }} />
+                  <Play size={10} className="text-[#00D4FF] fill-[#00D4FF]/20" />
+                  <span>Run</span>
+                </button>
+              )}
 
               {/* FORMAT */}
               <button
@@ -1213,15 +1359,15 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
                 
                 {/* Command Input Prompt line */}
                 <form onSubmit={handleTerminalSubmit} className="flex items-center gap-1.5 mt-1">
-                  <span className="text-[#00E38C] shrink-0 select-none">
-                    {selectedTerm === 'PowerShell' ? 'PS>' : '$ '}
+                  <span className={`shrink-0 select-none font-bold ${runningProcessType ? 'text-[#00D4FF] animate-pulse' : 'text-[#00E38C]'}`}>
+                    {runningProcessType ? 'Input>' : (selectedTerm === 'PowerShell' ? 'PS>' : '$ ')}
                   </span>
                   <input
                     type="text"
                     value={terminalCommand}
                     onChange={(e) => setTerminalCommand(e.target.value)}
                     onKeyDown={handleTerminalKeyDown}
-                    placeholder={connectedRepo ? "Type any command... (try: git status, ls, npm test)" : "Type help for commands..."}
+                    placeholder={runningProcessType ? "Type input for running process... (Press Enter to send, or Ctrl+C to kill)" : (connectedRepo ? "Type any command... (try: git status, ls, npm test)" : "Type help for commands...")}
                     className="flex-1 bg-transparent border-none outline-none text-slate-200 caret-[#00D4FF] min-w-0"
                     autoComplete="off"
                     autoCorrect="off"

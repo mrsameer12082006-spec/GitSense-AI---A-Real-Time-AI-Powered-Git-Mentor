@@ -65,7 +65,7 @@ export default function AuthPage({ initialMode }) {
       const API_URL = import.meta.env.VITE_API_URL || '';
       const endpoint = isSignUp ? `${API_URL}/api/auth/signup` : `${API_URL}/api/auth/login`;
       const payload = isSignUp
-        ? { name: formData.name, email: formData.email, password: formData.password, githubLink: formData.github }
+        ? { name: formData.name, email: formData.email, password: formData.password }
         : { email: formData.email, password: formData.password };
 
       const response = await fetch(endpoint, {
@@ -310,21 +310,6 @@ export default function AuthPage({ initialMode }) {
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="Email"
-                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
-              />
-            </div>
-            
-            <div className="relative">
-              <span className="absolute left-3 top-3.5 text-[#00D4FF]">
-                <GithubIcon size={16} className="text-[#00D4FF]" />
-              </span>
-              <input
-                type="text"
-                name="github"
-                required={isSignUp}
-                value={formData.github}
-                onChange={handleInputChange}
-                placeholder="GitHub Link or Username"
                 className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
             </div>

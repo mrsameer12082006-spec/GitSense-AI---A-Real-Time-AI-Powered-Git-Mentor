@@ -11,6 +11,26 @@ const execAsync = util.promisify(exec);
 const router = Router();
 const prisma = new PrismaClient();
 
+// Keep track of active running processes for terminal and runner
+const activeProcesses = new Map();
+
+// Helper to kill process tree cleanly (Windows-safe taskkill, Unix process group kill)
+function killProcessTree(pid) {
+  if (process.platform === 'win32') {
+    exec(`taskkill /pid ${pid} /f /t`, (err) => {
+      if (err) console.error(`[Workspace] taskkill error for pid ${pid}:`, err);
+    });
+  } else {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  }
+}
+
 const REPO_DIR = path.join(process.cwd(), 'data', 'repos');
 
 // All workspace routes require authentication
@@ -63,11 +83,11 @@ async function runCmd(cmd, cwd, timeoutMs = 15000) {
 
 // ─────────────────────────────────────────────────────────
 // POST /api/workspace/:repoId/exec
-// Execute a shell command in the cloned repo directory
+// Execute a shell command in the cloned repo directory (Streaming)
 // ─────────────────────────────────────────────────────────
 router.post('/:repoId/exec', async (req, res) => {
   try {
-    const { command } = req.body;
+    const { command, shell } = req.body;
     if (!command || typeof command !== 'string') {
       return res.status(400).json({ error: 'Command string is required.' });
     }
@@ -80,13 +100,89 @@ router.post('/:repoId/exec', async (req, res) => {
     }
 
     const { repoPath } = await getRepoContext(req);
-    const result = await runCmd(command, repoPath, 30000);
 
-    res.json({
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode,
+    // Setup chunked response headers
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    // Spawn execution in requested shell
+    let cmd, args;
+    const requestedShell = shell || 'PowerShell';
+    if (requestedShell === 'PowerShell') {
+      cmd = 'powershell.exe';
+      args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command];
+    } else if (requestedShell === 'Bash') {
+      cmd = 'bash.exe';
+      args = ['-c', command];
+    } else {
+      cmd = 'cmd.exe';
+      args = ['/c', command];
+    }
+
+    const processKey = `${req.user.id}-${req.params.repoId}-exec`;
+    if (activeProcesses.has(processKey)) {
+      const oldChild = activeProcesses.get(processKey);
+      killProcessTree(oldChild.pid);
+      activeProcesses.delete(processKey);
+    }
+
+    const child = spawn(cmd, args, {
+      cwd: repoPath,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    activeProcesses.set(processKey, child);
+
+    const writeChunk = (data) => {
+      res.write(JSON.stringify(data) + '\n');
+    };
+
+    child.stdout.on('data', (data) => {
+      writeChunk({ type: 'stdout', text: data.toString() });
+    });
+
+    child.stderr.on('data', (data) => {
+      writeChunk({ type: 'stderr', text: data.toString() });
+    });
+
+    const cleanup = () => {
+      if (activeProcesses.get(processKey) === child) {
+        activeProcesses.delete(processKey);
+      }
+    };
+
+    let resolved = false;
+    child.on('close', (code) => {
+      if (!resolved) {
+        resolved = true;
+        writeChunk({ type: 'exit', exitCode: code || 0 });
+        res.end();
+        cleanup();
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!resolved) {
+        resolved = true;
+        writeChunk({ type: 'stderr', text: err.message });
+        writeChunk({ type: 'exit', exitCode: 1 });
+        res.end();
+        cleanup();
+      }
+    });
+
+    req.on('close', () => {
+      if (!resolved) {
+        resolved = true;
+        killProcessTree(child.pid);
+        cleanup();
+      }
+    });
+
   } catch (err) {
     if (err.message === 'REPO_NOT_FOUND') {
       return res.status(404).json({ error: 'Repository not found.' });
@@ -324,10 +420,11 @@ router.put('/:repoId/file', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────
 // POST /api/workspace/:repoId/run
-// Run code (Node.js or Python) and return output
+// Run code (Node.js or Python) and stream output (Streaming)
 // Body: { code: "...", language: "javascript" | "python" }
 // ─────────────────────────────────────────────────────────
 router.post('/:repoId/run', async (req, res) => {
+  let tmpFile = null;
   try {
     const { code, language } = req.body;
     if (!code) {
@@ -338,28 +435,150 @@ router.post('/:repoId/run', async (req, res) => {
 
     // Write temp file
     const ext = language === 'python' ? '.py' : '.js';
-    const tmpFile = path.join(repoPath, `_gitsense_run${ext}`);
+    tmpFile = path.join(repoPath, `_gitsense_run${ext}`);
     await fs.writeFile(tmpFile, code, 'utf8');
 
-    // Execute
-    const cmd = language === 'python' ? `python "${tmpFile}"` : `node "${tmpFile}"`;
-    const result = await runCmd(cmd, repoPath, 15000);
+    // Setup chunked response headers
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
 
-    // Cleanup temp file
-    try {
-      await fs.unlink(tmpFile);
-    } catch {}
+    const cmd = language === 'python' ? 'python' : 'node';
+    const args = [tmpFile];
 
-    res.json({
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode,
+    const processKey = `${req.user.id}-${req.params.repoId}-run`;
+    if (activeProcesses.has(processKey)) {
+      const oldChild = activeProcesses.get(processKey);
+      killProcessTree(oldChild.pid);
+      activeProcesses.delete(processKey);
+    }
+
+    const child = spawn(cmd, args, {
+      cwd: repoPath,
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    activeProcesses.set(processKey, child);
+
+    const writeChunk = (data) => {
+      res.write(JSON.stringify(data) + '\n');
+    };
+
+    child.stdout.on('data', (data) => {
+      writeChunk({ type: 'stdout', text: data.toString() });
+    });
+
+    child.stderr.on('data', (data) => {
+      writeChunk({ type: 'stderr', text: data.toString() });
+    });
+
+    const cleanup = async () => {
+      if (activeProcesses.get(processKey) === child) {
+        activeProcesses.delete(processKey);
+      }
+      if (tmpFile) {
+        try {
+          await fs.unlink(tmpFile);
+        } catch {}
+        tmpFile = null;
+      }
+    };
+
+    let resolved = false;
+    child.on('close', async (code) => {
+      if (!resolved) {
+        resolved = true;
+        writeChunk({ type: 'exit', exitCode: code || 0 });
+        res.end();
+        await cleanup();
+      }
+    });
+
+    child.on('error', async (err) => {
+      if (!resolved) {
+        resolved = true;
+        writeChunk({ type: 'stderr', text: err.message });
+        writeChunk({ type: 'exit', exitCode: 1 });
+        res.end();
+        await cleanup();
+      }
+    });
+
+    req.on('close', async () => {
+      if (!resolved) {
+        resolved = true;
+        killProcessTree(child.pid);
+        await cleanup();
+      }
+    });
+
   } catch (err) {
+    if (tmpFile) {
+      try {
+        await fs.unlink(tmpFile);
+      } catch {}
+    }
     if (err.message === 'REPO_NOT_FOUND') {
       return res.status(404).json({ error: 'Repository not found.' });
     }
     console.error('[Workspace] run error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/input
+// Send stdin input to a running process
+// Body: { text: "...", type: "run" | "exec" }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/input', async (req, res) => {
+  try {
+    const { text, type } = req.body;
+    if (text === undefined || !type) {
+      return res.status(400).json({ error: 'Input text and type are required.' });
+    }
+
+    const processKey = `${req.user.id}-${req.params.repoId}-${type}`;
+    const child = activeProcesses.get(processKey);
+    if (!child) {
+      return res.status(404).json({ error: 'No active process found for this workspace and type.' });
+    }
+
+    // Write input to the process's stdin
+    child.stdin.write(text + '\n');
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Workspace] input error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/kill
+// Kill a running process
+// Body: { type: "run" | "exec" }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/kill', async (req, res) => {
+  try {
+    const { type } = req.body;
+    if (!type) {
+      return res.status(400).json({ error: 'Process type is required.' });
+    }
+
+    const processKey = `${req.user.id}-${req.params.repoId}-${type}`;
+    const child = activeProcesses.get(processKey);
+    if (!child) {
+      return res.status(404).json({ error: 'No active process found for this workspace and type.' });
+    }
+
+    killProcessTree(child.pid);
+    activeProcesses.delete(processKey);
+    res.json({ success: true, message: 'Process terminated.' });
+  } catch (err) {
+    console.error('[Workspace] kill error:', err);
     res.status(500).json({ error: err.message });
   }
 });

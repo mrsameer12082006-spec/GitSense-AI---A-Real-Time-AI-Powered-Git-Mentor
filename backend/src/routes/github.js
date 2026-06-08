@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 import prisma from '../lib/prisma.js';
 import githubService from '../services/github.js';
+import ingestionService from '../services/ingestion.js';
 
 const router = Router();
 
@@ -34,13 +35,21 @@ router.get('/connect', authenticate, async (req, res) => {
       });
     }
     
-    // Store state in a simple in-memory map (in production, use Redis/session)
-    // Map structure: state -> { userId, expiresAt }
+    const referer = req.headers.referer;
+    let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5000';
+    if (referer) {
+      try {
+        const parsedUrl = new URL(referer);
+        frontendUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
+      } catch (e) {}
+    }
+
     if (!global.githubOAuthStates) {
       global.githubOAuthStates = {};
     }
     global.githubOAuthStates[state] = {
       userId,
+      frontendUrl,
       expiresAt: Date.now() + 600000, // 10 minutes
     };
     
@@ -104,14 +113,15 @@ router.get('/callback', async (req, res) => {
     );
     
     const { access_token, error, error_description } = tokenResponse.data;
-    
+    const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:5000';
+
     if (error) {
       console.error('[GitHub] Token exchange error:', error_description);
-      return res.redirect(`${process.env.FRONTEND_URL}/#login?error=${encodeURIComponent(error_description)}`);
+      return res.redirect(`${frontendUrl}/#login?error=${encodeURIComponent(error_description)}`);
     }
     
     if (!access_token) {
-      return res.redirect(`${process.env.FRONTEND_URL}/#login?error=No access token received`);
+      return res.redirect(`${frontendUrl}/#login?error=No access token received`);
     }
     
     // Fetch GitHub user info
@@ -138,10 +148,13 @@ router.get('/callback', async (req, res) => {
     console.log(`[GitHub] User connected: ${updatedUser.email} -> @${githubUser.login}`);
     
     // Redirect to dashboard with success
-    res.redirect(`${process.env.FRONTEND_URL}/#dashboard?github=connected`);
+    res.redirect(`${frontendUrl}/#dashboard?github=connected`);
   } catch (err) {
     console.error('[GitHub] Callback error:', err.message);
-    res.redirect(`${process.env.FRONTEND_URL}/#login?error=OAuth callback failed`);
+    const frontendUrl = (state && global.githubOAuthStates && global.githubOAuthStates[state]?.frontendUrl)
+      || process.env.FRONTEND_URL
+      || 'http://localhost:5000';
+    res.redirect(`${frontendUrl}/#login?error=OAuth callback failed`);
   }
 });
 
@@ -162,7 +175,8 @@ router.get('/status', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
     
-    const connected = !!user.githubId;
+    // Connected if githubUsername is set (both OAuth and URL/username-only)
+    const connected = !!user.githubUsername;
     
     res.json({
       connected,
@@ -172,6 +186,56 @@ router.get('/status', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[GitHub] Status error:', err.message);
     res.status(500).json({ error: 'Failed to fetch GitHub status.' });
+  }
+});
+
+// ── POST /api/github/link-profile ─────────────────────────────
+// Link GitHub account by profile URL or username
+router.post('/link-profile', authenticate, async (req, res) => {
+  try {
+    const { profileUrl } = req.body;
+    if (!profileUrl) {
+      return res.status(400).json({ error: 'profileUrl is required.' });
+    }
+    
+    // Extract username
+    let username = profileUrl.trim();
+    if (username.startsWith('http://') || username.startsWith('https://')) {
+      try {
+        const parsed = new URL(username);
+        const paths = parsed.pathname.split('/').filter(Boolean);
+        if (paths.length > 0) {
+          username = paths[0];
+        } else {
+          return res.status(400).json({ error: 'Invalid GitHub Profile URL.' });
+        }
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid URL format.' });
+      }
+    }
+    
+    // Update user in database
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        githubUsername: username,
+        githubLink: `https://github.com/${username}`,
+        githubId: null, // Clear OAuth ID to decouple
+        githubToken: null, // Clear OAuth Token to decouple
+        githubConnectedAt: new Date(),
+      },
+    });
+    
+    console.log(`[GitHub] Profile linked: ${req.user.email} -> @${username}`);
+    
+    res.json({
+      message: 'GitHub profile linked successfully.',
+      githubUsername: username,
+      githubLink: updatedUser.githubLink,
+    });
+  } catch (err) {
+    console.error('[GitHub] Link profile error:', err.message);
+    res.status(500).json({ error: 'Failed to link GitHub profile.' });
   }
 });
 
@@ -320,9 +384,23 @@ router.post('/import', authenticate, async (req, res) => {
     
     console.log(`[GitHub] Repository imported: ${req.user.email} -> ${importedRepo.fullName}`);
     
+    // Trigger ingestion in background
+    const io = req.app.get('io');
+    ingestionService.ingestRepository(importedRepo.id, req.user.id, io).catch((err) => {
+      console.error('[GitHub] Auto-ingestion background task failed:', err);
+    });
+    
     res.status(201).json({
       message: 'Repository imported successfully!',
-      repository: importedRepo,
+      repository: {
+        id: importedRepo.id,
+        name: importedRepo.name,
+        owner: importedRepo.owner,
+        fullName: importedRepo.fullName,
+        url: importedRepo.url,
+        defaultBranch: importedRepo.defaultBranch,
+        connectionMethod: importedRepo.connectionMethod,
+      },
     });
   } catch (err) {
     console.error('[GitHub] Import error:', err.message);

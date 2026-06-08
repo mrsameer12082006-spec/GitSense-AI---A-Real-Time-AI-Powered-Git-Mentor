@@ -61,6 +61,14 @@ export default function App() {
       }
     }
 
+    if (hash.includes('github=connected')) {
+      if (window.opener) {
+        // We are in the OAuth popup window
+        window.opener.postMessage({ type: 'GITSENSE_GITHUB_CONNECTED' }, '*');
+        window.close();
+      }
+    }
+
     const handleHashChange = () => {
       const hash = window.location.hash;
       if (hash === '#login') {
