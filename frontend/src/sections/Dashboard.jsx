@@ -116,6 +116,23 @@ export default function Dashboard() {
   const [rateLimitResetTime, setRateLimitResetTime] = useState(null);
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
   const [scanError, setScanError] = useState(null);
+  const [repoPermissions, setRepoPermissions] = useState(null);
+  const [hasWriteAccess, setHasWriteAccess] = useState(() => {
+    try {
+      const saved = localStorage.getItem('gitsense_user');
+      const user = saved ? JSON.parse(saved) : null;
+      const scopesList = user?.githubScopes ? user.githubScopes.split(',').map(s => s.trim()) : [];
+      return scopesList.includes('repo');
+    } catch {
+      return false;
+    }
+  });
+  const [activeSSEFixId, setActiveSSEFixId] = useState(null);
+  const [sseProgressSteps, setSseProgressSteps] = useState([]);
+  const [sseStatus, setSseStatus] = useState(null);
+  const [ciDiagnostics, setCiDiagnostics] = useState({});
+  const [activeDiagnosingJobId, setActiveDiagnosingJobId] = useState(null);
+  const [issueConfirmFixData, setIssueConfirmFixData] = useState(null);
 
   useEffect(() => {
     if (!rateLimitResetTime) {
@@ -203,7 +220,15 @@ export default function Dashboard() {
       const data = await res.json();
       isRequestRunning = false;
       
-      setIssues(data.issues || []);
+      setIssues(prev => {
+        const fixedList = prev.filter(iss => iss.isFixed);
+        const newIssues = data.issues || [];
+        const activeIds = newIssues.map(ni => ni.id);
+        const preservedFixed = fixedList.filter(fi => !activeIds.includes(fi.id));
+        return [...newIssues, ...preservedFixed];
+      });
+      setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
+      setHasWriteAccess(data.hasWriteAccess ?? false);
       setScanSummary(data.summary || null);
       setScanCompleted(data.scanCompleted);
       setScanChecks(data.checks || null);
@@ -252,6 +277,237 @@ export default function Dashboard() {
       setIssues([]);
     }
   }, [connectedRepo, apiFetch]);
+
+  useEffect(() => {
+    if (connectedRepo && currentUser && localStorage.getItem('gitsense_reconnecting') === 'true') {
+      localStorage.removeItem('gitsense_reconnecting');
+      setIssues([]);
+      handleScanRepo();
+    }
+  }, [connectedRepo, currentUser]);
+
+  const handleReconnect = () => {
+    localStorage.setItem('gitsense_reconnecting', 'true');
+    const BACKEND_URL = '/api';
+    window.location.href = `${BACKEND_URL}/auth/github?force_reauth=true`;
+  };
+
+  const executeSSEFix = (issue, action, extraParams = {}) => {
+    if (!connectedRepo) return;
+    
+    setSseProgressSteps([]);
+    setSseStatus('running');
+    setActiveSSEFixId(issue.id);
+
+    const queryParams = new URLSearchParams({
+      owner: connectedRepo.owner,
+      repo: connectedRepo.name,
+      token: currentUser?.githubToken || '',
+      issueId: issue.id,
+      action: action,
+      defaultBranch: connectedRepo.defaultBranch || 'main',
+      ...extraParams
+    });
+
+    const sseUrl = `${API_BASE}/repo/fix?${queryParams.toString()}`;
+    console.log('[SSE client] Connecting to:', sseUrl);
+
+    const eventSource = new EventSource(sseUrl);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('[SSE client] Message received:', data);
+
+        if (data.step === 'done') {
+          setSseStatus(data.status); // 'complete' or 'failed'
+          eventSource.close();
+          
+          // Trigger scan to re-verify issue state
+          handleScanRepo();
+        } else if (data.step === 'error') {
+          setSseStatus('failed');
+          setSseProgressSteps(prev => [...prev, { message: `❌ Error: ${data.message}`, status: 'failed' }]);
+          eventSource.close();
+        } else {
+          setSseProgressSteps(prev => {
+            const filtered = prev.filter(s => s.step !== data.step);
+            return [...filtered, { step: data.step, message: data.message, status: data.status }];
+          });
+        }
+      } catch (err) {
+        console.error('[SSE client] Error parsing event:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('[SSE client] EventSource connection failed:', err);
+      setSseStatus('failed');
+      setSseProgressSteps(prev => [...prev, { message: '❌ Connection to the repair server failed.', status: 'failed' }]);
+      eventSource.close();
+    };
+  };
+
+  const executePOSTFix = async (issue, fixType, params = {}) => {
+    if (!connectedRepo) return;
+    
+    setSseProgressSteps([]);
+    setSseStatus('running');
+    setActiveSSEFixId(issue.id);
+
+    const getFixSteps = (id) => {
+      if (id === 'missing-gitignore') {
+        return [
+          { key: 'detect_type', label: 'Detecting project type' },
+          { key: 'build_content', label: 'Building gitignore content' },
+          { key: 'create_file', label: 'Creating file on GitHub' },
+          { key: 'verify_file', label: 'Verifying file exists' },
+          { key: 'complete', label: 'Complete' }
+        ];
+      }
+      if (id === 'stale-branches') {
+        return [
+          { key: 'confirm_exists', label: 'Confirming branch exists' },
+          { key: 'delete_branch', label: 'Deleting remote branch' },
+          { key: 'verify_deletion', label: 'Verifying deletion' },
+          { key: 'complete', label: 'Complete' }
+        ];
+      }
+      if (id === 'ci-pipeline-failure') {
+        return [
+          { key: 'trigger_rerun', label: 'Triggering job rerun' },
+          { key: 'wait_start', label: 'Waiting for run to start' },
+          { key: 'monitor_status', label: 'Monitoring run status' },
+          { key: 'complete', label: 'Complete' }
+        ];
+      }
+      return [
+        { key: 'trigger', label: 'Triggering auto-fix' },
+        { key: 'execute', label: 'Executing fix routines' },
+        { key: 'verify', label: 'Verifying resolution' },
+        { key: 'complete', label: 'Complete' }
+      ];
+    };
+
+    const steps = getFixSteps(issue.id);
+    
+    // Set first step running
+    setSseProgressSteps([{ step: steps[0].key, message: steps[0].label, status: 'running' }]);
+    
+    let currentIdx = 0;
+    const intervalId = setInterval(() => {
+      if (currentIdx < steps.length - 2) {
+        setSseProgressSteps(prev => {
+          const updated = prev.map(s => s.step === steps[currentIdx].key ? { ...s, status: 'complete' } : s);
+          if (!updated.some(s => s.step === steps[currentIdx + 1].key)) {
+            updated.push({ step: steps[currentIdx + 1].key, message: steps[currentIdx + 1].label, status: 'running' });
+          }
+          return updated;
+        });
+        currentIdx++;
+      } else {
+        clearInterval(intervalId);
+      }
+    }, 1200);
+
+    try {
+      const owner = connectedRepo.owner;
+      const repo = connectedRepo.name;
+      const token = currentUser?.githubToken || '';
+
+      const response = await fetch(`${API_BASE}/repo/fix`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
+        body: JSON.stringify({
+          owner,
+          repo,
+          token,
+          fixType,
+          params
+        })
+      });
+
+      const data = await response.json();
+      clearInterval(intervalId);
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to apply fix');
+      }
+
+      // Complete all steps
+      const finalSteps = steps.map(fs => ({
+        step: fs.key,
+        message: fs.label,
+        status: 'complete'
+      }));
+      setSseProgressSteps(finalSteps);
+      setSseStatus('complete');
+
+      let fixedUrl = data.verificationResult?.fileUrl || null;
+      if (issue.id === 'missing-gitignore' && !fixedUrl) {
+        fixedUrl = `https://github.com/${owner}/${repo}/blob/${connectedRepo.defaultBranch || 'main'}/.gitignore`;
+      }
+
+      setIssues(prev => prev.map(iss => {
+        if (iss.id === issue.id) {
+          return {
+            ...iss,
+            isFixed: true,
+            fixedAt: new Date().toISOString(),
+            fixedUrl,
+            fixedDescription: data.verificationResult?.message || 'Fixed and verified successfully.'
+          };
+        }
+        return iss;
+      }));
+
+      // Re-scan after fix to update state
+      handleScanRepo();
+
+    } catch (err) {
+      clearInterval(intervalId);
+      console.error('[POST Fix] Error executing fix:', err);
+      setSseStatus('failed');
+      setSseProgressSteps(prev => {
+        const last = prev[prev.length - 1] || { step: 'error', message: 'Starting fix' };
+        const updated = prev.slice(0, -1);
+        return [...updated, { ...last, status: 'failed', message: `❌ Error: ${err.message}` }];
+      });
+    }
+  };
+
+  const diagnoseCIFailure = async (runId) => {
+    if (!connectedRepo || !runId) return;
+    setActiveDiagnosingJobId(runId);
+    try {
+      const queryParams = new URLSearchParams({
+        owner: connectedRepo.owner,
+        repo: connectedRepo.name,
+        token: currentUser?.githubToken || '',
+        runId: runId
+      });
+      const res = await apiFetch(`/repo/ci-diagnostics?${queryParams.toString()}`);
+      if (!res.ok) {
+        throw new Error('Failed to retrieve log diagnostics');
+      }
+      const data = await res.json();
+      setCiDiagnostics(prev => ({
+        ...prev,
+        [runId]: {
+          snippets: data.snippets || [],
+          jobName: data.jobName || 'failed job'
+        }
+      }));
+    } catch (err) {
+      console.error('[Diagnostics] Failed to fetch logs:', err);
+      alert(`Error fetching job log diagnostics: ${err.message}`);
+    } finally {
+      setActiveDiagnosingJobId(null);
+    }
+  };
 
   const toggleIssueExpansion = (id) => {
     setExpandedIssueIds(prev => {
@@ -348,6 +604,8 @@ export default function Dashboard() {
         const u = { ...data.user, avatarInitial: data.user.name?.charAt(0)?.toUpperCase() || 'U' };
         setCurrentUser(u);
         localStorage.setItem('gitsense_user', JSON.stringify(u));
+        const scopesList = u.githubScopes ? u.githubScopes.split(',').map(s => s.trim()) : [];
+        setHasWriteAccess(scopesList.includes('repo'));
       }
     }).catch(() => {});
   }, []);
@@ -1739,6 +1997,25 @@ export default function Dashboard() {
                     </div>
                   </div>
 
+                  {/* Token Scope Warning Banner */}
+                  {!hasWriteAccess && (
+                    <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-2xl flex flex-col gap-2 text-left mb-3">
+                      <div className="flex items-center gap-1.5 font-semibold text-amber-400 text-[11px]">
+                        <ShieldAlert size={14} className="shrink-0" />
+                        <span>Limited GitHub Permissions</span>
+                      </div>
+                      <p className="text-[10px] text-slate-300 leading-normal">
+                        Your GitHub connection has limited scopes. To run automatic issue fixes directly via the dashboard, click below to authorize full repository access.
+                      </p>
+                      <button
+                        onClick={handleReconnect}
+                        className="w-full py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded text-[9px] cursor-pointer transition-colors text-center"
+                      >
+                        Reconnect With Full Access
+                      </button>
+                    </div>
+                  )}
+
                   {/* Repository Health Scanner */}
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center justify-between">
@@ -1856,87 +2133,108 @@ export default function Dashboard() {
                                     <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
                                   </button>
                                   {expandedIssueIds.has(issue.id) && (
-                                    <div className="p-3 pt-0 border-t border-white/[0.05] flex flex-col gap-4 mt-2">
-                                      <div className="flex flex-col gap-1.5">
-                                        <h5 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-wider">What is the issue?</h5>
-                                        <p className="text-[10px] text-slate-300 leading-relaxed">{issue.whatIsTheIssue}</p>
-                                      </div>
-                                      <div className="flex flex-col gap-1.5">
-                                        <h5 className="text-[9px] font-bold text-[#7C5CFF] uppercase tracking-wider">How this happened</h5>
-                                        <p className="text-[10px] text-slate-300 leading-relaxed">{issue.howThisHappened}</p>
-                                      </div>
-                                      <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded border border-white/[0.05]">
-                                        <h5 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Manual Fix</h5>
-                                        <code className="text-[9px] text-emerald-400 font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
-                                      </div>
-                                    </div>
+                                    <IssueDetails
+                                      issue={issue}
+                                      connectedRepo={connectedRepo}
+                                      repoPermissions={repoPermissions}
+                                      activeSSEFixId={activeSSEFixId}
+                                      sseProgressSteps={sseProgressSteps}
+                                      sseStatus={sseStatus}
+                                      ciDiagnostics={ciDiagnostics}
+                                      activeDiagnosingJobId={activeDiagnosingJobId}
+                                      executeSSEFix={executeSSEFix}
+                                      executePOSTFix={executePOSTFix}
+                                      diagnoseCIFailure={diagnoseCIFailure}
+                                      handleScanRepo={handleScanRepo}
+                                      issueConfirmFixData={issueConfirmFixData}
+                                      setIssueConfirmFixData={setIssueConfirmFixData}
+                                      currentUser={currentUser}
+                                      hasWriteAccess={hasWriteAccess}
+                                    />
                                   )}
                                 </div>
                               ))}
                             </div>
                           )}
                         </div>
-                      ) : issues.length > 0 ? (
+                      ) : issues.filter(i => !i.isFixed).length > 0 ? (
                         <div className="flex flex-col gap-3">
                           <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
                             <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
                           </div>
                           <div className="flex flex-col gap-2">
                             {issues.map(issue => (
-                              <div key={issue.id} className={`bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-50 grayscale' : ''}`}>
+                              <div 
+                                key={issue.id} 
+                                className={`bg-slate-900 border ${
+                                  issue.isFixed 
+                                    ? 'border-emerald-500/30 border-l-4 border-l-emerald-500' 
+                                    : issue.severity === 'critical'
+                                      ? 'border-white/[0.05] border-l-4 border-l-rose-500'
+                                      : 'border-white/[0.05] border-l-4 border-l-amber-500'
+                                } rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-85' : ''}`}
+                              >
                                 {/* Header (Clickable) */}
                                 <button
                                   onClick={() => toggleIssueExpansion(issue.id)}
                                   className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
                                 >
                                   <div className="flex items-center gap-2">
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : issue.severity === 'warning' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-400'}`}>
-                                      {issue.severity}
+                                    {issue.isFixed ? (
+                                      <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
+                                    ) : (
+                                      <AlertTriangle size={14} className={issue.severity === 'critical' ? 'text-rose-400 shrink-0' : 'text-amber-400 shrink-0'} />
+                                    )}
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                                      issue.isFixed 
+                                        ? 'bg-[#00E38C]/20 text-[#00E38C]' 
+                                        : issue.severity === 'critical' 
+                                          ? 'bg-rose-500/20 text-rose-400' 
+                                          : 'bg-amber-500/20 text-amber-400'
+                                    }`}>
+                                      {issue.isFixed ? 'FIXED' : issue.severity}
                                     </span>
                                     <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    {issue.isFixed && <span className="text-[9px] text-[#00E38C] border border-[#00E38C]/30 px-1 rounded">FIXED</span>}
                                     <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
                                   </div>
                                 </button>
                                 
                                 {/* Expanded Content */}
                                 {expandedIssueIds.has(issue.id) && (
-                                  <div className="p-3 pt-0 border-t border-white/[0.05] flex flex-col gap-4 mt-2">
-                                    <div className="flex flex-col gap-1.5">
-                                      <h5 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-wider">What is the issue?</h5>
-                                      <p className="text-[10px] text-slate-300 leading-relaxed">{issue.whatIsTheIssue}</p>
-                                    </div>
-                                    <div className="flex flex-col gap-1.5">
-                                      <h5 className="text-[9px] font-bold text-[#7C5CFF] uppercase tracking-wider">How this happened</h5>
-                                      <p className="text-[10px] text-slate-300 leading-relaxed">{issue.howThisHappened}</p>
-                                    </div>
-                                    <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded border border-white/[0.05]">
-                                      <h5 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Manual Fix</h5>
-                                      <code className="text-[9px] text-[#00E38C] font-mono whitespace-pre-wrap">{issue.manualFixCommands?.join('\n')}</code>
-                                    </div>
-                                    {!issue.isFixed && (
-                                      <button
-                                        onClick={() => handleFixIssue(issue)}
-                                        disabled={activeFixingIssueId !== null}
-                                        className="w-full mt-1 py-1.5 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                      >
-                                        <Wand2 size={12} /> Auto-Fix Issue
-                                      </button>
-                                    )}
-                                  </div>
+                                  <IssueDetails
+                                    issue={issue}
+                                    connectedRepo={connectedRepo}
+                                    repoPermissions={repoPermissions}
+                                    activeSSEFixId={activeSSEFixId}
+                                    sseProgressSteps={sseProgressSteps}
+                                    sseStatus={sseStatus}
+                                    ciDiagnostics={ciDiagnostics}
+                                    activeDiagnosingJobId={activeDiagnosingJobId}
+                                    executeSSEFix={executeSSEFix}
+                                    executePOSTFix={executePOSTFix}
+                                    diagnoseCIFailure={diagnoseCIFailure}
+                                    handleScanRepo={handleScanRepo}
+                                    issueConfirmFixData={issueConfirmFixData}
+                                    setIssueConfirmFixData={setIssueConfirmFixData}
+                                    currentUser={currentUser}
+                                    hasWriteAccess={hasWriteAccess}
+                                  />
                                 )}
                               </div>
                             ))}
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-col items-center justify-center py-6 gap-2 text-center">
-                          <div className="w-10 h-10 rounded-full bg-[#00E38C]/10 flex items-center justify-center mb-1">
-                            <CheckCircle2 size={20} className="text-[#00E38C]" />
+                        <div className="flex flex-col items-center justify-center py-8 px-4 gap-3 text-center bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 rounded-2xl shadow-lg shadow-emerald-500/5">
+                          <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center mb-1 animate-pulse">
+                            <CheckCircle2 size={24} className="text-[#00E38C]" />
                           </div>
-                          <span className="text-xs font-bold text-slate-300">Repository looks healthy</span>
+                          <span className="text-sm font-bold text-emerald-400 font-sans">All Clear! Repository is Healthy</span>
+                          <p className="text-[11px] text-slate-400 max-w-[220px] leading-relaxed">
+                            No active issues detected. All scanned checks passed successfully.
+                          </p>
                           {scanSummary ? (
                             <div className="flex flex-col gap-1 mt-1 text-[10px] text-slate-500 font-mono">
                               <div>Branches Checked: {scanSummary.branchesChecked}</div>
@@ -2655,7 +2953,6 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">Please execute the recommended fix commands in your terminal.</p>
             </div>
           </div>
-
           <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
             <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
               <span>Terminal Command</span>
@@ -2679,3 +2976,794 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
     </div>
   );
 }
+
+// ── Stale Branch Card Item Component ──
+function StaleBranchCardItem({ s, idx, connectedRepo, currentUser, hasWriteAccess, handleScanRepo }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [fixLoading, setFixLoading] = useState(false);
+  const [fixStep, setFixStep] = useState('');
+  const [issueFixed, setIssueFixed] = useState(false);
+  const [fixMessage, setFixMessage] = useState('');
+  const [fixError, setFixError] = useState(null);
+
+  const repoOwner = connectedRepo?.owner || '';
+  const repoName = connectedRepo?.name || '';
+  const githubToken = currentUser?.githubToken || '';
+  const issue = { branchName: s.branchName };
+
+  const handleFixStaleBranch = async () => {
+    console.log('handleFixStaleBranch values:', repoOwner, repoName, githubToken, issue.branchName);
+    setFixLoading(true);
+    setFixStep('Verifying branch exists...');
+    
+    try {
+      const response = await fetch('/api/repo/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: repoOwner,
+          repo: repoName,
+          token: githubToken,
+          fixType: 'delete-branch',
+          params: { branchName: issue.branchName }
+        })
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        setFixStep('Branch deleted successfully');
+        setIssueFixed(true);
+        setFixMessage(`Branch "${issue.branchName}" has been permanently deleted from GitHub.`);
+        setTimeout(() => {
+          handleScanRepo();
+        }, 1500);
+      } else {
+        setFixError(result.error);
+      }
+    } catch (err) {
+      setFixError('Network error — could not reach the fix server. Try again.');
+    } finally {
+      setFixLoading(false);
+    }
+  };
+
+  if (issueFixed) {
+    return (
+      <div className="bg-slate-950 p-3 rounded-xl border border-emerald-500/20 flex flex-col gap-1.5 text-[10px]">
+        <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+          <CheckCircle2 size={12} />
+          <span>Branch Deleted Successfully</span>
+        </div>
+        <p className="text-slate-300 font-sans leading-normal">{fixMessage}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2 text-[10px]">
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-slate-200">{s.branchName}</span>
+        <span className="text-slate-500 font-mono text-[9px]">updated: {new Date(s.lastCommitDate).toLocaleDateString()}</span>
+      </div>
+      <p className="text-slate-400 text-[10px]">Unmerged commits by: <strong>{s.authorName}</strong></p>
+
+      {fixError && (
+        <div className="bg-rose-500/5 border border-rose-500/20 p-2.5 rounded-lg flex flex-col gap-2 mt-1">
+          <span className="text-rose-400 font-bold text-[9px] uppercase tracking-wider">Error Occurred</span>
+          <p className="text-slate-300 font-sans leading-normal">{fixError}</p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleFixStaleBranch}
+              className="px-2.5 py-1 bg-[#7C5CFF] hover:bg-[#6c4be0] text-white rounded font-bold text-[9px] cursor-pointer"
+            >
+              Try Again
+            </button>
+            <button
+              onClick={() => setFixError(null)}
+              className="px-2.5 py-1 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded font-semibold text-[9px] cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete ? (
+        <div className="bg-rose-500/5 border border-rose-500/20 p-2.5 rounded-lg flex flex-col gap-2 mt-1">
+          <span className="text-rose-400 font-bold text-[9px] uppercase tracking-wider">Warning: Permanent Deletion</span>
+          <p className="text-slate-400 text-[10px] leading-normal font-sans">
+            This will permanently delete branch <strong>{s.branchName}</strong> from the remote GitHub repository. This cannot be undone. Are you sure?
+          </p>
+          <div className="flex gap-2">
+            {fixLoading ? (
+              <button
+                disabled
+                className="px-2.5 py-1 bg-rose-500/50 text-white rounded font-bold text-[9px] cursor-not-allowed flex items-center gap-1.5"
+              >
+                <Loader2 size={10} className="animate-spin" /> Deleting Branch
+              </button>
+            ) : (
+              <button
+                onClick={handleFixStaleBranch}
+                className="px-2.5 py-1 bg-rose-500 hover:bg-rose-600 text-white rounded font-bold text-[9px] cursor-pointer"
+              >
+                Yes Fix It
+              </button>
+            )}
+            <button
+              disabled={fixLoading}
+              onClick={() => setConfirmDelete(false)}
+              className="px-2.5 py-1 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded font-semibold text-[9px] cursor-pointer"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        !fixError && (
+          <div className="flex gap-2 mt-1">
+            <button
+              onClick={() => setConfirmDelete(true)}
+              disabled={!hasWriteAccess}
+              className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-400 rounded text-[9px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              title={!hasWriteAccess ? "Requires repository write permission scopes to auto-fix" : ""}
+            >
+              Delete This Branch
+            </button>
+            <a
+              href={`https://github.com/${repoOwner}/${repoName}/tree/${s.branchName}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2.5 py-1 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded text-[9px] font-semibold flex items-center gap-1 cursor-pointer"
+            >
+              View Branch First <ExternalLink size={10} />
+            </a>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// ── Custom Issue Details Panel Component ──
+function IssueDetails({
+  issue,
+  connectedRepo,
+  repoPermissions,
+  activeSSEFixId,
+  sseProgressSteps,
+  sseStatus,
+  ciDiagnostics,
+  activeDiagnosingJobId,
+  executeSSEFix,
+  executePOSTFix,
+  diagnoseCIFailure,
+  handleScanRepo,
+  issueConfirmFixData,
+  setIssueConfirmFixData,
+  currentUser,
+  hasWriteAccess
+}) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmStaleBranch, setConfirmStaleBranch] = useState(null);
+  const [confirmCollisionIdx, setConfirmCollisionIdx] = useState(null);
+  const [confirmDivergedBranch, setConfirmDivergedBranch] = useState(null);
+  const [confirmConflictPR, setConfirmConflictPR] = useState(null);
+  const [copiedTextKey, setCopiedTextKey] = useState(null);
+
+  const copyLocalText = (text, key) => {
+    navigator.clipboard.writeText(text);
+    setCopiedTextKey(key);
+    setTimeout(() => setCopiedTextKey(null), 2000);
+  };
+
+  const isReadOnly = !hasWriteAccess;
+
+  const owner = connectedRepo?.owner || '';
+  const repo = connectedRepo?.name || '';
+  const defaultBranch = connectedRepo?.defaultBranch || 'main';
+
+  const isFixingThis = activeSSEFixId === issue.id;
+
+  const getFixSteps = () => {
+    if (issue.id === 'missing-gitignore') {
+      return [
+        { key: 'detect_type', label: 'Detecting project type' },
+        { key: 'build_content', label: 'Building gitignore content' },
+        { key: 'create_file', label: 'Creating file on GitHub' },
+        { key: 'verify_file', label: 'Verifying file exists' },
+        { key: 'complete', label: 'Complete' }
+      ];
+    }
+    if (issue.id === 'stale-branches') {
+      return [
+        { key: 'confirm_exists', label: 'Confirming branch exists' },
+        { key: 'delete_branch', label: 'Deleting remote branch' },
+        { key: 'verify_deletion', label: 'Verifying deletion' },
+        { key: 'complete', label: 'Complete' }
+      ];
+    }
+    if (issue.id === 'ci-pipeline-failure') {
+      const isCompleteSuccess = sseStatus === 'complete';
+      const isCompleteFailed = sseStatus === 'failed';
+      let finalLabel = 'Complete';
+      if (isCompleteSuccess) finalLabel = 'Run passed';
+      else if (isCompleteFailed) finalLabel = 'Run failed again';
+
+      return [
+        { key: 'trigger_rerun', label: 'Triggering job rerun' },
+        { key: 'wait_start', label: 'Waiting for run to start' },
+        { key: 'monitor_status', label: 'Monitoring run status' },
+        { key: 'complete', label: finalLabel }
+      ];
+    }
+    return [
+      { key: 'trigger', label: 'Triggering auto-fix' },
+      { key: 'execute', label: 'Executing fix routines' },
+      { key: 'verify', label: 'Verifying resolution' },
+      { key: 'complete', label: 'Complete' }
+    ];
+  };
+
+  const fixSteps = getFixSteps();
+
+  const getStepState = (stepKey, index) => {
+    const matched = sseProgressSteps.find(s => s.step === stepKey);
+    if (matched) {
+      if (matched.status === 'complete' || matched.status === 'success') {
+        return 'completed';
+      }
+      if (matched.status === 'failed') {
+        return 'failed';
+      }
+      return 'running';
+    }
+    
+    const completedKeys = sseProgressSteps
+      .filter(s => s.status === 'complete' || s.status === 'success')
+      .map(s => s.step);
+      
+    const isFirstUncompleted = fixSteps.findIndex(s => !completedKeys.includes(s.key)) === index;
+    
+    if (isFirstUncompleted && sseStatus === 'running') {
+      return 'running';
+    }
+    
+    return 'pending';
+  };
+
+  const completedCount = fixSteps.filter((s, idx) => getStepState(s.key, idx) === 'completed').length;
+  const progressPercentage = sseStatus === 'complete' ? 100 : (completedCount / fixSteps.length) * 100;
+
+  const renderProgressSection = () => {
+    return (
+      <div className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-3 text-[11px] mt-2">
+        <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold">
+          <span className="flex items-center gap-1.5 font-sans">
+            <Activity size={12} className="text-purple-400 animate-spin" />
+            Executing Repair Flow...
+          </span>
+          <span>{Math.round(progressPercentage)}%</span>
+        </div>
+        
+        <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+          <div 
+            className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-500 ease-out" 
+            style={{ width: `${progressPercentage}%` }}
+          />
+        </div>
+
+        <div className="flex flex-col gap-2 mt-1">
+          {fixSteps.map((s, idx) => {
+            const state = getStepState(s.key, idx);
+            return (
+              <div key={s.key} className="flex items-center gap-2">
+                {state === 'completed' ? (
+                  <CheckCircle2 size={12} className="text-[#00E38C] shrink-0" />
+                ) : state === 'failed' ? (
+                  <X size={12} className="text-rose-400 shrink-0" />
+                ) : state === 'running' ? (
+                  <Loader2 size={12} className="text-purple-400 animate-spin shrink-0" />
+                ) : (
+                  <div className="w-2 h-2 bg-slate-700 rounded-full shrink-0 ml-0.5 mr-0.5" />
+                )}
+                <span className={`text-[10px] ${
+                  state === 'completed' ? 'text-slate-500 line-through font-mono' :
+                  state === 'running' ? 'text-purple-400 font-bold' :
+                  state === 'failed' ? 'text-rose-400 font-bold' :
+                  'text-slate-400'
+                }`}>
+                  {s.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {sseStatus === 'complete' && (
+          <div className="p-2.5 bg-[#00E38C]/10 border border-[#00E38C]/20 text-[#00E38C] rounded-xl text-[10px] font-semibold flex items-center gap-2">
+            <CheckCircle2 size={14} /> Fix verified successfully!
+          </div>
+        )}
+        {sseStatus === 'failed' && (
+          <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-[10px] font-semibold flex items-center gap-2">
+            <X size={14} /> Verification failed. Issue still exists.
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="p-3 pt-0 border-t border-white/[0.05] flex flex-col gap-4 mt-2 text-left">
+      {issue.isFixed && (
+        <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-[10px] flex flex-col gap-1.5 leading-normal">
+          <div className="flex items-center gap-1.5 font-bold">
+            <CheckCircle2 size={14} />
+            <span>Issue Resolved Successfully!</span>
+          </div>
+          <p className="text-slate-300">
+            {issue.fixedDescription || `This issue was auto-fixed and verified successfully.`}
+          </p>
+          <span className="text-[9px] text-slate-400 font-mono">
+            Fixed at: {issue.fixedAt ? new Date(issue.fixedAt).toLocaleString() : new Date().toLocaleString()}
+          </span>
+          {issue.fixedUrl && (
+            <a 
+              href={issue.fixedUrl} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#00D4FF] hover:underline flex items-center gap-1 font-semibold mt-1"
+            >
+              View changes on GitHub <ExternalLink size={10} />
+            </a>
+          )}
+        </div>
+      )}
+
+      {!issue.isFixed && (
+        <>
+          <div className="flex flex-col gap-1">
+            <h5 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-wider">What is the issue?</h5>
+            <p className="text-[10px] text-slate-300 leading-relaxed">{issue.whatIsTheIssue || issue.description}</p>
+          </div>
+          <div className="flex flex-col gap-1">
+            <h5 className="text-[9px] font-bold text-[#7C5CFF] uppercase tracking-wider">How this happened</h5>
+            <p className="text-[10px] text-slate-300 leading-relaxed">{issue.howThisHappened}</p>
+          </div>
+
+          {!hasRepoScope && (
+            <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl text-[10px] leading-normal flex items-start gap-1.5 mb-1">
+              <ShieldAlert size={14} className="shrink-0 mt-0.5" />
+              <span>Automatic fixes require write permissions. Please reconnect your account with full repository access (using the banner in the sidebar).</span>
+            </div>
+          )}
+          {isReadOnly && (
+            <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-[10px] leading-normal flex items-start gap-1.5 mb-1">
+              <ShieldAlert size={14} className="shrink-0 mt-0.5" />
+              <span>You have read-only access to this repository. You cannot apply fixes directly. You can still copy the manual commands below.</span>
+            </div>
+          )}
+
+          {issue.id === 'missing-gitignore' && (
+            <div className="flex flex-col gap-3">
+              {isFixingThis ? (
+                renderProgressSection()
+              ) : showConfirm ? (
+                <div className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-3 text-[11px]">
+                  <span className="font-bold text-amber-400">Confirm Action: Create .gitignore File</span>
+                  
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Commit Target Branch</span>
+                    <strong className="text-slate-300 font-mono text-[10px]">{defaultBranch}</strong>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">File Content Preview</span>
+                    <pre className="p-2.5 bg-slate-900 rounded text-[9px] font-mono text-slate-400 leading-relaxed overflow-x-auto select-all max-h-32 overflow-y-auto">
+{`node_modules/
+.env
+.env.local
+.env.production
+.env.development
+dist/
+build/
+.DS_Store`}
+                    </pre>
+                  </div>
+
+                  <div className="flex gap-2 mt-1">
+                    <button
+                      onClick={() => {
+                        setShowConfirm(false);
+                        executePOSTFix(issue, 'gitignore');
+                      }}
+                      className="px-3 py-1.5 bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 font-bold rounded text-[10px] cursor-pointer"
+                    >
+                      Yes, Create It
+                    </button>
+                    <button
+                      onClick={() => setShowConfirm(false)}
+                      className="px-3 py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded text-[10px] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowConfirm(true)}
+                  disabled={isReadOnly}
+                  className="w-full py-1.5 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={isReadOnly ? "Requires repository write permission scopes to auto-fix" : ""}
+                >
+                  <Wand2 size={12} /> Create .gitignore File
+                </button>
+              )}
+            </div>
+          )}
+
+          {issue.id === 'pr-merge-conflicts' && (
+            <div className="flex flex-col gap-3">
+              {(issue.rawState?.conflicts || []).map((c, idx) => {
+                const isConfirming = confirmConflictPR === c.prNumber;
+                const cmdString = `# Step 1 — fetch latest changes
+git fetch origin
+
+# Step 2 — switch to conflicting branch
+git checkout ${c.headBranch}
+
+# Step 3 — merge target branch to see conflicts locally
+git merge origin/${c.baseBranch}
+
+# Step 4 — open conflicting files and resolve manually
+# Conflicting files in this PR:
+${c.conflictingFiles?.map(f => `# - ${f}`).join('\n')}
+
+# Step 5 — commit and push fixes
+git add .
+git commit -m "fix: resolve merge conflicts with ${c.baseBranch}"
+git push origin ${c.headBranch}`;
+
+                return (
+                  <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2">
+                    <span className="font-bold text-rose-400 text-[10px]">Conflict in PR #{c.prNumber}: {c.title}</span>
+                    <p className="text-[10px] text-slate-400 leading-normal font-sans">
+                      GitHub reports this PR has unresolved conflicts in: <strong>{c.conflictingFiles?.join(', ')}</strong>
+                    </p>
+
+                    {isConfirming ? (
+                      <div className="flex flex-col gap-3 bg-[#030712] p-3 rounded-xl border border-white/[0.08] mt-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Terminal Commands</span>
+                          <button
+                            onClick={() => copyLocalText(cmdString, `pr-conflict-cmd-${c.prNumber}`)}
+                            className="text-[#00D4FF] hover:underline text-[9px] font-semibold cursor-pointer"
+                          >
+                            {copiedTextKey === `pr-conflict-cmd-${c.prNumber}` ? 'Copied!' : 'Copy Commands'}
+                          </button>
+                        </div>
+                        <pre className="p-2.5 bg-[#010409] rounded text-[9px] font-mono text-[#00D4FF] leading-relaxed overflow-x-auto select-all max-h-48 overflow-y-auto">
+                          <code>{cmdString}</code>
+                        </pre>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              handleScanRepo();
+                            }}
+                            className="px-3 py-1.5 bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 rounded font-bold text-[9px] cursor-pointer"
+                          >
+                            Verify After Running
+                          </button>
+                          <button
+                            onClick={() => setConfirmConflictPR(null)}
+                            className="px-3 py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded font-semibold text-[9px] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmConflictPR(c.prNumber)}
+                        className="px-3 py-1.5 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#00D4FF] rounded text-[10px] font-bold cursor-pointer w-fit"
+                      >
+                        Resolve Conflict...
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {issue.id === 'branch-divergence' && (
+            <div className="flex flex-col gap-3">
+              {(issue.rawState?.diverged || []).map((d, idx) => {
+                const isConfirming = confirmDivergedBranch === d.branchName;
+                const cmdString = `# Sync branch '${d.branchName}' with default branch
+git checkout ${d.branchName}
+git fetch origin
+git merge origin/${defaultBranch}
+
+# If conflicts appear during merge:
+# Resolve conflict blocks, then stage and commit:
+git add .
+git commit -m "chore: sync ${d.branchName} with ${defaultBranch}"
+git push origin ${d.branchName}`;
+
+                return (
+                  <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2">
+                    <span className="font-bold text-amber-400 text-[10px]">Branch: {d.branchName} ({d.behindBy} commits behind {defaultBranch})</span>
+                    
+                    {isConfirming ? (
+                      <div className="flex flex-col gap-3 bg-[#030712] p-3 rounded-xl border border-white/[0.08] mt-1 text-[10px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Terminal Commands</span>
+                          <button
+                            onClick={() => copyLocalText(cmdString, `sync-branch-cmd-${d.branchName}`)}
+                            className="text-[#00D4FF] hover:underline text-[9px] font-semibold cursor-pointer"
+                          >
+                            {copiedTextKey === `sync-branch-cmd-${d.branchName}` ? 'Copied!' : 'Copy Commands'}
+                          </button>
+                        </div>
+                        <pre className="p-2.5 bg-[#010409] rounded text-[9px] font-mono text-[#00D4FF] leading-relaxed overflow-x-auto select-all">
+                          <code>{cmdString}</code>
+                        </pre>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              handleScanRepo();
+                            }}
+                            className="px-3 py-1.5 bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 rounded font-bold text-[9px] cursor-pointer"
+                          >
+                            Verify After Running
+                          </button>
+                          <button
+                            onClick={() => setConfirmDivergedBranch(null)}
+                            className="px-3 py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded font-semibold text-[9px] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDivergedBranch(d.branchName)}
+                        className="px-3 py-1.5 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#00D4FF] rounded text-[10px] font-bold cursor-pointer w-fit"
+                      >
+                        Sync This Branch...
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {issue.id === 'stale-branches' && (
+            <div className="flex flex-col gap-3">
+              {(issue.rawState?.stale || []).map((s, idx) => (
+                <StaleBranchCardItem
+                  key={idx}
+                  s={s}
+                  idx={idx}
+                  connectedRepo={connectedRepo}
+                  currentUser={currentUser}
+                  hasWriteAccess={hasWriteAccess}
+                  handleScanRepo={handleScanRepo}
+                />
+              ))}
+            </div>
+          )}
+
+          {issue.id === 'large-files-tracked' && (
+            <div className="flex flex-col gap-3">
+              {(issue.rawState?.largeFiles || []).map((f, idx) => {
+                const cmdString = `# Step 1 — untrack file from git index without deleting it locally
+git rm --cached ${f.path}
+
+# Step 2 — ignore it to prevent committing it again
+echo "${f.path.split('/').pop()}" >> .gitignore
+
+# Step 3 — commit the index change
+git add .gitignore
+git commit -m "fix: untrack large file ${f.path.split('/').pop()} from index"
+git push origin ${defaultBranch}
+
+# (Optional) Step 4 — rewrite history to purge files from old commits:
+# WARNING: rewrites history, requires teammates to re-clone!
+git filter-branch --force --index-filter \\
+  'git rm --cached --ignore-unmatch ${f.path}' \\
+  --prune-empty --tag-name-filter cat -- --all`;
+
+                return (
+                  <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-semibold text-slate-200 font-mono truncate mr-2">{f.path}</span>
+                      <span className="text-rose-400 font-bold">{(f.size / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-normal font-sans">
+                      To properly untrack and remove this file from your Git history (reducing repository size), execute the following commands in your local machine terminal:
+                    </p>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Terminal Commands</span>
+                      <button
+                        onClick={() => copyLocalText(cmdString, `large-file-cmd-${idx}`)}
+                        className="text-[#00D4FF] hover:underline text-[9px] font-semibold cursor-pointer"
+                      >
+                        {copiedTextKey === `large-file-cmd-${idx}` ? 'Copied!' : 'Copy Commands'}
+                      </button>
+                    </div>
+                    <pre className="p-2.5 bg-[#010409] rounded text-[9px] font-mono text-[#00D4FF] leading-relaxed overflow-x-auto select-all max-h-48 overflow-y-auto">
+                      <code>{cmdString}</code>
+                    </pre>
+                  </div>
+                );
+              })}
+              <button
+                onClick={handleScanRepo}
+                className="w-full py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-[#00D4FF] text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                I Have Done This — Verify Now
+              </button>
+            </div>
+          )}
+
+          {issue.id === 'cross-branch-collisions' && (
+            <div className="flex flex-col gap-3">
+              {(issue.rawState?.collisions || []).map((c, idx) => {
+                const prsStr = c.prNumbers.join(' and PR #');
+                const isConfirming = confirmCollisionIdx === idx;
+                const isThisCollisionFixing = isFixingThis;
+
+                return (
+                  <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2 text-[10px]">
+                    <span className="font-bold text-amber-400 font-sans">Overlapping File: {c.filePath}</span>
+                    <p className="text-slate-400 font-sans">
+                      This file is concurrently modified in open PR #{prsStr}. Merging one will conflict the other.
+                    </p>
+                    <div className="bg-slate-900 p-2.5 rounded border border-white/[0.03] text-[9px]">
+                      <strong>Recommended merge plan:</strong> Merge the older PR first, then rebase the remaining branch:
+                      <pre className="text-emerald-400 font-mono mt-1 overflow-x-auto select-all">
+{`git checkout SECOND_PR_BRANCH_NAME
+git fetch origin
+git rebase origin/${defaultBranch}
+# Fix conflicting blocks in: ${c.filePath}
+git push origin SECOND_PR_BRANCH_NAME --force-with-lease`}
+                      </pre>
+                    </div>
+
+                    {isThisCollisionFixing ? (
+                      renderProgressSection()
+                    ) : isConfirming ? (
+                      <div className="bg-amber-500/5 border border-amber-500/20 p-2.5 rounded-lg flex flex-col gap-2 mt-1">
+                        <span className="text-amber-400 font-bold text-[9px] uppercase tracking-wider font-mono">Confirm GitHub Comment Posting</span>
+                        <p className="text-slate-400 text-[10px] leading-normal font-sans">
+                          This will post a real warning comment on PR #{c.prNumbers[0]} and PR #{c.prNumbers[1]} naming both pull requests and suggesting coordination. Continue?
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setConfirmCollisionIdx(null);
+                              executePOSTFix(issue, 'post-pr-comment', { 
+                                prNumber1: c.prNumbers[0], 
+                                prNumber2: c.prNumbers[1], 
+                                collidingFiles: [c.filePath]
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-[#00E38C] text-slate-950 rounded font-bold text-[9px] cursor-pointer"
+                          >
+                            Yes, Post Coordination Comments
+                          </button>
+                          <button
+                            onClick={() => setConfirmCollisionIdx(idx)}
+                            className="px-2.5 py-1 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded font-semibold text-[9px] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmCollisionIdx(idx)}
+                        disabled={isReadOnly}
+                        className="px-2.5 py-1 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-white rounded text-[9px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={isReadOnly ? "Requires repository write permission scopes to auto-fix" : ""}
+                      >
+                        Post Coordination Comment on Both PRs
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {issue.id === 'ci-pipeline-failure' && (
+            <div className="flex flex-col gap-3">
+              <div className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-semibold text-slate-200">Failed Job: {issue.rawState?.failedJob}</span>
+                  <span className="text-rose-400 font-bold font-mono text-[9px]">conclusion: {issue.rawState?.conclusion}</span>
+                </div>
+                <p className="text-[10px] text-slate-400">Failed step target: <strong>{issue.rawState?.failedStep}</strong></p>
+              </div>
+
+              {ciDiagnostics[issue.rawState?.runId] ? (
+                <div className="bg-[#030712] rounded-xl border border-white/[0.05] p-3 flex flex-col gap-2 text-left">
+                  <span className="text-[9px] font-bold text-rose-400 uppercase tracking-widest flex items-center gap-1 font-mono">
+                    <ShieldAlert size={12} /> Failure Log Diagnostic Window ({ciDiagnostics[issue.rawState?.runId].jobName})
+                  </span>
+                  <div className="flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar border border-white/[0.04] p-2 bg-black/40 rounded-lg font-mono text-[9px] leading-relaxed text-slate-300">
+                    {ciDiagnostics[issue.rawState?.runId].snippets?.length > 0 ? (
+                      ciDiagnostics[issue.rawState?.runId].snippets.map((snip, idx) => (
+                        <div key={idx} className="border-b border-white/[0.03] pb-2 last:border-b-0">
+                          <div className="text-slate-500 font-bold text-[8px] mb-1">Lines {snip.startLine} - {snip.endLine}:</div>
+                          <pre className="whitespace-pre-wrap text-[#ffd166] select-all bg-black/20 p-1 rounded font-mono">{snip.content}</pre>
+                        </div>
+                      ))
+                    ) : (
+                      <span className="italic text-slate-500 text-[10px] font-sans">No failed log markers matched standard filters (ERROR/FAILED/AssertionError).</span>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => diagnoseCIFailure(issue.rawState?.runId)}
+                  disabled={activeDiagnosingJobId === issue.rawState?.runId}
+                  className="w-full py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-[#00D4FF] text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {activeDiagnosingJobId === issue.rawState?.runId ? (
+                    <><Loader2 size={12} className="animate-spin" /> Diagnosing Logs...</>
+                  ) : (
+                    <><Code size={12} /> Diagnose CI Failure</>
+                  )}
+                </button>
+              )}
+
+              {isFixingThis ? (
+                renderProgressSection()
+              ) : showConfirm ? (
+                <div className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-3 text-[11px]">
+                  <span className="font-bold text-amber-400 font-mono">Confirm Re-run Workflow Jobs</span>
+                  <p className="text-slate-400 leading-relaxed font-sans">
+                    This will request a re-run of only the failed jobs in this Action run via the GitHub API and poll execution progress in real-time. Continue?
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setShowConfirm(false);
+                        executePOSTFix(issue, 'rerun-ci', { runId: issue.rawState?.runId });
+                      }}
+                      className="px-3 py-1.5 bg-[#00E38C] text-slate-950 font-bold rounded text-[10px] cursor-pointer"
+                    >
+                      Confirm Yes, Re-run Jobs
+                    </button>
+                    <button
+                      onClick={() => setShowConfirm(false)}
+                      className="px-3 py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded text-[10px] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowConfirm(true)}
+                  disabled={isReadOnly}
+                  className="w-full py-1.5 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={isReadOnly ? "Requires repository write permission scopes to auto-fix" : ""}
+                >
+                  <Wand2 size={12} /> Re-run Failed Jobs
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+

@@ -150,7 +150,12 @@ router.get('/me', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    res.json({ user });
+    res.json({
+      user: {
+        ...user,
+        githubScopes: req.user.githubScopes || ''
+      }
+    });
   } catch (err) {
     console.error('[Auth] Me error:', err.message);
     res.status(500).json({ error: 'Failed to fetch user profile.' });
@@ -206,19 +211,22 @@ router.put('/profile', authenticate, async (req, res) => {
   }
 });
 
-// ── GET /api/auth/github ────────────────────────────────────
-// Redirects user to GitHub OAuth authorization page
-router.get('/github', (_req, res) => {
+router.get('/github', (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const callbackUrl = process.env.GITHUB_CALLBACK_URL;
+  const forceReauth = req.query.force_reauth === 'true';
 
   if (!clientId) {
     return res.status(500).json({ error: 'GitHub OAuth is not configured. Set GITHUB_CLIENT_ID in .env' });
   }
 
-  const scope = 'user:email,repo,read:org';
-  // Omit explicit `redirect_uri` so GitHub uses the app's registered callback URL.
-  const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=${scope}`;
+  const scope = 'repo,read:user,user:email';
+  let url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=${encodeURIComponent(scope)}`;
+
+  if (forceReauth) {
+    url += '&prompt=consent';
+    return res.redirect(url);
+  }
 
   res.json({ url });
 });
@@ -276,6 +284,14 @@ router.get('/github/callback', async (req, res) => {
     // Hash dummy password to satisfy prisma required passwordHash field
     const dummyHash = await bcrypt.hash(`github-oauth-${ghUser.id}`, 12);
 
+    const scopesResponse = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const scopes = scopesResponse.headers.get('X-OAuth-Scopes') || '';
+    req.session = req.session || {};
+    req.session.tokenScopes = scopes;
+    req.session.hasWriteAccess = scopes.includes('repo');
+
     // Upsert user in database
     const user = await prisma.user.upsert({
       where: { githubId: String(ghUser.id) },
@@ -294,7 +310,7 @@ router.get('/github/callback', async (req, res) => {
       },
     });
 
-    const token = generateToken(user);
+    const token = generateToken(user, scopes);
 
     // Redirect back to frontend with token
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';

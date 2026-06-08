@@ -14,16 +14,24 @@ function ensureSecret(res) {
 export function authenticate(req, res, next) {
   if (!ensureSecret(res)) return;
 
+  let token = null;
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
+
+  if (!token) {
     return res.status(401).json({ error: 'Authentication required. Please provide a valid token.' });
   }
 
-  const token = authHeader.split(' ')[1];
-
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded; // { id, email, name }
+    req.user = decoded; // { id, email, name, githubScopes }
+    req.session = req.session || {};
+    req.session.tokenScopes = decoded.githubScopes || '';
+    req.session.hasWriteAccess = (decoded.githubScopes || '').includes('repo');
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
@@ -33,9 +41,18 @@ export function authenticate(req, res, next) {
   }
 }
 
-export function generateToken(user) {
+export function generateToken(user, githubScopes = '') {
   if (!ensureSecret()) {
     throw new Error('JWT_SECRET is not configured');
   }
-  return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(
+    { 
+      id: user.id, 
+      email: user.email, 
+      name: user.name, 
+      githubScopes: githubScopes || ''
+    }, 
+    JWT_SECRET, 
+    { expiresIn: '7d' }
+  );
 }

@@ -10,52 +10,35 @@ function formatResetTime(resetTimeSec) {
 /**
  * Core HTTP Fetcher with Auth, Logging, and Error Handling.
  */
-export async function fetchWithAuth(url, token) {
-  const headers = {
-    'Accept': 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-    'User-Agent': 'GitSense-AI'
+export const fetchWithAuth = async (url, token, method = 'GET', body = null) => {
+  const options = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {})
+    },
+    ...(body ? { body: JSON.stringify(body) } : {})
   };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  console.log(`[GitHub API] Calling URL: ${url}`);
   
-  try {
-    const res = await fetch(url, { headers });
-    console.log(`[GitHub API] URL: ${url} -> Status: ${res.status}`);
-
-    // Read body text for logging and error reporting
-    const bodyText = await res.text();
-    console.log(`[GitHub API] URL: ${url} -> Response preview: ${bodyText.substring(0, 200)}`);
-
-    if (res.status === 401) {
-      throw new Error(`GitHub token is invalid or missing for this URL: ${url}`);
-    }
-
-    if (res.status === 403) {
-      const remaining = res.headers.get('x-ratelimit-remaining');
-      if (remaining === '0') {
-        const reset = res.headers.get('x-ratelimit-reset');
-        throw new Error(`GitHub API rate limit exceeded, resets at ${formatResetTime(reset)}`);
-      }
-    }
-
-    if (res.status === 404) {
-      throw new Error(`Resource not found at this URL: ${url}`);
-    }
-
-    if (res.status >= 400) {
-      throw new Error(`GitHub API error status code ${res.status} at this URL: ${url}`);
-    }
-
-    return JSON.parse(bodyText);
-  } catch (err) {
-    console.error(`[GitHub API] Error calling URL: ${url} -> ${err.message}`);
-    throw err;
+  const response = await fetch(url, options);
+  
+  if (response.status === 204) return { success: true };
+  if (response.status === 401) throw new Error('GitHub token invalid');
+  if (response.status === 403) {
+    const remaining = response.headers.get('X-RateLimit-Remaining');
+    if (remaining === '0') throw new Error('GitHub API rate limit exceeded');
+    throw new Error('Token lacks write permission — needs repo scope');
   }
-}
+  if (response.status === 404) throw new Error('Resource not found: ' + url);
+  if (response.status >= 400) {
+    const err = await response.json();
+    throw new Error(err.message || 'GitHub API error ' + response.status);
+  }
+  
+  return response.json();
+};
 
 /**
  * Sleep helper for throttling.
@@ -443,6 +426,49 @@ export async function detectCIFailures(owner, repo, token, defaultBranch) {
 }
 
 /**
+ * Independent Large Files Detector.
+ */
+export async function detectLargeFiles(owner, repo, token, defaultBranch) {
+  try {
+    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+    if (!treeRes || !Array.isArray(treeRes.tree)) {
+      return null;
+    }
+
+    const largeFiles = treeRes.tree.filter(item => item.type === 'blob' && item.size && item.size > 5 * 1024 * 1024);
+    if (largeFiles.length === 0) {
+      return null;
+    }
+
+    return {
+      id: 'large-files-tracked',
+      category: 'Repository Quality',
+      severity: 'warning',
+      title: `${largeFiles.length} Large File(s) Tracked in Git`,
+      affectedResource: largeFiles.map(f => f.path).join(', '),
+      manualFixCommands: largeFiles.map(f => 
+        `# Untrack large file: ${f.path}\n` +
+        `git rm --cached ${f.path}\n` +
+        `echo "${f.path.split('.').pop() || ''}" >> .gitignore`
+      ),
+      fixType: 'remove_large_file',
+      fixRiskLevel: 'Medium - Requires manual history rewriting',
+      fixDescription: 'Remove large binary files from git index and add them to .gitignore.',
+      isFixed: false,
+      rawState: { 
+        largeFiles: largeFiles.map(f => ({
+          path: f.path,
+          size: f.size
+        }))
+      }
+    };
+  } catch (err) {
+    console.warn(`[Detector] Large files check skipped due to error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Main Repository Scan Orchestrator.
  */
 export async function scanRepository(owner, repo, token) {
@@ -479,7 +505,8 @@ export async function scanRepository(owner, repo, token) {
     detectBranchDivergence(owner, repo, token, defaultBranch),
     detectStaleBranches(owner, repo, token, defaultBranch),
     detectBranchCollisions(owner, repo, token),
-    detectCIFailures(owner, repo, token, defaultBranch)
+    detectCIFailures(owner, repo, token, defaultBranch),
+    detectLargeFiles(owner, repo, token, defaultBranch)
   ]);
 
   const rawIssues = [];
@@ -505,6 +532,11 @@ export async function scanRepository(owner, repo, token) {
     defaultBranch,
     totalBranchesChecked,
     totalPRsChecked,
-    scanned: true
+    scanned: true,
+    permissions: {
+      push: metadata.permissions ? metadata.permissions.push : true,
+      pull: metadata.permissions ? metadata.permissions.pull : true,
+      admin: metadata.permissions ? metadata.permissions.admin : false
+    }
   };
 }

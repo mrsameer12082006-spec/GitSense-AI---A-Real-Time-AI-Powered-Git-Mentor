@@ -4,6 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import session from 'express-session';
 import { createServer } from 'http';
 import { Server as SocketIO } from 'socket.io';
 import path from 'path';

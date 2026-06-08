@@ -38,7 +38,7 @@ Developers hesitate before using:
 - `git reset`
 - `git push --force`
 
-because they fear damaging repositories.
+because they fear damaging repositories
 
 ---
 

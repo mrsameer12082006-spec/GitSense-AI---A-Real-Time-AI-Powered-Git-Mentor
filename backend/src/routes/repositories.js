@@ -6,7 +6,18 @@ import ingestionService from '../services/ingestion.js';
 import localGitService from '../services/localGit.js';
 import aiService from '../services/ai.js';
 import axios from 'axios';
-import { scanRepository } from '../services/githubScanner.js';
+import { scanRepository, fetchWithAuth } from '../services/githubScanner.js';
+import {
+  fixMissingGitignore,
+  fixStaleBranch,
+  fixBranchCollisions,
+  triggerRerunFailedJobs,
+  diagnoseCiFailureLog,
+  createGitignore,
+  deleteStaleBranch,
+  postCollisionComment,
+  rerunFailedJobs
+} from '../services/fixEngine.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -276,7 +287,10 @@ router.post('/scan', async (req, res) => {
     }
 
     const result = await scanRepository(owner, repo, finalToken);
-    return res.status(200).json(result);
+    return res.status(200).json({
+      ...result,
+      hasWriteAccess: req.session ? !!req.session.hasWriteAccess : false
+    });
   } catch (err) {
     console.error(`[Scan API] Uncaught scan error:`, err);
     return res.status(500).json({ error: err.message || 'Internal server error during repository scan' });
@@ -303,10 +317,186 @@ router.post('/:id/scan', async (req, res) => {
 
     console.log(`[Scan Compatibility API] Starting scan for repository ${repository.fullName}`);
     const result = await scanRepository(repository.owner, repository.name, token);
-    return res.status(200).json(result);
+    return res.status(200).json({
+      ...result,
+      hasWriteAccess: req.session ? !!req.session.hasWriteAccess : false
+    });
   } catch (err) {
     console.error(`[Scan Compatibility API] Error during scan:`, err);
     return res.status(500).json({ error: err.message || 'Internal server error during repository scan' });
+  }
+});
+
+// ── GET /api/repo/fix (SSE Progress Stream) ──────────────────
+router.get('/fix', async (req, res) => {
+  const { owner, repo, token, issueId, action, defaultBranch, branchName, prNumber1, prNumber2, collidingFiles, runId } = req.query;
+
+  console.log(`[Fix SSE API] Start fix stream for issueId=${issueId}, action=${action}`);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const sendSSE = (step, status, message) => {
+    res.write(`data: ${JSON.stringify({ step, status, message })}\n\n`);
+  };
+
+  const finalToken = token || process.env.GITHUB_TOKEN;
+
+  if (!owner || !repo || !finalToken) {
+    sendSSE('error', 'failed', 'Missing owner, repo, or token query parameters.');
+    res.end();
+    return;
+  }
+
+  try {
+    let fixResult = null;
+
+    if (action === 'create_gitignore') {
+      fixResult = await fixMissingGitignore(owner, repo, finalToken, defaultBranch || 'main', sendSSE);
+    } else if (action === 'delete_stale_branch') {
+      fixResult = await fixStaleBranch(owner, repo, finalToken, defaultBranch || 'main', branchName, sendSSE);
+    } else if (action === 'coordinate_collisions') {
+      let files = [];
+      try {
+        files = JSON.parse(collidingFiles || '[]');
+      } catch (_) {}
+      fixResult = await fixBranchCollisions(owner, repo, finalToken, prNumber1, prNumber2, files, sendSSE);
+    } else if (action === 'rerun_ci_jobs') {
+      fixResult = await triggerRerunFailedJobs(owner, repo, finalToken, runId, sendSSE);
+    } else {
+      sendSSE('error', 'failed', `Unsupported or unrecognized auto-fix action: ${action}`);
+      res.end();
+      return;
+    }
+
+    if (fixResult && fixResult.success) {
+      sendSSE('done', 'complete', fixResult.verification || 'Fix applied and verified successfully!');
+    } else {
+      sendSSE('done', 'failed', fixResult?.error || 'Fix execution failed verification.');
+    }
+  } catch (err) {
+    console.error(`[Fix SSE API] Stream error:`, err);
+    sendSSE('done', 'failed', err.message || 'Server error occurred during fix execution.');
+  } finally {
+    res.end();
+  }
+});
+
+// ── POST /api/repo/fix ──────────────────
+router.post('/fix', async (req, res) => {
+  try {
+    const { owner, repo, token, fixType, params } = req.body;
+    const finalToken = token || process.env.GITHUB_TOKEN;
+
+    console.log(`[Fix POST API] Received request for fixType=${fixType} on ${owner}/${repo}`);
+
+    if (!owner || !repo || !finalToken) {
+      return res.status(400).json({ success: false, error: 'owner, repo, and token are required.' });
+    }
+
+    let result = null;
+
+    switch (fixType) {
+      case 'gitignore': {
+        const projectType = params?.projectType;
+        result = await createGitignore(owner, repo, finalToken, projectType);
+        break;
+      }
+      case 'delete-branch': {
+        const branchName = params?.branchName;
+        if (!branchName) {
+          return res.status(400).json({ success: false, error: 'branchName parameter is required.' });
+        }
+        result = await deleteStaleBranch(owner, repo, finalToken, branchName);
+        break;
+      }
+      case 'sync-branch': {
+        const defaultBranch = params?.defaultBranch || 'main';
+        const branchName = params?.branchName;
+        result = {
+          success: true,
+          steps: ['Generating manual sync commands'],
+          verificationResult: {
+            message: 'Manual sync commands generated.',
+            commands: [
+              `git checkout ${branchName}`,
+              `git fetch origin`,
+              `git merge origin/${defaultBranch}`,
+              `git push origin ${branchName}`
+            ]
+          }
+        };
+        break;
+      }
+      case 'post-pr-comment': {
+        const { prNumber1, prNumber2, collidingFiles } = params || {};
+        if (!prNumber1 || !prNumber2) {
+          return res.status(400).json({ success: false, error: 'prNumber1 and prNumber2 are required.' });
+        }
+        let files = [];
+        if (typeof collidingFiles === 'string') {
+          try {
+            files = JSON.parse(collidingFiles);
+          } catch (_) {}
+        } else if (Array.isArray(collidingFiles)) {
+          files = collidingFiles;
+        }
+        result = await postCollisionComment(owner, repo, finalToken, prNumber1, prNumber2, files);
+        break;
+      }
+      case 'rerun-ci': {
+        const runId = params?.runId;
+        if (!runId) {
+          return res.status(400).json({ success: false, error: 'runId parameter is required.' });
+        }
+        result = await rerunFailedJobs(owner, repo, finalToken, runId);
+        break;
+      }
+      default:
+        return res.status(400).json({ success: false, error: `Unsupported fixType: ${fixType}` });
+    }
+
+    return res.status(200).json({
+      success: true,
+      steps: result.steps || [],
+      verificationResult: result.verificationResult || {},
+      ...result
+    });
+
+  } catch (err) {
+    console.error(`[Fix POST API] Error executing fix:`, err);
+    return res.status(400).json({
+      success: false,
+      error: err.message || 'Error occurred during fix execution.'
+    });
+  }
+});
+
+// ── GET /api/repo/ci-diagnostics ──────────────────────────────
+router.get('/ci-diagnostics', async (req, res) => {
+  try {
+    const { owner, repo, token, runId } = req.query;
+    if (!owner || !repo || !runId) {
+      return res.status(400).json({ error: 'owner, repo, and runId query params are required.' });
+    }
+    const finalToken = token || process.env.GITHUB_TOKEN;
+    
+    // Fetch jobs list for the run to locate the failed job ID
+    const jobsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs`;
+    const jobsRes = await fetchWithAuth(jobsUrl, finalToken);
+    const failedJob = (jobsRes.jobs || []).find(j => j.conclusion === 'failure');
+    
+    if (!failedJob) {
+      return res.status(404).json({ error: 'No failed jobs found for this workflow run.' });
+    }
+    
+    const snippets = await diagnoseCiFailureLog(owner, repo, finalToken, failedJob.id);
+    return res.status(200).json({ snippets, jobName: failedJob.name });
+  } catch (err) {
+    console.error(`[Diagnostics API] Error:`, err);
+    return res.status(500).json({ error: err.message || 'Failed to fetch job failure diagnostics.' });
   }
 });
 
