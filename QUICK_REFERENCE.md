@@ -1,45 +1,51 @@
 # GitSense.AI - Quick Reference Guide
 
-## Files Modified (2 files)
+## Files Modified (5 files)
 
 ### 1. `frontend/src/sections/SettingsPage.jsx` 
 **Status:** ✅ Completely Rewritten  
-**Lines Changed:** ~150 → ~250 (simplified but enhanced UX)
-
-#### Before
-- ❌ Gemini model selection
-- ❌ Temperature slider
-- ❌ Safe Mode safeguards
-- ❌ Notification settings
-
-#### After  
-- ✅ Account Settings (name, email, GitHub, Edit Profile button)
-- ✅ Appearance (Dark Theme toggle)
-- ✅ App Preferences (Git Tips, Repo Insights - localStorage only)
-- ✅ Danger Zone (Clear Data, Logout)
-
----
+- Account Settings, Dark Theme toggle, App preferences persistence.
 
 ### 2. `frontend/src/sections/ProfilePage.jsx`
-**Status:** ✅ Enhanced with Error Handling  
-**Added Features:**
-- ✅ Loading spinner while fetching profile
-- ✅ Error messages in styled boxes
-- ✅ Success messages after save
-- ✅ Form validation (name/email required)
-- ✅ Disabled email field (read-only)
-- ✅ Disabled button during save
-- ✅ Graceful session expiration handling
+**Status:** ✅ Database-Synced Profile Edits  
+- Full CRUD for name/email/githubLink with validation and loading spinners.
+
+### 3. `backend/src/routes/github.js`
+**Status:** ✅ OAuth-Free Endpoint Extension  
+- Added `POST /api/github/link-profile` for username/profile-URL link.
+- Updated `GET /api/github/status` for username status connectivity.
+
+### 4. `frontend/src/sections/Dashboard.jsx`
+**Status:** ✅ Left Sidebar Lookup Form  
+- Removed popup-based OAuth authorization block.
+- Implemented glassmorphic profile input form and auto-fetching repositories list.
+
+### 5. `frontend/src/sections/VisualizerPage.jsx`
+**Status:** ✅ Visualizer Left Sidebar Integration & Bug Fix  
+- Replicated sidebar profile lookup and scrollable repo listing.
+- Fixed blank screen runtime crash by importing missing `Lock` and `RefreshCw` icons.
 
 ---
 
-## Backend Endpoints (Already Existed)
+## Backend Endpoints
 
 ### ✅ GET /api/auth/me
 Returns current user profile including `githubLink`
 
 ### ✅ PUT /api/auth/profile  
 Updates user profile (name, githubLink) in Neon PostgreSQL
+
+### ✅ POST /api/github/link-profile
+Links GitHub profile by username or URL, decoupling OAuth flow dependencies.
+
+### ✅ GET /api/github/status
+Checks connection status (returns `connected: true` if username is set).
+
+### ✅ GET /api/github/repos
+Fetches public repositories using linked username (utilizing optional `GITHUB_TOKEN` backend rate-limit expansion).
+
+### ✅ POST /api/github/import
+Triggers background repo cloning and vectorization indexing.
 
 ---
 
@@ -96,7 +102,7 @@ User table:
 ```bash
 # Start servers
 cd backend && npm run dev        # Port 5000
-cd frontend && npm run dev       # Port 5000 (auto-falls back to 5001 if run together)
+cd frontend && npm run dev       # Port 5001
 
 # Browser tests
 [ ] Settings page loads at /#settings
@@ -115,6 +121,10 @@ cd frontend && npm run dev       # Port 5000 (auto-falls back to 5001 if run tog
 [ ] Success message appears on save
 [ ] Page refresh shows persisted changes
 [ ] Logout button works
+[ ] Left Sidebar shows GitHub Profile connection form
+[ ] Entering username/URL links profile and displays public repositories
+[ ] Clicking "Import" clones/ingests repository in background
+[ ] Visualization page displays commits and branches without blank page crash
 ```
 
 ---
