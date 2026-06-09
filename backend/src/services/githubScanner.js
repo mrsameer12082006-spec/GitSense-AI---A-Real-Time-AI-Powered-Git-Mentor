@@ -1,4 +1,9 @@
 import aiService from './ai.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 /**
  * Clean human-readable time formatter for rate limit reset.
@@ -48,11 +53,81 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 /**
  * Independent Gitignore Detector.
  */
-export async function detectMissingGitignore(owner, repo, token) {
+async function hasGitignoreLocally(dir) {
   try {
-    const res = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/contents/.gitignore`, token);
-    console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists.`);
-    return null; // File exists, no issue
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'dist') {
+        continue;
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = await hasGitignoreLocally(fullPath);
+        if (found) return true;
+      } else if (entry.name === '.gitignore') {
+        return true;
+      }
+    }
+  } catch (e) {
+    // Ignore read errors
+  }
+  return false;
+}
+
+/**
+ * Independent Gitignore Detector.
+ */
+export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main') {
+  try {
+    // 1. Check if the file exists in the local workspace clone first (recursively, handling subdirectories)
+    const repos = await prisma.repository.findMany({
+      where: { owner, name: repo }
+    });
+    
+    let existsLocally = false;
+    for (const r of repos) {
+      const localRepoPath = path.join(process.cwd(), 'data', 'repos', r.id);
+      if (await hasGitignoreLocally(localRepoPath)) {
+        existsLocally = true;
+        break;
+      }
+    }
+    
+    if (existsLocally) {
+      console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists locally.`);
+      return null; // File exists locally, no issue
+    }
+
+    // 2. Fall back to checking GitHub API recursively
+    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+    const hasGitignoreOnGithub = Array.isArray(treeRes?.tree) && treeRes.tree.some(item => 
+      item.type === 'blob' && (item.path === '.gitignore' || item.path.endsWith('/.gitignore'))
+    );
+
+    if (hasGitignoreOnGithub) {
+      console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists on GitHub.`);
+      return null; // File exists on GitHub, no issue
+    }
+
+    console.log(`[Detector] Missing Gitignore -> Checked local & GitHub tree. Gitignore is missing.`);
+    return {
+      id: 'missing-gitignore',
+      category: 'Repository Quality',
+      severity: 'warning',
+      title: 'Missing .gitignore File',
+      affectedResource: '.gitignore',
+      manualFixCommands: [
+        `touch .gitignore`,
+        `echo "node_modules/\n.env" >> .gitignore`,
+        `git add .gitignore`,
+        `git commit -m "Add .gitignore"`
+      ],
+      fixType: 'create_gitignore',
+      fixRiskLevel: 'Safe',
+      fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
+      isFixed: false,
+      rawState: { status: 404 }
+    };
   } catch (err) {
     if (err.message.includes('not found') || err.message.includes('404')) {
       console.log(`[Detector] Missing Gitignore -> 404 confirmed. Reporting issue.`);
@@ -471,7 +546,7 @@ export async function detectLargeFiles(owner, repo, token, defaultBranch) {
 /**
  * Main Repository Scan Orchestrator.
  */
-export async function scanRepository(owner, repo, token) {
+export async function scanRepository(owner, repo, token, targetIssueType = null) {
   const startTime = new Date();
   console.log(`\n=================== SCAN STARTED ===================`);
   console.log(`Timestamp: ${startTime.toISOString()}`);
@@ -480,6 +555,7 @@ export async function scanRepository(owner, repo, token) {
   if (token) {
     console.log(`Token Prefix: ${token.substring(0, 10)}...`);
   }
+  console.log(`Target Issue Type: ${targetIssueType || 'ALL'}`);
   console.log(`====================================================\n`);
 
   // Call Repo Metadata
@@ -494,20 +570,56 @@ export async function scanRepository(owner, repo, token) {
     totalBranchesChecked = branches.length;
     const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=1`, token);
     totalPRsChecked = prs.length;
-  } catch (e) {
-    // Ignore stats fails
+  } catch (err) {
+    // Continue if stats fails
   }
 
-  // Run all detectors in parallel using Promise.allSettled
-  const results = await Promise.allSettled([
-    detectMissingGitignore(owner, repo, token),
-    detectMergeConflicts(owner, repo, token),
-    detectBranchDivergence(owner, repo, token, defaultBranch),
-    detectStaleBranches(owner, repo, token, defaultBranch),
-    detectBranchCollisions(owner, repo, token),
-    detectCIFailures(owner, repo, token, defaultBranch),
-    detectLargeFiles(owner, repo, token, defaultBranch)
-  ]);
+  // Construct target promises
+  const promises = [];
+  
+  if (!targetIssueType || targetIssueType === 'missing-gitignore') {
+    promises.push(detectMissingGitignore(owner, repo, token, defaultBranch));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'pr-merge-conflicts') {
+    promises.push(detectMergeConflicts(owner, repo, token));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'branch-divergence') {
+    promises.push(detectBranchDivergence(owner, repo, token, defaultBranch));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'stale-branches') {
+    promises.push(detectStaleBranches(owner, repo, token, defaultBranch));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'cross-branch-collisions') {
+    promises.push(detectBranchCollisions(owner, repo, token));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'ci-pipeline-failure') {
+    promises.push(detectCIFailures(owner, repo, token, defaultBranch));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  if (!targetIssueType || targetIssueType === 'large-files-tracked') {
+    promises.push(detectLargeFiles(owner, repo, token, defaultBranch));
+  } else {
+    promises.push(Promise.resolve(null));
+  }
+
+  const results = await Promise.allSettled(promises);
 
   const rawIssues = [];
   results.forEach((res, idx) => {

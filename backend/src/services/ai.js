@@ -448,46 +448,81 @@ REPOSITORY CONTEXT END`;
       console.warn('[AIService] No API key, skipping diagnosis');
       return issues.map(i => ({
         ...i,
-        whatIsTheIssue: `Issue detected: ${i.title}`,
-        howThisHappened: `Automated scan found this issue.`
+        whatIsTheIssue: i.title,
+        howThisHappened: `Automated scan found this issue.`,
+        fixPlan: {
+          issue: i.id,
+          severity: i.severity === 'error' ? 'high' : 'medium',
+          actions: []
+        }
       }));
     }
 
-    const systemPrompt = `You are TruGen AI powered by Huma-2 and Hawkeye-1. You are GitSense AI's issue diagnosis writer. You receive structured data about real repository issues detected by automated scans. For each issue, write two sections. Section one called What is the issue should explain the problem in plain English using the exact real values provided in the data object. Section two called How this happened should explain the root cause using the real context provided. Never add technical details not present in the data. Never invent commit hashes, file names, or contributor names. Write for a developer audience by default but if the userLevel field in the data is set to beginner write using plain non-technical analogies.
-
-Output your response as a valid JSON object matching this schema:
+    const systemPrompt = `You are TruGen AI powered by Huma-2 and Hawkeye-1. You are GitSense AI's issue diagnosis and fix plan generator.
+For the given repository issue, you MUST generate a fix plan in this exact JSON format:
 {
-  "diagnoses": [
+  "issue": "<issue_type>",
+  "severity": "low | medium | high",
+  "actions": [
     {
-      "id": "issue-id",
-      "whatIsTheIssue": "...",
-      "howThisHappened": "..."
+      "type": "create_file | update_file | delete_branch | update_settings",
+      "path": "<file path if applicable>",
+      "branch": "<branch name if applicable>",
+      "content": "<file content if applicable>",
+      "message": "<commit message>"
     }
   ]
-}`;
+}
 
-    try {
-      console.log(`[AI] Attempting diagnoseIssues using primary provider: ${primary.name}`);
-      return await this._executeDiagnosisCall(primary, systemPrompt, issues, userLevel);
-    } catch (err) {
-      console.error(`[AI] Primary provider ${primary.name} diagnosis failed:`, err.message);
-      if (fallback) {
-        console.log(`[AI] Reverting/falling back for diagnosis to: ${fallback.name}`);
-        try {
-          return await this._executeDiagnosisCall(fallback, systemPrompt, issues, userLevel);
-        } catch (fallbackErr) {
-          console.error(`[AI] Fallback provider ${fallback.name} diagnosis also failed:`, fallbackErr.message);
+Rules:
+1. Always return a valid JSON object matching this schema. Never return plain text. Never wrap the JSON in markdown code blocks.
+2. Under 'actions', specify the exact actions required to fix this issue:
+   - For missing .gitignore, create a file at path '.gitignore' with a modern boilerplate content matching the project type (Node, Python, Go, etc.) and a clear commit message.
+   - For stale branch, delete the branch by specifying type 'delete_branch' and the branch name.
+   - For other issues, choose the appropriate action types (create_file, update_file, delete_branch, update_settings).
+3. The 'severity' field should be 'low', 'medium', or 'high'.
+4. Do not invent details not present or not logically derived.`;
+
+    const diagnosed = [];
+    for (const issue of issues) {
+      try {
+        console.log(`[AI] Attempting diagnoseIssues for issue ${issue.id} using primary provider: ${primary.name}`);
+        const content = await this._executeFixPlanCall(primary, systemPrompt, issue, userLevel);
+        const fixPlan = JSON.parse(content);
+        diagnosed.push({
+          ...issue,
+          whatIsTheIssue: issue.title || `Issue detected in category: ${issue.category}`,
+          howThisHappened: `GitSense automated scanners identified a repository quality issue: ${issue.title || issue.id}.`,
+          fixPlan
+        });
+      } catch (err) {
+        console.error(`[AI] Primary provider ${primary.name} diagnosis failed for issue ${issue.id}:`, err.message);
+        let fallbackPlan = null;
+        if (fallback) {
+          try {
+            console.log(`[AI] Reverting/falling back for diagnosis to: ${fallback.name}`);
+            const content = await this._executeFixPlanCall(fallback, systemPrompt, issue, userLevel);
+            fallbackPlan = JSON.parse(content);
+          } catch (fallbackErr) {
+            console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
+          }
         }
+        diagnosed.push({
+          ...issue,
+          whatIsTheIssue: issue.title || `Issue detected in category: ${issue.category}`,
+          howThisHappened: `GitSense automated scanners identified a repository quality issue: ${issue.title || issue.id}.`,
+          fixPlan: fallbackPlan || {
+            issue: issue.id,
+            severity: issue.severity === 'error' ? 'high' : 'medium',
+            actions: []
+          }
+        });
       }
-      return issues.map(i => ({
-        ...i,
-        whatIsTheIssue: `Issue detected: ${i.title}`,
-        howThisHappened: `Automated scan found this issue.`
-      }));
     }
+    return diagnosed;
   }
 
-  async _executeDiagnosisCall(config, systemPrompt, issues, userLevel) {
+  async _executeFixPlanCall(config, systemPrompt, issue, userLevel) {
     const headers = { 
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.apiKey}`
@@ -498,7 +533,7 @@ Output your response as a valid JSON object matching this schema:
     
     const messages = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: JSON.stringify({ userLevel, issues }) }
+      { role: 'user', content: JSON.stringify({ userLevel, issue }) }
     ];
 
     const response = await fetch(`${config.baseURL}/chat/completions`, {
@@ -508,7 +543,7 @@ Output your response as a valid JSON object matching this schema:
         model: config.model,
         messages,
         response_format: { type: 'json_object' },
-        temperature: 0.3
+        temperature: 0.2
       })
     });
 
@@ -518,19 +553,7 @@ Output your response as a valid JSON object matching this schema:
     }
 
     const data = await response.json();
-    const content = data.choices[0].message.content;
-
-    const parsed = JSON.parse(content);
-    const diagnosisMap = new Map(parsed.diagnoses.map(d => [d.id, d]));
-
-    return issues.map(issue => {
-      const diag = diagnosisMap.get(issue.id);
-      return {
-        ...issue,
-        whatIsTheIssue: diag ? diag.whatIsTheIssue : `Issue detected: ${issue.title}`,
-        howThisHappened: diag ? diag.howThisHappened : `Automated scan found this issue.`
-      };
-    });
+    return data.choices[0]?.message?.content?.trim() || '{}';
   }
 }
 

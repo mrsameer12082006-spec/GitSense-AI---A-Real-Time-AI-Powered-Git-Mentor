@@ -273,14 +273,15 @@ router.delete('/:id', async (req, res) => {
 // ── POST /api/repos/:id/scan & /api/repo/scan ─────────────────
 router.post('/scan', async (req, res) => {
   try {
-    const { owner, repo, token } = req.body;
+    const { owner, repo, token, issueType } = req.body;
     const finalToken = token || process.env.GITHUB_TOKEN;
     
     console.log(`[Scan API] Start scan:`, {
       owner,
       repo,
       tokenPresent: !!finalToken,
-      tokenPrefix: finalToken ? finalToken.substring(0, 10) + '...' : 'none'
+      tokenPrefix: finalToken ? finalToken.substring(0, 10) + '...' : 'none',
+      issueType: issueType || 'all'
     });
 
     if (!owner || !repo || !finalToken) {
@@ -288,7 +289,7 @@ router.post('/scan', async (req, res) => {
       return res.status(400).json({ error: 'owner, repo, and token are all required.' });
     }
 
-    const result = await scanRepository(owner, repo, finalToken);
+    const result = await scanRepository(owner, repo, finalToken, issueType);
     return res.status(200).json({
       ...result,
       hasWriteAccess: req.session ? !!req.session.hasWriteAccess : false

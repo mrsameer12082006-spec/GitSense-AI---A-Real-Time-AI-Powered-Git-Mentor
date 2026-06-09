@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 // Route imports
 import authRoutes from './src/routes/auth.routes.js';
 import repoRoutes from './src/routes/repositories.js';
+import fixRoutes from './src/routes/fix.js';
 import chatRoutes from './src/routes/chat.js';
 import conversationRoutes from './src/routes/conversations.js';
 import activityRoutes from './src/routes/activity.js';
@@ -123,6 +124,7 @@ app.get('/api/test-ai', async (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/repos', repoRoutes);
 app.use('/api/repo', repoRoutes);
+app.use('/api/fix', fixRoutes);
 app.use('/api/repos', ingestionRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/chat', chatRoutes);
