@@ -943,15 +943,20 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
       <div className="w-[240px] border-r border-white/[0.06] bg-[#060913]/60 flex flex-col h-full select-none flex-shrink-0">
         
         {/* Navigation / Header */}
-        <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between gap-2">
+          <div className="flex flex-col gap-0.5 min-w-0">
             <span className="text-[10px] font-bold tracking-wider text-slate-500 font-mono uppercase">
               WORKSPACE EXPLORER
             </span>
+            {currentPath && (
+              <span className="text-[9px] text-slate-400 truncate font-mono" title={currentPath}>
+                /{currentPath}
+              </span>
+            )}
           </div>
           
           {/* Mode Indicator */}
-          <span className={`text-[8px] px-1.5 py-0.5 rounded-md font-bold select-none border ${
+          <span className={`text-[8px] px-1.5 py-0.5 rounded-md font-bold select-none border shrink-0 ${
             isDemoMode 
               ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#7C5CFF]'
               : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
@@ -969,6 +974,21 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
             </div>
           )}
 
+          {currentPath && (
+            <button
+              onClick={() => {
+                const parts = currentPath.split('/');
+                parts.pop();
+                const parentPath = parts.join('/');
+                fetchContents(parentPath);
+              }}
+              className="w-full text-left px-2.5 py-2 rounded-xl text-xs font-semibold border border-transparent hover:bg-slate-900/50 hover:text-slate-100 text-slate-400 flex items-center gap-2.5 cursor-pointer transition-all"
+            >
+              <Folder size={14} className="shrink-0 text-slate-400 opacity-60" />
+              <span className="truncate">.. (Parent Directory)</span>
+            </button>
+          )}
+
           {loadingTree && contents.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 gap-2 text-slate-500 text-xs">
               <RefreshCw size={16} className="animate-spin text-[#7C5CFF]" />
@@ -982,7 +1002,13 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
               return (
                 <button
                   key={item.path}
-                  onClick={() => loadFileContent(item)}
+                  onClick={() => {
+                    if (item.type === 'dir' || item.type === 'tree') {
+                      fetchContents(item.path);
+                    } else {
+                      loadFileContent(item);
+                    }
+                  }}
                   className={`w-full text-left px-2.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center justify-between cursor-pointer border ${
                     isSelected
                       ? 'bg-slate-800/80 border-[#7C5CFF]/30 text-white'
