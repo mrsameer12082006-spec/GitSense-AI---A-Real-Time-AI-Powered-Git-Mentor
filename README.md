@@ -38,7 +38,7 @@ Developers hesitate before using:
 - `git reset`
 - `git push --force`
 
-because they fear damaging repositories.
+because they fear damaging repositories
 
 ---
 
@@ -195,6 +195,26 @@ The AI also explains:
 ## AI Layer
 - TruGen AI APIs
 - OpenAI-compatible APIs
+
+---
+
+## Development
+
+- **Ports:** Frontend dev server runs on `http://localhost:5000` (auto-falls back to `5001` during simultaneous dev runs). Backend runs on `http://localhost:5000`.
+- **Environment:** Configure backend env in `backend/.env`. The repository includes sensible defaults (`PORT=5000`, `FRONTEND_URL=http://localhost:5000`).
+- **Run locally:**
+
+```bash
+cd backend
+npm install
+npm run dev
+
+cd ../frontend
+npm install
+npm run dev
+```
+
+This ensures the frontend proxy (`/api` -> `http://localhost:5000`) and backend CORS settings align so collaborators won't encounter ECONNREFUSED or auth callback mismatches.
 
 ---
 

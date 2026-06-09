@@ -1,0 +1,162 @@
+import { exec } from 'child_process';
+import util from 'util';
+import path from 'path';
+import fs from 'fs/promises';
+
+const execAsync = util.promisify(exec);
+const REPO_DIR = path.join(process.cwd(), 'data', 'repos');
+
+class LocalGitService {
+  constructor() {
+    this._ensureRepoDir();
+  }
+
+  async _ensureRepoDir() {
+    try {
+      await fs.mkdir(REPO_DIR, { recursive: true });
+    } catch (err) {
+      console.error('[LocalGit] Failed to create repo dir:', err);
+    }
+  }
+
+  getRepoPath(repositoryId) {
+    return path.join(REPO_DIR, repositoryId);
+  }
+
+  async ensureClone(repositoryId, owner, repoName, token) {
+    const repoPath = this.getRepoPath(repositoryId);
+    try {
+      await fs.access(repoPath);
+      // Exists, let's fetch to update
+      try {
+        await execAsync('git fetch --all', { cwd: repoPath });
+      } catch (e) {
+        console.error('[LocalGit] Fetch failed:', e.message);
+      }
+      return repoPath;
+    } catch (err) {
+      // Doesn't exist, clone it
+      const cloneUrl = `https://${token}@github.com/${owner}/${repoName}.git`;
+      await execAsync(`git clone ${cloneUrl} "${repoPath}"`);
+      return repoPath;
+    }
+  }
+
+  async getGitState(repositoryId) {
+    const repoPath = this.getRepoPath(repositoryId);
+    const state = {
+      detachedHead: false,
+      uncommittedChanges: [],
+      stashes: []
+    };
+
+    try {
+      await fs.access(repoPath);
+    } catch {
+      return state; // No clone yet
+    }
+
+    try {
+      // Check Detached HEAD
+      const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath });
+      if (branchOut.trim() === 'HEAD') {
+        state.detachedHead = true;
+        const { stdout: hashOut } = await execAsync('git rev-parse HEAD', { cwd: repoPath });
+        state.headHash = hashOut.trim();
+        try {
+          const { stdout: reflogOut } = await execAsync('git reflog', { cwd: repoPath });
+          const match = reflogOut.match(/checkout: moving from ([^\s]+) to/);
+          if (match) {
+            state.lastBranch = match[1];
+          }
+        } catch (e) {}
+      }
+
+      // Check Uncommitted changes
+      const { stdout: statusOut } = await execAsync('git status --porcelain', { cwd: repoPath });
+      if (statusOut.trim()) {
+        const lines = statusOut.trim().split('\n');
+        for (const line of lines) {
+          if (!line) continue;
+          const statusStr = line.substring(0, 2);
+          const file = line.substring(3);
+          state.uncommittedChanges.push({ file, statusStr });
+        }
+      }
+
+      // Check Stashes
+      try {
+        const { stdout: stashOut } = await execAsync('git stash list --date=unix', { cwd: repoPath });
+        if (stashOut.trim()) {
+          const now = Math.floor(Date.now() / 1000);
+          const lines = stashOut.trim().split('\n');
+          for (const line of lines) {
+            if (!line) continue;
+            const match = line.match(/stash@\{(\d+)\}: ([A-Za-z]+) (.*?): (.*)/);
+            // git stash list might not show unix timestamp easily without custom format.
+            // Let's use standard git log format for stashes
+            // git log --format="%gd: %gs | %ct" -g refs/stash
+          }
+        }
+        
+        // Better stash command
+        const { stdout: stashLog } = await execAsync('git log --format="%gd|%gs|%ct" -g refs/stash', { cwd: repoPath });
+        if (stashLog.trim()) {
+          const now = Math.floor(Date.now() / 1000);
+          const lines = stashLog.trim().split('\n');
+          for (const line of lines) {
+            if (!line) continue;
+            const parts = line.split('|');
+            if (parts.length >= 3) {
+              const [id, msg, tsStr] = parts;
+              const ts = parseInt(tsStr, 10);
+              const daysOld = (now - ts) / (60 * 60 * 24);
+              if (daysOld > 14) {
+                state.stashes.push({ id, message: msg, daysOld: Math.floor(daysOld) });
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+    } catch (err) {
+      console.error('[LocalGit] getGitState error:', err);
+    }
+    return state;
+  }
+
+  async checkoutBranch(repositoryId, branchName) {
+    const repoPath = this.getRepoPath(repositoryId);
+    await execAsync(`git checkout ${branchName}`, { cwd: repoPath });
+  }
+
+  async fetchAndMerge(repositoryId, branchName) {
+    const repoPath = this.getRepoPath(repositoryId);
+    await execAsync(`git fetch origin`, { cwd: repoPath });
+    try {
+      await execAsync(`git merge origin/${branchName}`, { cwd: repoPath });
+      return { success: true };
+    } catch (err) {
+      // If merge conflict
+      if (err.message.includes('CONFLICT')) {
+        const { stdout } = await execAsync('git diff --name-only --diff-filter=U', { cwd: repoPath });
+        const conflictingFiles = stdout.trim().split('\n').filter(Boolean);
+        // Abort the merge so we don't leave repo in bad state
+        await execAsync('git merge --abort', { cwd: repoPath });
+        return { success: false, conflicts: conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async removeLargeFile(repositoryId, filePath) {
+    const repoPath = this.getRepoPath(repositoryId);
+    await execAsync(`git rm --cached "${filePath}"`, { cwd: repoPath });
+    await fs.appendFile(path.join(repoPath, '.gitignore'), `\n${filePath}`);
+    await execAsync(`git add .gitignore`, { cwd: repoPath });
+    await execAsync(`git commit -m "chore: remove large file ${filePath} and ignore"`, { cwd: repoPath });
+    // Note: We're not pushing here unless requested, maybe user wants to push later.
+  }
+}
+
+export default new LocalGitService();

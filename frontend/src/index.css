@@ -9,6 +9,7 @@
   /* Brand Colors */
   --bg-color:      #0B1020;
   --bg-darker:     #060913;
+  --graph-pill-bg: #060913;
   --bg-card:       #0f1629;
   --primary:       #7C5CFF;
   --secondary:     #00D4FF;
@@ -40,6 +41,16 @@
   --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-heading: 'Space Grotesk', -apple-system, sans-serif;
   --font-mono:    'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Graph Specific styling */
+  --graph-bg:            rgba(15, 22, 41, 0.35);
+  --graph-wrapper-bg:    rgba(2, 6, 23, 0.4);
+  --graph-border:         rgba(255, 255, 255, 0.07);
+  --graph-border-hover:   rgba(255, 255, 255, 0.12);
+  --graph-legend-bg:     rgba(6, 9, 19, 0.8);
+  --graph-grid:          rgba(255, 255, 255, 0.025);
+  --graph-node-stroke:   #0B1020;
+  --graph-node-selected-stroke: #F8FAFC;
 }
 
 /* ─── Reset ────────────────────────────────────────── */
@@ -65,7 +76,7 @@ body {
 }
 
 /* ─── Scrollbar ─────────────────────────────────────── */
-::-webkit-scrollbar        { width: 8px; }
+::-webkit-scrollbar        { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track  { background: var(--bg-darker); }
 ::-webkit-scrollbar-thumb  {
   background: rgba(124, 92, 255, 0.35);
@@ -73,6 +84,13 @@ body {
   border: 2px solid var(--bg-darker);
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(124, 92, 255, 0.65); }
+
+/* Firefox Scrollbar Styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 92, 255, 0.35) var(--bg-darker);
+}
+
 
 /* ─── Typography ────────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
@@ -249,7 +267,9 @@ pre, code {
 /* ─── Graph Styles ───────────────────────────────────── */
 .node-circle {
   cursor: pointer;
-  transition: r 0.2s var(--ease-out-expo), stroke-width 0.2s var(--ease-out-expo);
+  transition: r 0.2s var(--ease-out-expo), stroke-width 0.2s var(--ease-out-expo), transform 0.2s var(--ease-out-expo);
+  transform-origin: center;
+  transform-box: fill-box;
 }
 .node-link {
   stroke-dasharray: 5 3;
@@ -320,35 +340,82 @@ pre, code {
   top: 50%;
   transform: translateY(-50%);
   z-index: 30;
-  width: 24px;
-  height: 48px;
+  width: 26px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 22, 41, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #94A3B8;
+  background: rgba(6, 9, 19, 0.85);
+  border: 1px solid rgba(124, 92, 255, 0.15);
+  color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.25s var(--ease-out-expo);
-  backdrop-filter: blur(12px);
+  transition: all 0.3s var(--ease-out-expo);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.sidebar-toggle-btn svg {
+  transition: transform 0.25s var(--ease-out-expo);
 }
 
 .sidebar-toggle-btn:hover {
-  background: rgba(124, 92, 255, 0.15);
-  border-color: rgba(124, 92, 255, 0.4);
-  color: #F8FAFC;
-  box-shadow: 0 0 12px rgba(124, 92, 255, 0.2);
+  background: rgba(124, 92, 255, 0.25);
+  border-color: rgba(0, 212, 255, 0.6);
+  color: #ffffff;
+  box-shadow: 0 0 16px rgba(124, 92, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .sidebar-toggle-btn.left {
   right: -13px;
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 12px 12px 0;
+}
+
+.sidebar-toggle-btn.left:hover {
+  right: -15px;
+  width: 28px;
+}
+
+.sidebar-toggle-btn.left.closed:hover svg {
+  transform: translateX(3px);
+}
+
+.sidebar-toggle-btn.left.open:hover svg {
+  transform: translateX(-3px);
 }
 
 .sidebar-toggle-btn.right {
   left: -13px;
-  border-radius: 8px 0 0 8px;
+  border-radius: 12px 0 0 12px;
 }
+
+.sidebar-toggle-btn.right:hover {
+  left: -15px;
+  width: 28px;
+}
+
+.sidebar-toggle-btn.right.closed:hover svg {
+  transform: translateX(-3px);
+}
+
+.sidebar-toggle-btn.right.open:hover svg {
+  transform: translateX(3px);
+}
+
+/* Light mode overrides for sidebar toggle buttons */
+html.light .sidebar-toggle-btn {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #4B5563;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html.light .sidebar-toggle-btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #111827;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+}
+
 
 /* ─── Mobile Sidebar Overlay ─────────────────────────────────── */
 @media (max-width: 768px) {
@@ -373,3 +440,301 @@ pre, code {
     backdrop-filter: blur(4px);
   }
 }
+
+/* ─── Light Mode Theme ──────────────────────────────── */
+html.light {
+  --bg-color:      #F3F4F6; /* slate-100 */
+  --bg-darker:     #E5E7EB; /* slate-200 */
+  --bg-card:       rgba(255, 255, 255, 0.85);
+  --text:          #111827; /* gray-900 */
+  --text-muted:    #4B5563; /* gray-600 */
+  --text-dark:     #9CA3AF; /* gray-400 */
+  
+  --card-border:         rgba(99, 102, 241, 0.15);
+  --card-border-hover:   rgba(14, 165, 233, 0.40);
+
+  /* Graph Specific styling */
+  --graph-bg:            rgba(255, 255, 255, 0.8);
+  --graph-wrapper-bg:    rgba(255, 255, 255, 0.95);
+  --graph-border:         rgba(0, 0, 0, 0.08);
+  --graph-border-hover:   rgba(0, 0, 0, 0.15);
+  --graph-legend-bg:     rgba(255, 255, 255, 0.9);
+  --graph-grid:          rgba(0, 0, 0, 0.05);
+  --graph-node-stroke:   #FFFFFF;
+  --graph-node-selected-stroke: #7C5CFF;
+  --graph-pill-bg:       #FFFFFF;
+}
+
+/* Light mode adjustments for visual components */
+html.light body {
+  background: var(--bg-color);
+  color: var(--text);
+}
+
+html.light .gitsense-card {
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 4px 20px -5px rgba(99, 102, 241, 0.1),
+              0 0 0 1px rgba(0, 0, 0, 0.04) inset;
+}
+
+html.light .gitsense-card:hover {
+  box-shadow: 0 8px 30px -8px rgba(99, 102, 241, 0.2),
+              0 0 0 1px rgba(14, 165, 233, 0.12) inset;
+}
+
+html.light aside.sidebar-collapsible {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+html.light aside.sidebar-collapsible.sidebar-left {
+  border-right-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light aside.sidebar-collapsible.sidebar-right {
+  border-left-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light header {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light header button, html.light aside.sidebar-collapsible button {
+  color: #4B5563 !important;
+}
+
+html.light header button:hover, html.light aside.sidebar-collapsible button:hover {
+  color: #111827 !important;
+  background-color: rgba(99, 102, 241, 0.08) !important;
+}
+
+html.light .sidebar-inner a {
+  color: #111827 !important;
+}
+
+html.light .text-slate-400 {
+  color: #4B5563 !important;
+}
+
+html.light .text-slate-500 {
+  color: #6B7280 !important;
+}
+
+html.light .text-slate-300 {
+  color: #374151 !important;
+}
+
+html.light .text-slate-100 {
+  color: #111827 !important;
+}
+
+html.light .text-slate-200 {
+  color: #1F2937 !important;
+}
+
+html.light .text-slate-600 {
+  color: #9CA3AF !important;
+}
+
+html.light .bg-slate-950\/40, html.light .bg-slate-950\/80 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 10px rgba(0,0,0,0.02) !important;
+}
+
+html.light input {
+  color: #111827 !important;
+}
+
+html.light input::placeholder {
+  color: #9CA3AF !important;
+}
+
+html.light label {
+  color: #4B5563 !important;
+}
+
+html.light .bg-slate-950\/95 {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.08) !important;
+}
+
+html.light .bg-slate-950 {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-slate-900 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+html.light .bg-\[\#0b1220\]\/70 {
+  background-color: rgba(255, 255, 255, 0.75) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-\[\#0b1220\]\/95 {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .hover\:bg-white\/5:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light nav .absolute.top-full .group\/item:hover > div:first-child {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  color: #111827 !important;
+}
+
+
+html.light .bg-slate-950\/60 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #111827 !important;
+}
+
+html.light .bg-slate-900\/60 {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+  border-color: rgba(0, 0, 0, 0.05) !important;
+  color: #374151 !important;
+}
+
+html.light .bg-slate-900\/90 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-\[\#060913\]\/60 {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+  border-top-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-slate-900\/35 {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-slate-950\/80 {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #1E293B !important;
+}
+
+html.light .bg-slate-900\/50 {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-slate-800\/60 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  color: #374151 !important;
+}
+
+html.light .bg-\[\#7C5CFF\]\/\[0\.07\] {
+  background-color: rgba(124, 92, 255, 0.08) !important;
+  border-color: rgba(124, 92, 255, 0.15) !important;
+}
+
+html.light .bg-\[\#00D4FF\]\/10 {
+  background-color: rgba(0, 212, 255, 0.1) !important;
+}
+
+html.light .bg-slate-950\/20 {
+  background-color: rgba(255, 255, 255, 0.6) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .border-white\/\[0\.08\], 
+html.light .border-white\/\[0\.07\], 
+html.light .border-white\/\[0\.06\], 
+html.light .border-white\/\[0\.05\], 
+html.light .border-white\/\[0\.03\],
+html.light .border-white\/\[0\.1\] {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .hover\:bg-slate-800:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light .bg-\[\#060913\] {
+  background-color: #F3F4F6 !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light .bg-\[\#030712\] {
+  background-color: #F9FAFB !important;
+}
+
+html.light .gitsense-card h3, html.light .gitsense-card h4, html.light h2, html.light h3, html.light h4 {
+  color: #111827 !important;
+}
+
+html.light p {
+  color: #4B5563 !important;
+}
+
+html.light svg text {
+  fill: #4B5563 !important;
+}
+
+html.light ::-webkit-scrollbar-track  { background: #F3F4F6; }
+html.light ::-webkit-scrollbar-thumb  {
+  background: rgba(99, 102, 241, 0.35);
+  border-color: #F3F4F6;
+}
+html.light ::-webkit-scrollbar-thumb:hover { background: rgba(99, 102, 241, 0.65); }
+
+/* GitGraph custom helper classes */
+.gitgraph-card {
+  background-color: var(--graph-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+.gitgraph-card:hover {
+  border-color: var(--graph-border-hover) !important;
+}
+.gitgraph-legend {
+  background-color: var(--graph-legend-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+.gitgraph-wrapper {
+  background-color: var(--graph-wrapper-bg) !important;
+  border: 1px solid var(--graph-border) !important;
+}
+
+/* Autofill style overrides to prevent browser autofill from washing out dark/light inputs */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #060913 inset !important;
+  -webkit-text-fill-color: #F8FAFC !important;
+  caret-color: #F8FAFC !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+html.light input:-webkit-autofill,
+html.light input:-webkit-autofill:hover, 
+html.light input:-webkit-autofill:focus, 
+html.light input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #FFFFFF inset !important;
+  -webkit-text-fill-color: #111827 !important;
+  caret-color: #111827 !important;
+}
+
+/* Monaco Git Gutter Changes Indicators */
+.git-line-added {
+  border-left: 3px solid #10B981 !important; /* Green */
+  margin-left: 2px;
+}
+.git-line-modified {
+  border-left: 3px solid #00D4FF !important; /* Cyan */
+  margin-left: 2px;
+}
+
+
+

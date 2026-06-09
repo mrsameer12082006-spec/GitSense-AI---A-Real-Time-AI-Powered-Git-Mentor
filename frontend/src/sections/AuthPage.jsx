@@ -1,6 +1,23 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Mail, Lock, User, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Mail, Lock, User, CheckCircle2, Eye, EyeOff } from 'lucide-react';
+
+const GithubIcon = ({ size = 16, className = "" }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+    <path d="M9 18c-4.51 2-5-2-7-2" />
+  </svg>
+);
 
 const FLOATING_COMMANDS_CONFIG = [
   { text: 'git commit -m "feat: init auth"', top: '6%', duration: 14, delay: 0, color: '#A78BFA' }, // Violet-400
@@ -23,25 +40,60 @@ const FLOATING_COMMANDS_CONFIG = [
 export default function AuthPage({ initialMode }) {
   const [isSignUp, setIsSignUp] = useState(initialMode === 'signup');
   const [formSubmitted, setFormSubmitted] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showSignUpPassword, setShowSignUpPassword] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
+    github: '',
     password: '',
   });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    setFormSubmitted(true);
-    setTimeout(() => {
-      setFormSubmitted(false);
-      // Reset form and go to home page
-      window.location.hash = '#home';
-    }, 2000);
+    setError('');
+    setLoading(true);
+
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const endpoint = isSignUp ? `${API_URL}/api/auth/signup` : `${API_URL}/api/auth/login`;
+      const payload = isSignUp
+        ? { name: formData.name, email: formData.email, password: formData.password }
+        : { email: formData.email, password: formData.password };
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Authentication failed. Please try again.');
+      }
+
+      // Store JWT token and user object in localStorage
+      localStorage.setItem('gitsense_token', data.token);
+      localStorage.setItem('gitsense_user', JSON.stringify(data.user));
+
+      setFormSubmitted(true);
+      setTimeout(() => {
+        setFormSubmitted(false);
+        // Reset form and redirect to dashboard page
+        window.location.hash = '#dashboard';
+      }, 2000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Animation variants for the sliding overlay panel
@@ -167,7 +219,7 @@ export default function AuthPage({ initialMode }) {
               <input
                 type="email"
                 name="email"
-                required
+                required={!isSignUp}
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="Email"
@@ -180,21 +232,36 @@ export default function AuthPage({ initialMode }) {
                 <Lock size={16} />
               </span>
               <input
-                type="password"
+                type={showLoginPassword ? 'text' : 'password'}
                 name="password"
-                required
+                required={!isSignUp}
                 value={formData.password}
                 onChange={handleInputChange}
                 placeholder="Password"
-                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
+                className="w-full pl-10 pr-10 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
+              <button
+                type="button"
+                onClick={() => setShowLoginPassword((prev) => !prev)}
+                className="absolute right-3 top-3.5 text-slate-500 hover:text-slate-200 transition-colors duration-200 cursor-pointer"
+                title={showLoginPassword ? 'Hide password' : 'Show password'}
+              >
+                {showLoginPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
+
+            {error && !isSignUp && (
+              <div className="text-xs text-red-400 bg-red-950/30 border border-red-500/30 px-3 py-2 rounded-lg text-center font-semibold">
+                {error}
+              </div>
+            )}
 
             <button
               type="submit"
-              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer"
+              disabled={loading}
+              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Log In
+              {loading ? 'Logging In...' : 'Log In'}
             </button>
           </form>
         </motion.div>
@@ -246,27 +313,42 @@ export default function AuthPage({ initialMode }) {
                 className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
             </div>
-            
+
             <div className="relative">
               <span className="absolute left-3 top-3.5 text-[#00D4FF]">
                 <Lock size={16} />
               </span>
               <input
-                type="password"
+                type={showSignUpPassword ? 'text' : 'password'}
                 name="password"
                 required={isSignUp}
                 value={formData.password}
                 onChange={handleInputChange}
                 placeholder="Password"
-                className="w-full pl-10 pr-4 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
+                className="w-full pl-10 pr-10 py-3 bg-[#060913]/60 border border-white/[0.1] rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-[#00D4FF] focus:ring-1 focus:ring-[#00D4FF] focus:shadow-[0_0_15px_rgba(0,212,255,0.2)] transition-all duration-300"
               />
+              <button
+                type="button"
+                onClick={() => setShowSignUpPassword((prev) => !prev)}
+                className="absolute right-3 top-3.5 text-slate-500 hover:text-slate-200 transition-colors duration-200 cursor-pointer"
+                title={showSignUpPassword ? 'Hide password' : 'Show password'}
+              >
+                {showSignUpPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
+
+            {error && isSignUp && (
+              <div className="text-xs text-red-400 bg-red-950/30 border border-red-500/30 px-3 py-2 rounded-lg text-center font-semibold">
+                {error}
+              </div>
+            )}
 
             <button
               type="submit"
-              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer"
+              disabled={loading}
+              className="mt-2 w-full py-3 bg-gradient-to-r from-[#7C5CFF] via-[#8B5CF6] to-[#00D4FF] text-white font-bold font-heading rounded-xl shadow-lg hover:shadow-[0_0_25px_rgba(124,92,255,0.45)] hover:-translate-y-0.5 active:translate-y-0 transition-all text-xs tracking-wider uppercase cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign Up
+              {loading ? 'Signing Up...' : 'Sign Up'}
             </button>
           </form>
         </motion.div>

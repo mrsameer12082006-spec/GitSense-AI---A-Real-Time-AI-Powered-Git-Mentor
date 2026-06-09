@@ -130,7 +130,7 @@ export default function Hero() {
                     <ShieldCheck size={9} /> SAFE
                   </span>
                 </div>
-                <div className="font-mono text-xs text-[#00D4FF] bg-slate-950/70 px-3 py-2 rounded-lg border border-slate-800 mb-2">
+                <div className="font-mono text-xs text-[#00D4FF] bg-slate-950/60 px-3 py-2 rounded-lg border border-white/[0.06] mb-2">
                   git merge feature/auth
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
