@@ -674,7 +674,7 @@ REPOSITORY CONTEXT END`;
 
     const getFallbackIssue = (issue) => {
       const filePath = getFilePath(issue);
-      const steps = (issue.manualFixCommands || []).map((cmd, idx) => ({
+      const steps = issue.steps || (issue.manualFixCommands || []).map((cmd, idx) => ({
         description: `Execute manual fix step ${idx + 1}`,
         command: cmd
       }));
@@ -688,10 +688,10 @@ REPOSITORY CONTEXT END`;
         ...issue,
         title: issue.title || 'Repository Issue',
         severity: issue.severity || 'warning',
-        rootCause: issue.reason || `Automated scanners detected a repository issue under ${issue.category || 'Quality'}.`,
+        rootCause: issue.rootCause || issue.reason || `Automated scanners detected a repository issue under ${issue.category || 'Quality'}.`,
         steps: steps.length > 0 ? steps : [{ description: issue.fixDescription || 'Investigate and resolve the issue.' }],
         filePath: filePath || '',
-        resolvedContent: resolvedContent || null
+        resolvedContent: issue.resolvedContent !== undefined ? issue.resolvedContent : (resolvedContent || null)
       };
     };
 

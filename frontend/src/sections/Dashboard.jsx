@@ -164,6 +164,7 @@ export default function Dashboard() {
 
   // ── Repository Health & Autonomous Fix State ──
   const [issues, setIssues] = useState([]);
+  const [healthy, setHealthy] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [scanSteps, setScanSteps] = useState([]);
   const [expandedIssueIds, setExpandedIssueIds] = useState(new Set());
@@ -276,40 +277,47 @@ export default function Dashboard() {
       }
 
       const data = await res.json();
+      const scanResult = data;
       isRequestRunning = false;
       
-      setIssues(prev => {
-        const newIssues = data.issues || [];
-        const newIssueIds = newIssues.map(ni => ni.id);
-        
-        // If it was a partial scan, preserve issues from skipped checks
-        if (data.scanCompleted === false && data.checks) {
-          const preservedIssues = prev.filter(pi => {
-            if (newIssueIds.includes(pi.id)) return false;
-            
-            // Map issue ID/type to the scanner check key
-            const issueToCheckKey = {
-              'missing-gitignore': 'missing-gitignore',
-              'pr-merge-conflicts': 'pr-merge-conflicts',
-              'branch-divergence': 'branch-divergence',
-              'stale-branches': 'stale-branches',
-              'cross-branch-collisions': 'cross-branch-collisions',
-              'ci-pipeline-failure': 'ci-pipeline-failure',
-              'large-files-tracked': 'large-files-tracked'
-            };
-            
-            const checkKey = issueToCheckKey[pi.id] || pi.id;
-            return data.checks[checkKey] === 'skipped' || data.checks[checkKey] === 'failed';
-          });
+      if (scanResult.status === 'healthy') {
+        setHealthy(true);
+        setIssues([]);
+      } else {
+        setHealthy(false);
+        setIssues(prev => {
+          const newIssues = scanResult.issues || [];
+          const newIssueIds = newIssues.map(ni => ni.id);
           
-          return [...newIssues, ...preservedIssues];
-        }
-        
-        // If full scan, keep new issues plus manually marked fixed issues
-        const fixedList = prev.filter(iss => iss.isFixed);
-        const preservedFixed = fixedList.filter(fi => !newIssueIds.includes(fi.id));
-        return [...newIssues, ...preservedFixed];
-      });
+          // If it was a partial scan, preserve issues from skipped checks
+          if (scanResult.scanCompleted === false && scanResult.checks) {
+            const preservedIssues = prev.filter(pi => {
+              if (newIssueIds.includes(pi.id)) return false;
+              
+              // Map issue ID/type to the scanner check key
+              const issueToCheckKey = {
+                'missing-gitignore': 'missing-gitignore',
+                'pr-merge-conflicts': 'pr-merge-conflicts',
+                'branch-divergence': 'branch-divergence',
+                'stale-branches': 'stale-branches',
+                'cross-branch-collisions': 'cross-branch-collisions',
+                'ci-pipeline-failure': 'ci-pipeline-failure',
+                'large-files-tracked': 'large-files-tracked'
+              };
+              
+              const checkKey = issueToCheckKey[pi.id] || pi.id;
+              return scanResult.checks[checkKey] === 'skipped' || scanResult.checks[checkKey] === 'failed';
+            });
+            
+            return [...newIssues, ...preservedIssues];
+          }
+          
+          // If full scan, keep new issues plus manually marked fixed issues
+          const fixedList = prev.filter(iss => iss.isFixed);
+          const preservedFixed = fixedList.filter(fi => !newIssueIds.includes(fi.id));
+          return [...newIssues, ...preservedFixed];
+        });
+      }
       setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
       setHasWriteAccess(true);
       setScanSummary(data.summary || null);
@@ -2581,7 +2589,7 @@ export default function Dashboard() {
                             </div>
                           )}
                         </div>
-                      ) : issues.filter(i => !i.isFixed).length > 0 ? (
+                      ) : !healthy && issues.filter(i => !i.isFixed).length > 0 ? (
                         <div className="flex flex-col gap-3">
                           <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
                             <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected

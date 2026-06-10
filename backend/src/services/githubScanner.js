@@ -632,9 +632,53 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   console.log(`Target Issue Type: ${targetIssueType || 'ALL'}`);
   console.log(`====================================================\n`);
 
+  const repoFullName = `${owner}/${repo}`;
+
   // Call Repo Metadata
   const metadata = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}`, token);
   const defaultBranch = metadata.default_branch || 'main';
+
+  // Fetch all branches
+  let branches = [];
+  try {
+    const branchesRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/branches?per_page=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        }
+      }
+    );
+    if (branchesRes.ok) {
+      branches = await branchesRes.json();
+    }
+  } catch (err) {
+    console.warn(`[Scan] Failed to fetch branches: ${err.message}`);
+  }
+  const totalBranchesChecked = branches.length || 1;
+
+  // Fetch all open PRs
+  let prs = [];
+  try {
+    const prsRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/pulls?state=open&per_page=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        }
+      }
+    );
+    if (prsRes.ok) {
+      prs = await prsRes.json();
+    }
+  } catch (err) {
+    console.warn(`[Scan] Failed to fetch PRs: ${err.message}`);
+  }
+  const totalPRsChecked = prs.length;
 
   // Pre-fetch recursive tree once to avoid duplicate slow network requests in detectors
   let preFetchedTree = null;
@@ -644,111 +688,105 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
     console.warn(`[Scan] Failed to pre-fetch recursive tree: ${err.message}`);
   }
 
-  // Fetch branches and PRs count for scan stats
-  let totalBranchesChecked = 0;
-  let totalPRsChecked = 0;
-  try {
-    const branches = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=1`, token);
-    totalBranchesChecked = branches.length;
-    const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=1`, token);
-    totalPRsChecked = prs.length;
-  } catch (err) {
-    // Continue if stats fails
-  }
-
-  // Construct target promises
-  const promises = [];
-  
-  if (!targetIssueType || targetIssueType === 'missing-gitignore') {
-    promises.push(detectMissingGitignore(owner, repo, token, defaultBranch, preFetchedTree));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'pr-merge-conflicts') {
-    promises.push(detectMergeConflicts(owner, repo, token));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'branch-divergence') {
-    promises.push(detectBranchDivergence(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'stale-branches') {
-    promises.push(detectStaleBranches(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'cross-branch-collisions') {
-    promises.push(detectBranchCollisions(owner, repo, token));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'ci-pipeline-failure') {
-    promises.push(detectCIFailures(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'large-files-tracked') {
-    promises.push(detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  const results = await Promise.allSettled(promises);
-
   const rawIssues = [];
   const checks = {};
   let scanCompleted = true;
 
-  const checkKeys = [
-    'missing-gitignore',
-    'pr-merge-conflicts',
-    'branch-divergence',
-    'stale-branches',
-    'cross-branch-collisions',
-    'ci-pipeline-failure',
-    'large-files-tracked'
-  ];
-
-  // Map original check keys to the keys expected by frontend checklist
-  const frontendKeysMap = {
-    'missing-gitignore': 'gitignore',
-    'pr-merge-conflicts': 'prDetails',
-    'branch-divergence': 'branchComparison',
-    'stale-branches': 'branches',
-    'cross-branch-collisions': 'pullRequests',
-    'ci-pipeline-failure': 'ciWorkflow',
-    'large-files-tracked': 'largeFiles'
-  };
-
-  // Add default checks successes
   checks['metadata'] = 'success';
   checks['ai'] = 'success';
 
-  results.forEach((res, idx) => {
-    const key = checkKeys[idx];
-    const feKey = frontendKeysMap[key] || key;
-
-    if (res.status === 'fulfilled') {
-      if (res.value !== null) {
-        rawIssues.push(res.value);
-      }
-      checks[key] = 'success';
-      checks[feKey] = 'success';
-    } else {
-      scanCompleted = false;
-      checks[key] = 'skipped';
-      checks[feKey] = 'skipped';
-      console.error(`[Scan] Detector ${key} failed to run:`, res.reason);
+  // Layer 1 - Branch Divergence Check
+  try {
+    for (const branch of branches) {
+      if (branch.name === defaultBranch) continue;
+      await checkBranchDivergence(repoFullName, token, rawIssues, defaultBranch, branch.name);
     }
-  });
+    checks['branch-divergence'] = 'success';
+    checks['branchComparison'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 1 failed:', err.message);
+    scanCompleted = false;
+    checks['branch-divergence'] = 'failed';
+    checks['branchComparison'] = 'failed';
+  }
+
+  // Layer 2 - PR Conflict Check
+  try {
+    await checkPRConflicts(repoFullName, token, rawIssues, prs);
+    checks['pr-merge-conflicts'] = 'success';
+    checks['prDetails'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 2 failed:', err.message);
+    scanCompleted = false;
+    checks['pr-merge-conflicts'] = 'failed';
+    checks['prDetails'] = 'failed';
+  }
+
+  // Layer 3 - Unresolved Conflict Markers File Scan
+  try {
+    await scanFileConflictMarkers(repoFullName, token, rawIssues, defaultBranch, preFetchedTree);
+    checks['conflict-markers'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 3 failed:', err.message);
+    scanCompleted = false;
+    checks['conflict-markers'] = 'failed';
+  }
+
+  // Run additional quality checks
+  try {
+    const gitignoreIssue = await detectMissingGitignore(owner, repo, token, defaultBranch, preFetchedTree);
+    if (gitignoreIssue) rawIssues.push(gitignoreIssue);
+    checks['missing-gitignore'] = 'success';
+    checks['gitignore'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Gitignore check failed:', err.message);
+    checks['missing-gitignore'] = 'failed';
+    checks['gitignore'] = 'failed';
+  }
+
+  try {
+    const staleIssue = await detectStaleBranches(owner, repo, token, defaultBranch);
+    if (staleIssue) rawIssues.push(staleIssue);
+    checks['stale-branches'] = 'success';
+    checks['branches'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Stale branches check failed:', err.message);
+    checks['stale-branches'] = 'failed';
+    checks['branches'] = 'failed';
+  }
+
+  try {
+    const collisionIssue = await detectBranchCollisions(owner, repo, token);
+    if (collisionIssue) rawIssues.push(collisionIssue);
+    checks['cross-branch-collisions'] = 'success';
+    checks['pullRequests'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Branch collisions check failed:', err.message);
+    checks['cross-branch-collisions'] = 'failed';
+    checks['pullRequests'] = 'failed';
+  }
+
+  try {
+    const ciIssue = await detectCIFailures(owner, repo, token, defaultBranch);
+    if (ciIssue) rawIssues.push(ciIssue);
+    checks['ci-pipeline-failure'] = 'success';
+    checks['ciWorkflow'] = 'success';
+  } catch (err) {
+    console.error('[Scan] CI check failed:', err.message);
+    checks['ci-pipeline-failure'] = 'failed';
+    checks['ciWorkflow'] = 'failed';
+  }
+
+  try {
+    const largeFilesIssue = await detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree);
+    if (largeFilesIssue) rawIssues.push(largeFilesIssue);
+    checks['large-files-tracked'] = 'success';
+    checks['largeFiles'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Large files check failed:', err.message);
+    checks['large-files-tracked'] = 'failed';
+    checks['largeFiles'] = 'failed';
+  }
 
   // Diagnose issues with AI service
   const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate', token, owner, repo);
@@ -760,7 +798,11 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
 
   const filesScannedCount = Array.isArray(preFetchedTree?.tree) ? preFetchedTree.tree.filter(item => item.type === 'blob').length : 0;
 
+  const status = diagnosedIssues.length === 0 ? 'healthy' : 'issues';
+
   return {
+    status,
+    message: status === 'healthy' ? 'All Clear! Repository is Healthy' : undefined,
     issues: diagnosedIssues,
     scanTimestamp: new Date().toISOString(),
     defaultBranch,
@@ -781,4 +823,134 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
       admin: metadata.permissions ? metadata.permissions.admin : false
     }
   };
+}
+
+/**
+ * Helper to perform safe fetch calls catching any network/status error and continuing.
+ */
+async function safeFetchJson(url, token) {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'GitSense-AI'
+      }
+    });
+    if (!res.ok) {
+      console.warn(`[safeFetchJson] status ${res.status} for URL: ${url}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error(`[safeFetchJson] error for URL: ${url}`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Layer 1 — Branch divergence check:
+ */
+async function checkBranchDivergence(repoFullName, token, issues, baseBranch, headBranch) {
+  const url = `https://api.github.com/repos/${repoFullName}/compare/${baseBranch}...${headBranch}`;
+  const compareData = await safeFetchJson(url, token);
+  
+  if (compareData && compareData.ahead_by > 0 && compareData.behind_by > 0) {
+    issues.push({
+      id: `branch-divergence-${headBranch}`,
+      category: 'Branch Divergence',
+      title: `Merge Conflict Risk: ${headBranch} diverged from ${baseBranch}`,
+      severity: 'critical',
+      rootCause: `Branch '${headBranch}' is ${compareData.ahead_by} commits ahead`,
+      rootCause2: `and ${compareData.behind_by} commits behind '${baseBranch}'.`,
+      rootCause3: `These branches have diverged and will conflict on merge.`,
+      steps: [
+        { description: 'Switch to the head branch', command: `git checkout ${headBranch}` },
+        { description: 'Rebase onto base branch', command: `git rebase ${baseBranch}` },
+        { description: 'Resolve any conflicts, then push', command: 'git push --force-with-lease' }
+      ],
+      filePath: null,
+      resolvedContent: null,
+      autoFixable: false,
+      isFixed: false
+    });
+  }
+}
+
+/**
+ * Layer 2 — PR conflict check:
+ */
+async function checkPRConflicts(repoFullName, token, issues, prsList) {
+  const prs = prsList || [];
+  for (const pr of prs) {
+    const detailUrl = `https://api.github.com/repos/${repoFullName}/pulls/${pr.number}`;
+    const prData = await safeFetchJson(detailUrl, token);
+    
+    if (prData && prData.mergeable === false) {
+      issues.push({
+        id: `pr-merge-conflicts-${pr.number}`,
+        category: 'Pull Requests',
+        title: `PR #${pr.number} has merge conflicts`,
+        severity: 'critical',
+        rootCause: `Pull Request '${pr.title}' cannot be merged automatically.`,
+        rootCause2: `Conflicting changes exist between ${pr.head.ref} and ${pr.base.ref}.`,
+        steps: [
+          { description: 'Checkout the PR branch', command: `git checkout ${pr.head.ref}` },
+          { description: 'Merge base branch in', command: `git merge ${pr.base.ref}` },
+          { description: 'Fix conflicts, commit, push', command: 'git add . && git commit -m "fix: resolve conflicts" && git push' }
+        ],
+        filePath: null,
+        resolvedContent: null,
+        autoFixable: false,
+        isFixed: false
+      });
+    }
+  }
+}
+
+/**
+ * Layer 3 — File content scan for unresolved conflict markers:
+ */
+async function scanFileConflictMarkers(repoFullName, token, issues, defaultBranch, preFetchedTree) {
+  let tree = preFetchedTree;
+  if (!tree) {
+    const url = `https://api.github.com/repos/${repoFullName}/git/trees/${defaultBranch}?recursive=1`;
+    tree = await safeFetchJson(url, token);
+  }
+  
+  if (tree && Array.isArray(tree.tree)) {
+    const codeFiles = tree.tree.filter(f =>
+      f.type === 'blob' &&
+      /\.(js|jsx|ts|tsx|py|java|go|rb|php|css|html)$/.test(f.path)
+    );
+    
+    for (const file of codeFiles.slice(0, 50)) {
+      const contentUrl = `https://api.github.com/repos/${repoFullName}/contents/${file.path}`;
+      const contentData = await safeFetchJson(contentUrl, token);
+      
+      if (contentData && contentData.encoding === 'base64' && contentData.content) {
+        const decoded = Buffer.from(contentData.content, 'base64').toString('utf-8');
+        
+        if (decoded.includes('<<<<<<<') && decoded.includes('=======') && decoded.includes('>>>>>>>')) {
+          issues.push({
+            id: `unresolved-conflict-${file.path}`,
+            category: 'Repository Quality',
+            title: `Unresolved conflict markers in ${file.path}`,
+            severity: 'critical',
+            rootCause: `File '${file.path}' contains unresolved Git conflict markers.`,
+            rootCause2: `This file was left in a conflicted state after a failed merge.`,
+            steps: [
+              { description: 'Open file and search for conflict markers', command: `grep -n '<<<<<<' ${file.path}` },
+              { description: 'Manually edit to remove markers and keep correct code', command: '' },
+              { description: 'Stage and commit the resolved file', command: `git add ${file.path} && git commit -m "fix: resolve conflict in ${file.path}"` }
+            ],
+            filePath: file.path,
+            resolvedContent: null,
+            autoFixable: true,
+            isFixed: false
+          });
+        }
+      }
+    }
+  }
 }
