@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/auth.js';
-import { exec, spawn } from 'child_process';
+import { exec, spawn, execFile } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import axios from 'axios';
 
 const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
 const router = Router();
 const prisma = new PrismaClient();
 
@@ -75,7 +76,26 @@ async function runCmd(cmd, cwd, timeoutMs = 15000) {
   } catch (err) {
     return {
       stdout: err.stdout || '',
-      stderr: err.stderr || err.message || 'Command failed',
+      stderr: err.stderr || (err.stdout ? '' : (err.message || 'Command failed')),
+      exitCode: err.code || 1,
+    };
+  }
+}
+
+// Helper: run a git command safely using execFile to avoid shell parsing issues (especially on Windows)
+async function runGitCmd(args, cwd, timeoutMs = 15000) {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', args, {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    return { stdout: stdout || '', stderr: stderr || '', exitCode: 0 };
+  } catch (err) {
+    return {
+      stdout: err.stdout || '',
+      stderr: err.stderr || (err.stdout ? '' : (err.message || 'Git command failed')),
       exitCode: err.code || 1,
     };
   }
@@ -201,11 +221,11 @@ router.get('/:repoId/git/status', async (req, res) => {
     const { repoPath, repository } = await getRepoContext(req);
 
     // Get branch name
-    const branchResult = await runCmd('git rev-parse --abbrev-ref HEAD', repoPath);
+    const branchResult = await runGitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], repoPath);
     const branch = branchResult.stdout.trim() || repository.defaultBranch || 'main';
 
     // Get porcelain status
-    const statusResult = await runCmd('git status --porcelain', repoPath);
+    const statusResult = await runGitCmd(['status', '--porcelain'], repoPath);
     const lines = statusResult.stdout.trim().split('\n').filter(Boolean);
 
     const staged = [];
@@ -247,10 +267,10 @@ router.get('/:repoId/git/status', async (req, res) => {
 router.post('/:repoId/git/add', async (req, res) => {
   try {
     const { files } = req.body;
-    const fileList = Array.isArray(files) ? files.join(' ') : '.';
+    const fileList = Array.isArray(files) ? files : ['.'];
     const { repoPath } = await getRepoContext(req);
 
-    const result = await runCmd(`git add ${fileList}`, repoPath);
+    const result = await runGitCmd(['add', ...fileList], repoPath);
     res.json({
       success: result.exitCode === 0,
       stdout: result.stdout,
@@ -278,11 +298,10 @@ router.post('/:repoId/git/commit', async (req, res) => {
     const { repoPath } = await getRepoContext(req);
 
     // Set git user config if not set (needed for commits)
-    await runCmd(`git config user.email "${req.user.email || 'gitsense@user.ai'}"`, repoPath);
-    await runCmd(`git config user.name "${req.user.name || 'GitSense User'}"`, repoPath);
+    await runGitCmd(['config', 'user.email', req.user.email || 'gitsense@user.ai'], repoPath);
+    await runGitCmd(['config', 'user.name', req.user.name || 'GitSense User'], repoPath);
 
-    const safeMsg = message.replace(/"/g, '\\"');
-    const result = await runCmd(`git commit -m "${safeMsg}"`, repoPath);
+    const result = await runGitCmd(['commit', '-m', message], repoPath);
 
     res.json({
       success: result.exitCode === 0,
@@ -307,7 +326,7 @@ router.post('/:repoId/git/push', async (req, res) => {
     const { repoPath, repository } = await getRepoContext(req);
     const branch = req.body.branch || repository.defaultBranch || 'main';
 
-    const result = await runCmd(`git push origin ${branch}`, repoPath, 30000);
+    const result = await runGitCmd(['push', 'origin', branch], repoPath, 30000);
 
     res.json({
       success: result.exitCode === 0,
@@ -332,7 +351,7 @@ router.post('/:repoId/git/pull', async (req, res) => {
     const { repoPath, repository } = await getRepoContext(req);
     const branch = req.body.branch || repository.defaultBranch || 'main';
 
-    const result = await runCmd(`git pull origin ${branch}`, repoPath, 30000);
+    const result = await runGitCmd(['pull', 'origin', branch], repoPath, 30000);
 
     res.json({
       success: result.exitCode === 0,
@@ -344,6 +363,64 @@ router.post('/:repoId/git/pull', async (req, res) => {
       return res.status(404).json({ error: 'Repository not found.' });
     }
     console.error('[Workspace] git pull error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/workspace/:repoId/git/branches
+// Get all unique branches (local and remote-tracking)
+// ─────────────────────────────────────────────────────────
+router.get('/:repoId/git/branches', async (req, res) => {
+  try {
+    const { repoPath } = await getRepoContext(req);
+
+    // Get all local and remote branches
+    const result = await runGitCmd(['branch', '-a', '--format=%(refname:short)'], repoPath);
+    const lines = result.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+
+    const branchesSet = new Set();
+    for (const line of lines) {
+      if (line.includes('HEAD')) continue;
+      // Strip remote prefix "origin/" to list branches cleanly
+      const cleanName = line.startsWith('origin/') ? line.substring(7) : line;
+      branchesSet.add(cleanName);
+    }
+
+    res.json({ branches: Array.from(branchesSet) });
+  } catch (err) {
+    if (err.message === 'REPO_NOT_FOUND') {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+    console.error('[Workspace] git branches error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/checkout
+// Switch to a branch: { branch: "main" }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/checkout', async (req, res) => {
+  try {
+    const { branch } = req.body;
+    if (!branch || typeof branch !== 'string') {
+      return res.status(400).json({ error: 'Branch name is required.' });
+    }
+    const { repoPath } = await getRepoContext(req);
+
+    const result = await runGitCmd(['checkout', branch], repoPath);
+
+    res.json({
+      success: result.exitCode === 0,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  } catch (err) {
+    if (err.message === 'REPO_NOT_FOUND') {
+      return res.status(404).json({ error: 'Repository not found.' });
+    }
+    console.error('[Workspace] git checkout error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -368,9 +445,9 @@ router.put('/:repoId/file', async (req, res) => {
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
     await fs.writeFile(fullPath, content, 'utf8');
 
-    // 2. Also save via GitHub Contents API if token is available
+    // 2. Also save via GitHub Contents API if token is available (unless localOnly is specified)
     let githubSaved = false;
-    if (token) {
+    if (token && !req.body.localOnly) {
       try {
         // First get the current file SHA (needed for updates)
         const getUrl = `https://api.github.com/repos/${repository.owner}/${repository.name}/contents/${filePath}`;

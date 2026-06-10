@@ -42,9 +42,14 @@ export default function ProfilePage() {
         }
 
         const API_URL = import.meta.env.VITE_API_URL || '';
-        const res = await fetch(`${API_URL}/api/auth/me`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        let res;
+        try {
+          res = await fetch(`${API_URL}/api/auth/me`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+        } catch (fetchErr) {
+          throw new Error('Connection refused. Please check if the backend server is running.');
+        }
 
         if (res.status === 401) {
           localStorage.removeItem('gitsense_token');
@@ -53,11 +58,24 @@ export default function ProfilePage() {
           return;
         }
 
-        if (!res.ok) {
-          throw new Error('Failed to load profile');
+        let data;
+        try {
+          const text = await res.text();
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+              throw new Error('Connection refused. Please check if the backend server is running.');
+            }
+            throw new Error('Failed to parse server response.');
+          }
+        } catch (readErr) {
+          throw new Error(readErr.message || 'Failed to read server response.');
         }
 
-        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to load profile');
+        }
         if (data.user) {
           setName(data.user.name || '');
           setEmail(data.user.email || '');
@@ -98,20 +116,23 @@ export default function ProfilePage() {
     setSaving(true);
     try {
       const token = localStorage.getItem('gitsense_token');
-      const API_URL = import.meta.env.VITE_API_URL || '';
-
-      const res = await fetch(`${API_URL}/api/auth/profile`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          email: email.trim(),
-          githubLink: github.trim() || ''
-        })
-      });
+      let res;
+      try {
+        res = await fetch(`${API_URL}/api/auth/profile`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name: name.trim(),
+            email: email.trim(),
+            githubLink: github.trim() || ''
+          })
+        });
+      } catch (fetchErr) {
+        throw new Error('Connection refused. Please check if the backend server is running.');
+      }
 
       if (res.status === 401) {
         localStorage.removeItem('gitsense_token');
@@ -120,12 +141,24 @@ export default function ProfilePage() {
         return;
       }
 
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to update profile');
+      let data;
+      try {
+        const text = await res.text();
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+            throw new Error('Connection refused. Please check if the backend server is running.');
+          }
+          throw new Error('Failed to parse server response.');
+        }
+      } catch (readErr) {
+        throw new Error(readErr.message || 'Failed to read server response.');
       }
 
-      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update profile');
+      }
       if (data.user) {
         // Sync with localStorage
         localStorage.setItem('gitsense_user', JSON.stringify({

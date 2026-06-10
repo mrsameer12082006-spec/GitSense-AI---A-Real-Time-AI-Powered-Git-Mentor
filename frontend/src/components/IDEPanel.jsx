@@ -31,6 +31,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   const [terminalLogs, setTerminalLogs] = useState([]);
   const [terminalCommand, setTerminalCommand] = useState('');
   const terminalBottomRef = useRef(null);
+  const handleSaveFileRef = useRef(null);
   const [commandHistory, setCommandHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
@@ -40,6 +41,10 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   const [commitMessage, setCommitMessage] = useState('');
   const [hasMergeConflict, setHasMergeConflict] = useState(false);
   const [currentBranch, setCurrentBranch] = useState('main');
+  const [branches, setBranches] = useState([]);
+  const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
+  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [switchingBranch, setSwitchingBranch] = useState(false);
 
   // --- Action Button Visual Feedback State ---
   const [isRunning, setIsRunning] = useState(false);
@@ -202,6 +207,63 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
     }
   }, [isDemoMode, connectedRepo, workspaceFetch]);
 
+  // ─── FETCH BRANCHES ───
+  const fetchBranches = useCallback(async () => {
+    if (isDemoMode || !connectedRepo) return;
+    setLoadingBranches(true);
+    try {
+      const res = await workspaceFetch('/git/branches');
+      const data = await res.json();
+      if (res.ok) {
+        setBranches(data.branches || []);
+      }
+    } catch (err) {
+      console.error('[IDE] Failed to fetch branches:', err);
+    } finally {
+      setLoadingBranches(false);
+    }
+  }, [isDemoMode, connectedRepo, workspaceFetch]);
+
+  // ─── SWITCH GIT BRANCH ───
+  const handleBranchSwitch = async (branchName) => {
+    if (isDemoMode || !connectedRepo) return;
+    if (branchName === currentBranch) return;
+
+    // Check if there are unsaved files
+    const dirtyTabs = openTabs.filter(t => t.isDirty);
+    if (dirtyTabs.length > 0) {
+      triggerToast('Unsaved changes in editor. Save before switching.');
+      return;
+    }
+
+    setSwitchingBranch(true);
+    appendLog('terminal', `$ git checkout ${branchName}`);
+    try {
+      const res = await workspaceFetch('/git/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch: branchName }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        triggerToast(`Switched to branch ${branchName}`);
+        appendLog('terminal', `Switched to branch: ${branchName}`);
+        fetchGitStatus();
+        fetchContents(currentPath);
+      } else {
+        const errMsg = data.stderr || 'Checkout failed.';
+        triggerToast('Failed to switch branch.');
+        appendLog('terminal', `✗ Checkout failed: ${errMsg}`);
+      }
+    } catch (err) {
+      triggerToast('Checkout error.');
+      appendLog('terminal', `✗ Checkout error: ${err.message}`);
+    } finally {
+      setSwitchingBranch(false);
+      setIsBranchDropdownOpen(false);
+    }
+  };
+
   // Reset open tabs when changing repositories
   useEffect(() => {
     setOpenTabs([]);
@@ -223,11 +285,12 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
       { type: 'info', text: '' }
     ]);
 
-    // Fetch real git status when a repo is connected
+    // Fetch real git status and branches when a repo is connected
     if (connectedRepo) {
       fetchGitStatus();
+      fetchBranches();
     }
-  }, [connectedRepo, isDemoMode]);
+  }, [connectedRepo, isDemoMode, fetchGitStatus, fetchBranches]);
 
   // Auto-open the first file in explorer once loaded
   useEffect(() => {
@@ -411,6 +474,8 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
     }
   };
 
+  handleSaveFileRef.current = handleSaveFile;
+
   // ─── REAL: Run Code ───
   const handleRunCode = async () => {
     if (!activeTab) return;
@@ -491,6 +556,33 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
     appendLog('terminal', `$ git add . && git commit -m "${commitMessage}"`);
 
     try {
+      // Auto-save any dirty files to local disk first
+      const dirtyTabs = openTabs.filter(t => t.isDirty);
+      for (const tab of dirtyTabs) {
+        appendLog('terminal', `[Auto-Save] Saving unsaved changes in ${tab.name}...`);
+        const saveRes = await workspaceFetch('/file', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: tab.path,
+            content: tab.content,
+            localOnly: true,
+          }),
+        });
+        
+        if (saveRes.ok) {
+          // Update the tab state in React
+          setOpenTabs(prev => prev.map(t => {
+            if (t.path === tab.path) {
+              return { ...t, originalContent: t.content, isDirty: false };
+            }
+            return t;
+          }));
+        } else {
+          throw new Error(`Failed to save ${tab.name} before committing.`);
+        }
+      }
+
       // Stage all first
       await workspaceFetch('/git/add', {
         method: 'POST',
@@ -633,6 +725,13 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
   const handleEditorDidMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
+
+    // Add Save shortcut (Ctrl/Cmd + S) to trigger file save
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      if (handleSaveFileRef.current) {
+        handleSaveFileRef.current();
+      }
+    });
   };
 
   useEffect(() => {
@@ -1056,9 +1155,63 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
               AI Workspace
             </span>
             {!isDemoMode && (
-              <span className="text-[9px] text-slate-500 font-mono">
-                branch: <strong className="text-emerald-400">{currentBranch}</strong>
-              </span>
+              <div className="relative">
+                <button
+                  onClick={() => {
+                    setIsBranchDropdownOpen(!isBranchDropdownOpen);
+                    fetchBranches();
+                  }}
+                  disabled={switchingBranch}
+                  className="px-2.5 py-1 bg-[#060913]/60 border border-white/[0.08] hover:border-[#7C5CFF]/30 text-[9.5px] font-mono text-slate-400 hover:text-white flex items-center gap-1.5 cursor-pointer transition-all rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span className="text-slate-500">branch:</span>
+                  <strong className="text-emerald-400 font-bold">{currentBranch}</strong>
+                  {switchingBranch ? (
+                    <Loader2 size={10} className="animate-spin text-[#00D4FF]" />
+                  ) : (
+                    <ChevronLeft size={10} className={`rotate-270 transition-transform ${isBranchDropdownOpen ? 'rotate-90' : ''}`} />
+                  )}
+                </button>
+
+                <AnimatePresence>
+                  {isBranchDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsBranchDropdownOpen(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 6 }}
+                        className="absolute left-0 top-[115%] min-w-[160px] max-h-[200px] overflow-y-auto bg-slate-950/95 border border-white/[0.1] rounded-xl shadow-2xl backdrop-blur-xl z-50 p-1 flex flex-col custom-scrollbar"
+                      >
+                        {loadingBranches ? (
+                          <div className="py-2 text-[9px] text-slate-500 text-center flex items-center justify-center gap-1.5 font-mono select-none">
+                            <Loader2 size={10} className="animate-spin text-[#7C5CFF]" />
+                            <span>Loading branches...</span>
+                          </div>
+                        ) : branches.length === 0 ? (
+                          <div className="py-2 text-[9px] text-slate-500 text-center font-mono select-none">
+                            No branches found
+                          </div>
+                        ) : (
+                          branches.map((b) => (
+                            <button
+                              key={b}
+                              onClick={() => handleBranchSwitch(b)}
+                              className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[9.5px] font-semibold transition-all font-mono truncate cursor-pointer ${
+                                b === currentBranch
+                                  ? 'bg-[#7C5CFF]/15 text-[#7C5CFF]'
+                                  : 'hover:bg-slate-900/50 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              {b}
+                            </button>
+                          ))
+                        )}
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
             )}
           </div>
 
@@ -1215,7 +1368,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
               {/* COMMIT CHANGES */}
               <button
                 onClick={handleCommit}
-                disabled={!commitMessage.trim() && changedFiles.length === 0 && stagedFiles.length === 0}
+                disabled={!commitMessage.trim() || (changedFiles.length === 0 && stagedFiles.length === 0)}
                 className="relative px-2.5 py-1.5 rounded-xl text-[10.5px] font-bold text-slate-200 hover:text-white transition-all duration-300 cursor-pointer flex items-center gap-1 bg-[#060913]/60 hover:bg-slate-950/80 border border-white/[0.08] hover:border-transparent shadow-[0_4px_12px_rgba(0,0,0,0.3)] hover:shadow-[0_0_15px_rgba(124,92,255,0.2)] hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:pointer-events-none group"
               >
                 <div className="absolute inset-0 rounded-xl p-[1px] bg-gradient-to-r from-[#7C5CFF]/20 to-[#00D4FF]/20 group-hover:from-[#7C5CFF] group-hover:to-[#00D4FF] transition-all duration-300" style={{

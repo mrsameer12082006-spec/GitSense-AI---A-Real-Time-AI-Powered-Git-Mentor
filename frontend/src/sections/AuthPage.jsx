@@ -74,7 +74,13 @@ export default function AuthPage({ initialMode }) {
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonErr) {
+        throw new Error('Connection error: Failed to parse server response. Please check if the backend server is running.');
+      }
+
       if (!response.ok) {
         throw new Error(data.error || 'Authentication failed. Please try again.');
       }

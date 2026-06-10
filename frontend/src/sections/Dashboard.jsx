@@ -19,21 +19,64 @@ const API_BASE = '/api';
 const getToken = () => localStorage.getItem('gitsense_token');
 const apiFetch = async (path, options = {}) => {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-  if (res.status === 401) {
-    localStorage.removeItem('gitsense_token');
-    window.location.hash = '#login';
-    throw new Error('Session expired');
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('gitsense_token');
+      window.location.hash = '#login';
+      throw new Error('Session expired');
+    }
+
+    const originalJson = res.json.bind(res);
+    const originalText = res.text.bind(res);
+
+    let cachedText = null;
+    const getText = async () => {
+      if (cachedText !== null) return cachedText;
+      try {
+        cachedText = await originalText();
+      } catch (err) {
+        cachedText = '';
+      }
+      return cachedText;
+    };
+
+    res.text = getText;
+    res.json = async () => {
+      const text = await getText();
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+          return { error: 'Connection refused. Please check if the backend server is running.' };
+        }
+        return { error: text || 'Invalid server response (non-JSON)' };
+      }
+    };
+
+    return res;
+  } catch (fetchErr) {
+    return {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: {
+        get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null
+      },
+      json: async () => ({ error: 'Connection refused. Please check if the backend server is running.' }),
+      text: async () => JSON.stringify({ error: 'Connection refused. Please check if the backend server is running.' }),
+      clone() { return this; }
+    };
   }
-  return res;
 };
 
 export default function Dashboard() {
@@ -302,7 +345,7 @@ export default function Dashboard() {
   const fetchAuthState = async () => {
     setAuthLoading(true);
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await apiFetch('/auth/me', {
         credentials: 'include'
       });
 
@@ -489,12 +532,8 @@ export default function Dashboard() {
       const repo = connectedRepo.name;
       const token = currentUser?.githubToken || '';
 
-      const response = await fetch(`${API_BASE}/repo/fix`, {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getToken()}`
-        },
         body: JSON.stringify({
           owner,
           repo,
@@ -1369,11 +1408,8 @@ export default function Dashboard() {
 
     try {
       const token = getToken();
-      const res = await fetch('/api/kb/upload', {
+      const res = await apiFetch('/kb/upload', {
         method: 'POST',
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: formData
       });
 
@@ -3460,9 +3496,8 @@ function StaleBranchCardItem({ s, idx, connectedRepo, currentUser, hasWriteAcces
     setFixStep('Verifying branch exists...');
     
     try {
-      const response = await fetch('/api/repo/fix', {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           owner: repoOwner,
           repo: repoName,
