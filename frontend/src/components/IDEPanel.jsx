@@ -7,7 +7,7 @@ import {
   Plus, Minus, X, Info, Terminal as TerminalIcon, Sparkles, AlertCircle, Loader2
 } from 'lucide-react';
 
-export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
+export default function IDEPanel({ connectedRepo, apiFetch, onAskAI, externalCommand, onClearExternalCommand }) {
   // --- Workspace & Sandbox State ---
   const isDemoMode = !connectedRepo;
   const [currentPath, setCurrentPath] = useState('');
@@ -201,6 +201,81 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
       console.error('[IDE] Failed to fetch git status:', err);
     }
   }, [isDemoMode, connectedRepo, workspaceFetch]);
+
+  // ─── RUN COMMAND IN TERMINAL (Re-usable for both input and external AI requests) ───
+  const runCommandInTerminal = async (cmd) => {
+    if (!cmd || !cmd.trim()) return;
+
+    setActiveTerminalTab('TERMINAL');
+    const prompt = selectedTerm === 'PowerShell' ? 'PS>' : '$';
+    setTerminalLogs(prev => [...prev, { text: `${prompt} ${cmd}`, type: 'info' }]);
+    setCommandHistory(prev => [cmd, ...prev.slice(0, 50)]);
+    setHistoryIndex(-1);
+
+    if (isDemoMode) {
+      setTerminalLogs(prev => [...prev,
+        { text: '[Sandbox] Terminal commands require a connected repo.', type: 'error' },
+        { text: '[Sandbox] Connect a GitHub repo to execute real commands.', type: 'info' },
+      ]);
+      return;
+    }
+
+    setRunningProcessType('exec');
+
+    try {
+      const res = await workspaceFetch('/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmd, shell: selectedTerm }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to execute command');
+      }
+
+      await readExecutionStream(
+        res,
+        (data) => {
+          if (data.type === 'stdout') {
+            data.text.split('\n').forEach(line => {
+              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'info' }]);
+            });
+          } else if (data.type === 'stderr') {
+            data.text.split('\n').filter(Boolean).forEach(line => {
+              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'error' }]);
+            });
+          } else if (data.type === 'exit') {
+            if (data.exitCode !== 0) {
+              setTerminalLogs(prev => [...prev, { text: `✗ Command exited with code ${data.exitCode}`, type: 'error' }]);
+            }
+          }
+        },
+        () => {
+          setRunningProcessType(null);
+          // Refresh git status after git commands
+          const lowerCmd = cmd.toLowerCase();
+          if (lowerCmd.startsWith('git ')) {
+            fetchGitStatus();
+          }
+        }
+      );
+
+    } catch (err) {
+      setTerminalLogs(prev => [...prev, { text: `✗ Execution error: ${err.message}`, type: 'error' }]);
+      setRunningProcessType(null);
+    }
+  };
+
+  // Run external commands from the AI Assistant
+  useEffect(() => {
+    if (externalCommand) {
+      runCommandInTerminal(externalCommand);
+      if (onClearExternalCommand) {
+        onClearExternalCommand();
+      }
+    }
+  }, [externalCommand]);
 
   // Reset open tabs when changing repositories
   useEffect(() => {
@@ -785,11 +860,6 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
 
     if (!cmd.trim()) return;
 
-    const prompt = selectedTerm === 'PowerShell' ? 'PS>' : '$';
-    setTerminalLogs(prev => [...prev, { text: `${prompt} ${cmd}`, type: 'info' }]);
-    setCommandHistory(prev => [cmd, ...prev.slice(0, 50)]);
-    setHistoryIndex(-1);
-
     // Handle local commands
     if (cmd.toLowerCase() === 'clear' || cmd.toLowerCase() === 'cls') {
       setTerminalLogs([]);
@@ -819,61 +889,7 @@ export default function IDEPanel({ connectedRepo, apiFetch, onAskAI }) {
       return;
     }
 
-    if (isDemoMode) {
-      setTerminalLogs(prev => [...prev,
-        { text: '[Sandbox] Terminal commands require a connected repo.', type: 'error' },
-        { text: '[Sandbox] Connect a GitHub repo to execute real commands.', type: 'info' },
-        { text: '[Sandbox] Type "help" for available commands.', type: 'info' },
-      ]);
-      return;
-    }
-
-    setRunningProcessType('exec');
-
-    // ─── EXECUTE REAL COMMAND ON BACKEND (Streaming) ───
-    try {
-      const res = await workspaceFetch('/exec', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd, shell: selectedTerm }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Failed to execute command');
-      }
-
-      await readExecutionStream(
-        res,
-        (data) => {
-          if (data.type === 'stdout') {
-            data.text.split('\n').forEach(line => {
-              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'info' }]);
-            });
-          } else if (data.type === 'stderr') {
-            data.text.split('\n').filter(Boolean).forEach(line => {
-              if (line) setTerminalLogs(prev => [...prev, { text: line, type: 'error' }]);
-            });
-          } else if (data.type === 'exit') {
-            if (data.exitCode !== 0) {
-              setTerminalLogs(prev => [...prev, { text: `✗ Command exited with code ${data.exitCode}`, type: 'error' }]);
-            }
-          }
-        },
-        () => {
-          setRunningProcessType(null);
-          // Refresh git status after git commands
-          const lowerCmd = cmd.toLowerCase();
-          if (lowerCmd.startsWith('git ')) {
-            fetchGitStatus();
-          }
-        }
-      );
-
-    } catch (err) {
-      setTerminalLogs(prev => [...prev, { text: `✗ Execution error: ${err.message}`, type: 'error' }]);
-      setRunningProcessType(null);
-    }
+    await runCommandInTerminal(cmd);
   };
 
   // Terminal keyboard navigation (up/down for history)

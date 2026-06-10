@@ -2,7 +2,10 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import prisma from '../lib/prisma.js';
 import aiService from '../services/ai.js';
-
+import crypto from 'crypto';
+import { Octokit } from '@octokit/rest';
+import { resolveAndMerge } from '../services/mergeResolver.js';
+import repoContextBuilder from '../services/repoContextBuilder.js';
 
 const router = Router();
 
@@ -543,9 +546,15 @@ router.post('/apply-resolution', async (req, res) => {
     }
 
     const prData = await pullsRes.json();
+    
+    // Kick off conflict resolution / merge check in the background
+    const jobId = crypto.randomUUID();
+    runBackgroundMerge(jobId, owner, repo, prData.number, newBranchName, token);
+
     return res.json({
       success: true,
       branchName: newBranchName,
+      jobId,
       pullRequest: {
         number: prData.number,
         html_url: prData.html_url,
@@ -647,6 +656,95 @@ router.get('/check-mergeability', async (req, res) => {
     console.error('[Check Mergeability Route Error]', err);
     return res.status(500).json({ success: false, error: err.message || 'Server error occurred checking mergeability.' });
   }
+});
+
+// In-memory merge jobs map
+export const mergeJobs = new Map();
+
+async function runBackgroundMerge(jobId, owner, repo, prNumber, featureBranch, token) {
+  mergeJobs.set(jobId, {
+    id: jobId,
+    status: 'processing',
+    progress: 'Initiating conflict resolution...',
+    error: null,
+    result: null
+  });
+
+  try {
+    const octokit = new Octokit({ auth: token });
+    const result = await resolveAndMerge(owner, repo, prNumber, featureBranch, octokit, null);
+    
+    if (result.success) {
+      // Invalidate deep context cache so next chat uses fresh repo data
+      repoContextBuilder.invalidateCache(`${owner}/${repo}`);
+      mergeJobs.set(jobId, {
+        id: jobId,
+        status: 'completed',
+        progress: 'Resolved conflicts and merged PR successfully.',
+        error: null,
+        result
+      });
+    } else {
+      mergeJobs.set(jobId, {
+        id: jobId,
+        status: 'failed',
+        progress: 'Failed to resolve conflicts automatically.',
+        error: result.reason || 'Could not resolve conflicts.',
+        result
+      });
+    }
+  } catch (err) {
+    console.error(`[Background Merge Error] Job ${jobId} failed:`, err);
+    mergeJobs.set(jobId, {
+      id: jobId,
+      status: 'failed',
+      progress: 'Error during resolution/merge execution.',
+      error: err.message || 'Unknown error occurred.',
+      result: { success: false, reason: err.message, requiresManual: true }
+    });
+  }
+}
+
+router.post('/merge', async (req, res) => {
+  try {
+    const { owner, repo, prNumber, featureBranch } = req.body;
+    if (!owner || !repo || !prNumber || !featureBranch) {
+      return res.status(400).json({ success: false, error: 'owner, repo, prNumber, and featureBranch are required.' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
+    const token = user?.githubToken || process.env.GITHUB_TOKEN;
+
+    if (!token) {
+      return res.status(400).json({ success: false, error: 'GitHub token not found. Please connect your GitHub account.' });
+    }
+
+    const jobId = crypto.randomUUID();
+    runBackgroundMerge(jobId, owner, repo, Number(prNumber), featureBranch, token);
+
+    return res.json({
+      success: true,
+      jobId,
+      message: 'Merge conflict resolution started.'
+    });
+  } catch (err) {
+    console.error('[Merge Route Error]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Server error occurred during merge initiation.' });
+  }
+});
+
+router.get('/status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = mergeJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, error: 'Job not found.' });
+  }
+  return res.json({
+    success: true,
+    job
+  });
 });
 
 export default router;

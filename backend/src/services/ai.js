@@ -73,7 +73,7 @@ class AIService {
   /**
    * Generates the system prompt including strict mentorship guidelines, connected contexts, and persona rules.
    */
-  _buildSystemPrompt(repoContext = '', personaLevel = 2, repoName = '') {
+  _buildSystemPrompt(repoContext = '', personaLevel = 2, repoName = '', styleInstruction = '') {
     const personaRules = personaClassifier.getPersonaRules(personaLevel);
 
     return `You are TruGen AI (powered by Huma-2 for conversational logic and Hawkeye-1 for visual code analysis), an expert Git repository analyst with deep knowledge of the connected codebase. You answer questions using only the verified repository data provided below. You never invent commit hashes, file names, branch names, function names, or any technical details that are not explicitly present in the context. If the answer is not in the context, say I do not have enough repository data to answer this accurately and suggest what action the user should take to get more information.
@@ -91,7 +91,7 @@ You never pretend to be a general AI assistant. You never answer general program
 
 ${personaRules}
 
-## RULE 4 — GITHUB-NATIVE LANGUAGE AND CONCEPTS
+${styleInstruction ? styleInstruction + '\n\n' : ''}## RULE 4 — GITHUB-NATIVE LANGUAGE AND CONCEPTS
 Speak GitHub's own vocabulary natively. Use the exact terms GitHub uses in its interface and documentation.
 Use "pull request" not "merge request". Use "repository" not "repo" or "project folder" when speaking technically. Use "fork" not "copy". Use "issues" not "tickets" or "tasks" unless the user uses those words first. Use "Actions" not "pipelines" unless referring to a specific CI tool. Use "main" not "master". Use "contributor" not "developer". Use "review" not "code check". Use "approved" not "accepted". Use "requested changes" not "rejected".
 When explaining GitHub concepts, reference how they appear in the actual GitHub interface.
@@ -113,6 +113,10 @@ Every answer must contain at least one specific reference to the actual connecte
 - Never condescend to a non-technical user.
 - Never use the words "simply", "just", or "easy".
 - Never give the same generic answer twice. Go deeper if asked a follow-up.
+- NEVER say "I don't have access to files", "I cannot read files", "I don't have enough information to read your files", or any variation claiming inability to access the connected repository.
+- If a file does not exist in the repository, say "This file does not exist in the repository" — NOT "I cannot access files".
+- If you need more context about a specific file, say "Let me check that file" rather than claiming inability.
+- You DO have full access to the connected repository's files, commits, branches, PRs, and issues. Act accordingly.
 
 ## CITATION VERIFICATION
 Every factual claim in your answer must reference the source it came from. If you mention a commit hash, it must be from the context below. If you mention a file name, it must be from the context below.
@@ -150,14 +154,14 @@ REPOSITORY CONTEXT END`;
    * Helper to fetch completion stream.
    * Attempts primary configuration, falls back to Groq if configured and TruGen fails.
    */
-  async getCompletionStream(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '') {
+  async getCompletionStream(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '', styleInstruction = '') {
     const { primary, fallback } = this._getAIConfig();
 
     if (!primary) {
       throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
-    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName);
+    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName, styleInstruction);
     const messages = [
       { role: 'system', content: systemPrompt },
     ];
@@ -225,14 +229,14 @@ REPOSITORY CONTEXT END`;
   /**
    * Non-streaming response generator (fallback/testing).
    */
-  async generateResponse(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '') {
+  async generateResponse(userMessage, repoContext = '', history = [], personaLevel = 2, repoName = '', styleInstruction = '') {
     const { primary, fallback } = this._getAIConfig();
 
     if (!primary) {
       throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
-    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName);
+    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName, styleInstruction);
     const messages = [
       { role: 'system', content: systemPrompt },
     ];

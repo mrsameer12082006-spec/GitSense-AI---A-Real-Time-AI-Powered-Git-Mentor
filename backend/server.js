@@ -125,6 +125,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/repos', repoRoutes);
 app.use('/api/repo', repoRoutes);
 app.use('/api/fix', fixRoutes);
+app.use('/api/auto-fix', fixRoutes);
 app.use('/api/repos', ingestionRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/chat', chatRoutes);

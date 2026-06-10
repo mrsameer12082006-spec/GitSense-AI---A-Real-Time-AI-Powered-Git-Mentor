@@ -101,7 +101,7 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
     // 2. Fall back to checking GitHub API recursively
     const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
     const hasGitignoreOnGithub = Array.isArray(treeRes?.tree) && treeRes.tree.some(item => 
-      item.type === 'blob' && (item.path === '.gitignore' || item.path.endsWith('/.gitignore'))
+      item.type === 'blob' && (item.path.toLowerCase() === '.gitignore' || item.path.toLowerCase().endsWith('/.gitignore'))
     );
 
     if (hasGitignoreOnGithub) {
@@ -109,13 +109,100 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
       return null; // File exists on GitHub, no issue
     }
 
-    console.log(`[Detector] Missing Gitignore -> Checked local & GitHub tree. Gitignore is missing.`);
+    // 3. Extract all file extensions/paths present in the repo to perform the smart checks
+    const paths = Array.isArray(treeRes?.tree) ? treeRes.tree.filter(item => item.type === 'blob').map(item => item.path) : [];
+
+    // Do NOT flag empty or single-file repos
+    if (paths.length <= 1) {
+      console.log(`[Detector] Missing Gitignore -> Checked tree. Repo is empty or single-file. Skipping flag.`);
+      return null;
+    }
+
+    let shouldFlag = false;
+    let reason = '';
+
+    for (const p of paths) {
+      const lowercasePath = p.toLowerCase();
+      const ext = path.extname(lowercasePath);
+      const base = path.basename(lowercasePath);
+
+      // Check build configurations / build systems
+      if (base === 'package.json') {
+        shouldFlag = true;
+        reason = 'Repo contains package.json but no .gitignore — node_modules may get committed accidentally';
+        break;
+      }
+      if (base === 'pom.xml') {
+        shouldFlag = true;
+        reason = 'Repo contains pom.xml but no .gitignore — target/ build artifacts may get committed accidentally';
+        break;
+      }
+      if (base === 'build.gradle') {
+        shouldFlag = true;
+        reason = 'Repo contains build.gradle but no .gitignore — build/ artifacts may get committed accidentally';
+        break;
+      }
+      if (base === 'requirements.txt') {
+        shouldFlag = true;
+        reason = 'Repo contains requirements.txt but no .gitignore — Python virtual environments or cached files may get committed accidentally';
+        break;
+      }
+      if (base === 'cargo.toml') {
+        shouldFlag = true;
+        reason = 'Repo contains Cargo.toml but no .gitignore — target/ build artifacts may get committed accidentally';
+        break;
+      }
+      if (base === 'go.mod') {
+        shouldFlag = true;
+        reason = 'Repo contains go.mod but no .gitignore — vendor/ or binary artifacts may get committed accidentally';
+        break;
+      }
+
+      // Check sensitive files
+      if (base === '.env' || base.endsWith('.env') || base === '.env.example') {
+        shouldFlag = true;
+        reason = `Repo contains sensitive environment file (${base}) but no .gitignore — credentials may be leaked`;
+        break;
+      }
+
+      // Check languages
+      if (['.js', '.ts', '.jsx', '.tsx'].includes(ext)) {
+        shouldFlag = true;
+        reason = `Repo contains JavaScript/TypeScript files (${base}) but no .gitignore — node_modules or build output may get committed accidentally`;
+        break;
+      }
+      if (ext === '.py') {
+        shouldFlag = true;
+        reason = `Repo contains Python files (${base}) but no .gitignore — __pycache__ or venv/ directories may get committed accidentally`;
+        break;
+      }
+      if (['.java', '.kt'].includes(ext)) {
+        shouldFlag = true;
+        reason = `Repo contains Java/Kotlin source files (${base}) but no .gitignore — compiled .class or target/ files may get committed accidentally`;
+        break;
+      }
+      if (ext === '.cs') {
+        shouldFlag = true;
+        reason = `Repo contains C# files (${base}) but no .gitignore — bin/ or obj/ build directories may get committed accidentally`;
+        break;
+      }
+    }
+
+    if (!shouldFlag) {
+      console.log(`[Detector] Missing Gitignore -> Smart check passed. No flag needed for this repository.`);
+      return null;
+    }
+
+    console.log(`[Detector] Missing Gitignore -> Smart check failed (${reason}). Flagging issue.`);
     return {
       id: 'missing-gitignore',
+      type: 'missing_gitignore',
       category: 'Repository Quality',
       severity: 'warning',
       title: 'Missing .gitignore File',
       affectedResource: '.gitignore',
+      reason,
+      autoFixable: true,
       manualFixCommands: [
         `touch .gitignore`,
         `echo "node_modules/\n.env" >> .gitignore`,
@@ -126,31 +213,13 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
       fixRiskLevel: 'Safe',
       fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
       isFixed: false,
-      rawState: { status: 404 }
+      rawState: { status: 404, reason }
     };
   } catch (err) {
     if (err.message.includes('not found') || err.message.includes('404')) {
-      console.log(`[Detector] Missing Gitignore -> 404 confirmed. Reporting issue.`);
-      return {
-        id: 'missing-gitignore',
-        category: 'Repository Quality',
-        severity: 'warning',
-        title: 'Missing .gitignore File',
-        affectedResource: '.gitignore',
-        manualFixCommands: [
-          `touch .gitignore`,
-          `echo "node_modules/\n.env" >> .gitignore`,
-          `git add .gitignore`,
-          `git commit -m "Add .gitignore"`
-        ],
-        fixType: 'create_gitignore',
-        fixRiskLevel: 'Safe',
-        fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
-        isFixed: false,
-        rawState: { status: 404 }
-      };
+      console.log(`[Detector] Missing Gitignore -> 404 tree/ref. Skip flagging empty repository.`);
+      return null;
     }
-    // Rate limit or auth error -> return null to avoid false positive
     console.warn(`[Detector] Missing Gitignore check skipped due to error: ${err.message}`);
     return null;
   }

@@ -7,6 +7,9 @@ import userMemoryService from '../services/userMemory.js';
 import ragService from '../services/rag.js';
 import personaClassifier from '../services/personaClassifier.js';
 import citationVerifier from '../services/citationVerifier.js';
+import styleDetector from '../services/styleDetector.js';
+import repoContextBuilder from '../services/repoContextBuilder.js';
+import webSearchService from '../services/webSearch.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -83,6 +86,24 @@ router.post('/', async (req, res) => {
     const persona = personaClassifier.classify(message, history);
     console.log(`[Chat] Classified user persona: level ${persona.level} (${persona.label})`);
 
+    // 1b. Detect communication style from last 3 user messages
+    let styleInstruction = '';
+    try {
+      const userMessages = history
+        .filter(m => m.role === 'user')
+        .map(m => m.content)
+        .slice(-3);
+      userMessages.push(message); // Include current message
+      const recentMessages = userMessages.slice(-3);
+      const styleProfile = styleDetector.detectStyle(recentMessages);
+      styleInstruction = styleDetector.buildStyleInstruction(styleProfile);
+      if (styleInstruction) {
+        console.log(`[Chat] Style detected — hinglish: ${styleProfile.hinglish}, casual: ${styleProfile.casual}, technical: ${styleProfile.technical}, emoji: ${styleProfile.emojiHeavy}, length: ${styleProfile.lengthPreference}`);
+      }
+    } catch (err) {
+      console.error('[Chat] Style detection failed (non-fatal):', err.message);
+    }
+
     // 2. Expand query & Retrieve Repository Chunks using Vector Store
     let repoContext = '';
     let relevantChunks = [];
@@ -102,6 +123,54 @@ router.post('/', async (req, res) => {
       unifiedContext += `${repoContext}\n\n`;
     } else {
       unifiedContext += `No connected repository. Answer based on general Git knowledge.\n\n`;
+    }
+
+    // 2b. Deep repository context (file tree + configs + source files)
+    if (repoRecord) {
+      try {
+        const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+        const deepContext = await repoContextBuilder.buildDeepContext(
+          { owner: repoRecord.owner, name: repoRecord.name, defaultBranch: repoRecord.defaultBranch, id: repoRecord.id },
+          user?.githubToken || null
+        );
+        if (deepContext) {
+          unifiedContext += `\n${deepContext}\n\n`;
+        }
+      } catch (err) {
+        console.error('[Chat] Deep context build failed (non-fatal):', err.message);
+      }
+    }
+
+    // 2c. Live file fetch for mentioned files
+    if (repoRecord) {
+      try {
+        const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+        const liveFileContext = await repoContextBuilder.fetchMentionedFiles(
+          message, unifiedContext,
+          { owner: repoRecord.owner, name: repoRecord.name },
+          user?.githubToken || null
+        );
+        if (liveFileContext) {
+          unifiedContext += liveFileContext + '\n\n';
+        }
+      } catch (err) {
+        console.error('[Chat] Live file fetch failed (non-fatal):', err.message);
+      }
+    }
+
+    // 2d. Web search for external library/framework questions
+    try {
+      const searchQuery = repoContextBuilder.detectExternalQuery(message, unifiedContext);
+      if (searchQuery) {
+        console.log(`[Chat] External query detected, searching: "${searchQuery}"`);
+        const searchResults = await webSearchService.search(searchQuery);
+        const searchContext = webSearchService.formatResultsForContext(searchResults);
+        if (searchContext) {
+          unifiedContext += `\n${searchContext}\n`;
+        }
+      }
+    } catch (err) {
+      console.error('[Chat] Web search failed (non-fatal):', err.message);
     }
 
     // Add Past Conversation Memory if any
@@ -128,13 +197,14 @@ router.post('/', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Get completion stream from AI Service with persona level
+    // Get completion stream from AI Service with persona level and style instruction
     const stream = await aiService.getCompletionStream(
       message,
       unifiedContext,
       history,
       persona.level,
-      repoRecord?.name || ''
+      repoRecord?.name || '',
+      styleInstruction
     );
 
     // Read and pipe the stream to res
