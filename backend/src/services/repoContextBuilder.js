@@ -100,16 +100,16 @@ class RepoContextBuilder {
       });
     });
 
-    // Build compact tree string (cap at 500 entries)
-    const treeEntries = filteredTree.slice(0, 500);
+    // Build compact tree string (cap at 80 entries to save budget for actual file contents)
+    const treeEntries = filteredTree.slice(0, 80);
     const treeStr = treeEntries.map(n => {
       const icon = n.type === 'tree' ? '📁' : '📄';
       const sizeStr = n.size ? ` (${this._formatSize(n.size)})` : '';
       return `${icon} ${n.path}${sizeStr}`;
     }).join('\n');
 
-    const treeTruncated = filteredTree.length > 500
-      ? `\n... and ${filteredTree.length - 500} more files/directories`
+    const treeTruncated = filteredTree.length > 80
+      ? `\n... and ${filteredTree.length - 80} more files/directories`
       : '';
 
     const treeSection = `## REPOSITORY FILE TREE (${filteredTree.length} items)\n${treeStr}${treeTruncated}`;
@@ -131,8 +131,8 @@ class RepoContextBuilder {
       ...workflowFiles.filter(p => !PRIORITY_FILES.includes(p)),
     ];
 
-    // Deduplicate and limit to top 6 priority files to keep it extremely fast
-    const uniquePriority = [...new Set(priorityPaths)].slice(0, 6);
+    // Deduplicate and limit to top 3 priority files to keep it extremely fast and small
+    const uniquePriority = [...new Set(priorityPaths)].slice(0, 3);
 
     const priorityPromises = uniquePriority.map(async (filePath) => {
       const node = fileBlobs.find(n => n.path === filePath);
@@ -140,7 +140,7 @@ class RepoContextBuilder {
       try {
         const content = await githubService.getFileContent(owner, name, filePath, token);
         if (content && content.trim()) {
-          const truncated = content.substring(0, 6000); // Cap individual config at 6KB
+          const truncated = content.substring(0, 1500); // Cap individual config at 1.5KB
           return `### CONFIG: ${filePath}\n\`\`\`\n${truncated}\n\`\`\``;
         }
       } catch (err) {
@@ -178,14 +178,14 @@ class RepoContextBuilder {
         score: this._scoreSourceFile(n.path),
       }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, 4); // Limit to top 4 key files to keep it extremely fast
+      .slice(0, 2); // Limit to top 2 key files
 
     const sourcePromises = sourceFiles.map(async (file) => {
       try {
         const content = await githubService.getFileContent(owner, name, file.path, token);
         if (content && content.trim()) {
-          const maxLen = 4000;
-          const truncated = content.substring(0, maxLen);
+        const maxLen = 800;
+        const truncated = content.substring(0, maxLen);
           const wasTruncated = content.length > maxLen;
           return `### SOURCE: ${file.path}${wasTruncated ? ' (truncated)' : ''}\n\`\`\`\n${truncated}\n\`\`\``;
         }
@@ -217,7 +217,7 @@ class RepoContextBuilder {
           const deps = Object.keys(pkg.dependencies || {});
           const devDeps = Object.keys(pkg.devDependencies || {});
           const scripts = Object.entries(pkg.scripts || {}).map(([k, v]) => `  ${k}: ${v}`).join('\n');
-          const depSummary = `## DEPENDENCY SUMMARY\n- **Dependencies** (${deps.length}): ${deps.slice(0, 20).join(', ')}${deps.length > 20 ? ` ... +${deps.length - 20} more` : ''}\n- **Dev Dependencies** (${devDeps.length}): ${devDeps.slice(0, 15).join(', ')}${devDeps.length > 15 ? ` ... +${devDeps.length - 15} more` : ''}\n- **Scripts**:\n${scripts}`;
+          const depSummary = `## DEPENDENCY SUMMARY\n- **Dependencies** (${deps.length}): ${deps.slice(0, 10).join(', ')}${deps.length > 10 ? ` ... +${deps.length - 10} more` : ''}\n- **Dev Dependencies** (${devDeps.length}): ${devDeps.slice(0, 8).join(', ')}${devDeps.length > 8 ? ` ... +${devDeps.length - 8} more` : ''}`;
           sections.push(depSummary);
         }
       } catch {
@@ -314,6 +314,149 @@ class RepoContextBuilder {
     }
 
     return null;
+  }
+
+  /**
+   * Fetch and decode README.md, package.json, and all root level files using GitHub API
+   * Decodes base64 content and structures it for injection.
+   * Results are cached for 10 minutes to prevent hitting API rate limits.
+   */
+  async fetchCriticalFiles(repo, token = null) {
+    const { owner, name } = repo;
+    const cacheKey = `critical:${repo.id || `${owner}/${name}`}`;
+    const cached = this._getCache(cacheKey);
+    if (cached) {
+      console.log(`[RepoContextBuilder] Returning cached critical files for ${cacheKey}`);
+      return cached;
+    }
+
+    console.log(`[RepoContextBuilder] Fetching critical files for ${owner}/${name}...`);
+    let readmeContent = null;
+    let readmeName = 'README.md';
+    let packageJsonContent = null;
+    const rootFiles = [];
+
+    const BINARY_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.mp3', '.mp4', '.woff', '.woff2', '.ttf', '.eot', '.exe', '.dll', '.so', '.dylib', '.DS_Store', '.git', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.gitignore'];
+    const isBinaryOrLockFile = (filename) => {
+      const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase();
+      if (BINARY_EXTENSIONS.includes(ext)) return true;
+      if (BINARY_EXTENSIONS.includes(filename.toLowerCase())) return true;
+      return false;
+    };
+
+    try {
+      const rootItems = await githubService.getRepoContents(owner, name, '', token);
+      if (Array.isArray(rootItems)) {
+        // Find README candidates
+        const readmeItem = rootItems.find(item => 
+          item.type === 'file' && 
+          (item.name.toLowerCase() === 'readme.md' || 
+           item.name.toLowerCase() === 'readme.rst' || 
+           item.name.toLowerCase() === 'readme.txt' ||
+           item.name.toLowerCase() === 'readme')
+        );
+
+        if (readmeItem) {
+          try {
+            readmeContent = await githubService.getFileContent(owner, name, readmeItem.path, token);
+            if (readmeContent) {
+              readmeContent = readmeContent.substring(0, 4000); // Cap README at 4KB
+              readmeName = readmeItem.name;
+            }
+          } catch (err) {
+            // ignore
+          }
+        }
+
+        try {
+          packageJsonContent = await githubService.getFileContent(owner, name, 'package.json', token);
+          if (packageJsonContent) packageJsonContent = packageJsonContent.substring(0, 2000); // Cap package.json at 2KB
+        } catch (err) {
+          // ignore
+        }
+
+        const otherFiles = rootItems.filter(item => 
+          item.type === 'file' && 
+          item.name !== readmeName && 
+          item.name !== 'package.json' &&
+          !isBinaryOrLockFile(item.name) &&
+          (!item.size || item.size < 50000)
+        ).slice(0, 3);
+
+        const otherPromises = otherFiles.map(async (item) => {
+          try {
+            const content = await githubService.getFileContent(owner, name, item.path, token);
+            return { name: item.name, content: content ? content.substring(0, 600) : null }; // Cap other files at 600 chars
+          } catch (err) {
+            return { name: item.name, content: null };
+          }
+        });
+
+        const otherResults = await Promise.all(otherPromises);
+        for (const res of otherResults) {
+          if (res.content) {
+            rootFiles.push(res);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[RepoContextBuilder] Failed to list root contents:', err.message);
+    }
+
+    // Fallback direct-fetch if list failed or readme/package.json not found
+    if (!readmeContent) {
+      const candidates = ['README.md', 'readme.md', 'README.rst', 'README.txt', 'readme'];
+      for (const candidate of candidates) {
+        try {
+          const content = await githubService.getFileContent(owner, name, candidate, token);
+          if (content !== null && content !== undefined) {
+            readmeContent = content.substring(0, 4000);
+            readmeName = candidate;
+            break;
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
+    }
+
+    if (!packageJsonContent) {
+      try {
+        const content = await githubService.getFileContent(owner, name, 'package.json', token);
+        if (content !== null && content !== undefined) {
+          packageJsonContent = content.substring(0, 2000);
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    let criticalContext = '';
+
+    if (readmeContent !== null && readmeContent.trim()) {
+      criticalContext += `Here is the FULL ACTUAL CONTENT of README.md from the connected repo:\n`;
+      criticalContext += `${readmeContent}\n\n`;
+      criticalContext += `Use this exact content to answer any question about the README. Do not summarize from memory. Do not guess. Read this content and answer from it directly.\n\n`;
+    } else {
+      criticalContext += `Here is the FULL ACTUAL CONTENT of README.md from the connected repo:\n`;
+      criticalContext += `I tried to read your README.md but it returned empty or does not exist in this repo.\n\n`;
+    }
+
+    if (packageJsonContent !== null && packageJsonContent.trim()) {
+      criticalContext += `Here is the FULL ACTUAL CONTENT of package.json from the connected repo:\n`;
+      criticalContext += `${packageJsonContent}\n\n`;
+      criticalContext += `Use this exact content to answer any question about the project dependencies, scripts, or package metadata. Do not guess or summarize from memory.\n\n`;
+    }
+
+    if (rootFiles.length > 0) {
+      criticalContext += `Here is the ACTUAL CONTENT of other root-level files in the repository:\n\n`;
+      for (const file of rootFiles) {
+        criticalContext += `### FILE: ${file.name}\n\`\`\`\n${file.content}\n\`\`\`\n\n`;
+      }
+    }
+
+    this._setCache(cacheKey, criticalContext);
+    return criticalContext;
   }
 
   /**

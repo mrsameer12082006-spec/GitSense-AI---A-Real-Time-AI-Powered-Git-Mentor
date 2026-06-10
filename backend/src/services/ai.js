@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import personaClassifier from './personaClassifier.js';
+import githubService from './github.js';
 
 /**
  * AI Service — handles interactions with either TruGen AI or Groq API endpoints.
@@ -31,33 +32,8 @@ class AIService {
     const groqBaseURL = 'https://api.groq.com/openai/v1';
     const groqModel = 'llama-3.3-70b-versatile';
 
-    // If TRUGEN_API_KEY starts with gsk_, treat it as a Groq key
-    if (trugenKey && trugenKey.startsWith('gsk_')) {
-      primary = {
-        apiKey: trugenKey,
-        baseURL: groqBaseURL,
-        model: groqModel,
-        isGroq: true,
-        name: 'Groq (via TruGen Key)'
-      };
-    } else if (trugenKey) {
-      primary = {
-        apiKey: trugenKey,
-        baseURL: trugenBaseURL,
-        model: trugenModel,
-        isGroq: false,
-        name: 'TruGen'
-      };
-      if (groqKey) {
-        fallback = {
-          apiKey: groqKey,
-          baseURL: groqBaseURL,
-          model: groqModel,
-          isGroq: true,
-          name: 'Groq'
-        };
-      }
-    } else if (groqKey) {
+    // Promote Groq as primary if available
+    if (groqKey) {
       primary = {
         apiKey: groqKey,
         baseURL: groqBaseURL,
@@ -65,6 +41,33 @@ class AIService {
         isGroq: true,
         name: 'Groq'
       };
+      if (trugenKey && !trugenKey.startsWith('gsk_')) {
+        fallback = {
+          apiKey: trugenKey,
+          baseURL: trugenBaseURL,
+          model: trugenModel,
+          isGroq: false,
+          name: 'TruGen'
+        };
+      }
+    } else if (trugenKey) {
+      if (trugenKey.startsWith('gsk_')) {
+        primary = {
+          apiKey: trugenKey,
+          baseURL: groqBaseURL,
+          model: groqModel,
+          isGroq: true,
+          name: 'Groq (via TruGen Key)'
+        };
+      } else {
+        primary = {
+          apiKey: trugenKey,
+          baseURL: trugenBaseURL,
+          model: trugenModel,
+          isGroq: false,
+          name: 'TruGen'
+        };
+      }
     }
 
     return { primary, fallback };
@@ -76,7 +79,7 @@ class AIService {
   _buildSystemPrompt(repoContext = '', personaLevel = 2, repoName = '', styleInstruction = '') {
     const personaRules = personaClassifier.getPersonaRules(personaLevel);
 
-    return `You are TruGen AI (powered by Huma-2 for conversational logic and Hawkeye-1 for visual code analysis), an expert Git repository analyst with deep knowledge of the connected codebase. You answer questions using only the verified repository data provided below. You never invent commit hashes, file names, branch names, function names, or any technical details that are not explicitly present in the context. If the answer is not in the context, say I do not have enough repository data to answer this accurately and suggest what action the user should take to get more information.
+    return `You are GitSense AI (powered by Huma-2 for conversational logic and Hawkeye-1 for visual code analysis), an expert Git repository analyst with deep knowledge of the connected codebase. You answer questions using only the verified repository data provided below. You never invent commit hashes, file names, branch names, function names, or any technical details that are not explicitly present in the context. If the answer is not in the context, say I do not have enough repository data to answer this accurately and suggest what action the user should take to get more information.
 
 ## RULE 1 — STRICT GITHUB AND REPOSITORY ONLY BOUNDARY
 Your entire knowledge and purpose is limited to the following domains only:
@@ -117,6 +120,37 @@ Every answer must contain at least one specific reference to the actual connecte
 - If a file does not exist in the repository, say "This file does not exist in the repository" — NOT "I cannot access files".
 - If you need more context about a specific file, say "Let me check that file" rather than claiming inability.
 - You DO have full access to the connected repository's files, commits, branches, PRs, and issues. Act accordingly.
+
+## RULE 8 — COVER EVERY QUESTION ASKED
+CRITICAL RULE: If the user asks multiple questions in one message, you MUST answer ALL of them. Never skip a question. Never partially answer. Go through every question the user asked, one by one, and answer each fully. If you answered a question in a previous message and the user is asking about it again, answer it again — do not assume they understood.
+Before sending your reply, count how many questions the user asked. Make sure your reply addresses every single one.
+
+## RULE 9 — SPECIFIC AND HELPFUL ACTIONS & INSIGHTS
+- The "recommendation" field (Recommended Action) MUST be a REAL, actionable next step based on what was just discussed (e.g. "Run issue scan", "Check branch status", "View recent commits").
+- Never suggest "check out the file" or "read more documentation" when the user just asked about that file. Suggest a specific action related to WHAT WAS IN the file, or a GitSense tool action.
+- If there is genuinely no useful next action, set the "recommendation" field to "None" or omit it — do not show a useless/generic recommendation.
+- The "insight" field (GitSense Insights) MUST contain ONE specific, real, and value-adding insight pulled directly from the actual repository data (e.g., "package.json shows this project uses React 18 and Express 4").
+- Never show a generic insight that could apply to any repo on earth (like "README contains essential information about the repo"). If there is no real specific insight, set "insight" to "None" or omit it.
+
+## RULE 10 — GROUND IN ACTUAL REPOSITORY DATA
+You are connected to a real GitHub repository. You have been given the ACTUAL FILE CONTENTS in the context below (marked with "Here is the FULL ACTUAL CONTENT of..."). Every answer you give MUST quote, reference, or paraphrase SPECIFIC text from those actual file contents. 
+CRITICAL: When a user asks "what is in this repo?" or "tell me about this repo", you MUST:
+1. Find the README content in the context below
+2. QUOTE specific sections from the actual README text (project name, description, features, tech stack, etc.)
+3. Reference specific files from the file tree
+4. Mention specific dependencies from package.json if available
+NEVER give a vague summary like "there are many details in the README" — you MUST present the actual details.
+NEVER tell the user to "go read" or "check out" any file — YOU read it for them and present the information.
+If the README file content is missing or returns empty in the context below, and the user asks about the README, you MUST respond with exactly: "I tried to read your README.md but it returned empty or does not exist in this repo" — you must NEVER make up a fake README content or describe a generic README.
+
+## RULE 11 — NEVER DEFLECT OR REDIRECT
+You are PROHIBITED from saying any variation of:
+- "README.md file mein details hai, padho" (or any language equivalent)
+- "Go read the README to know more"
+- "Check the package.json for details"
+- "You can find this information in..."
+- "The file contains information about..."
+Instead, YOU extract and present the information directly from the file contents given to you.
 
 ## CITATION VERIFICATION
 Every factual claim in your answer must reference the source it came from. If you mention a commit hash, it must be from the context below. If you mention a file name, it must be from the context below.
@@ -161,22 +195,41 @@ REPOSITORY CONTEXT END`;
       throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
-    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName, styleInstruction);
-    const messages = [
-      { role: 'system', content: systemPrompt },
-    ];
+    // Hard cap total payload at 28,000 characters (~7,000 tokens) to stay well within Groq TPM limits
+    // IMPORTANT: Critical files (README, package.json) are placed FIRST in the context
+    // by chat.js, so they will survive truncation. File tree/deep context at the end
+    // will be truncated if the budget is exceeded.
+    const MAX_BUDGET = 28000;
+    const baseSystemPrompt = this._buildSystemPrompt('', personaLevel, repoName, styleInstruction);
+    let baseSize = baseSystemPrompt.length + userMessage.length;
 
-    const recentHistory = history.slice(-20);
+    // Cap at last 8 messages (4 turns) and use only clean content to prevent history token explosion
+    const recentHistory = history.slice(-8);
+    const historyMsgs = [];
     for (const msg of recentHistory) {
-      messages.push({
+      const content = msg.content;
+      baseSize += content.length + 50;
+      historyMsgs.push({
         role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.role === 'assistant' && msg.metadata
-          ? JSON.stringify(msg.metadata)
-          : msg.content,
+        content,
       });
     }
 
-    messages.push({ role: 'user', content: userMessage });
+    const remainingBudget = Math.max(0, MAX_BUDGET - baseSize);
+    let finalRepoContext = repoContext;
+    if (repoContext.length > remainingBudget) {
+      console.warn(`[AI] ⚠️ repoContext (${repoContext.length} chars) exceeds remaining budget (${remainingBudget} chars). Truncating from end (critical files at start preserved).`);
+      finalRepoContext = repoContext.substring(0, remainingBudget) + '\n\n[File tree and deep context truncated due to size limits. Critical file contents above are intact.]';
+    } else {
+      console.log(`[AI] repoContext fits within budget: ${repoContext.length} / ${remainingBudget} chars`);
+    }
+
+    const systemPrompt = this._buildSystemPrompt(finalRepoContext, personaLevel, repoName, styleInstruction);
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...historyMsgs,
+      { role: 'user', content: userMessage }
+    ];
 
     try {
       console.log(`[AI] Attempting stream using primary provider: ${primary.name}`);
@@ -198,32 +251,86 @@ REPOSITORY CONTEXT END`;
   }
 
   async _executeStreamCall(config, messages) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
-    };
-    if (!config.isGroq) {
-      headers['x-api-key'] = config.apiKey;
+    if (config.isGroq) {
+      const models = [
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant',
+        'gemma2-9b-it',
+        'mixtral-8x7b-32768'
+      ];
+      
+      let lastErr = null;
+      for (const modelName of models) {
+        console.log(`[AI] Trying Groq model: ${modelName}`);
+        let attempts = 2;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            const headers = {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${config.apiKey}`,
+            };
+            const response = await fetch(`${config.baseURL}/chat/completions`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                model: modelName,
+                messages,
+                temperature: 0.3,
+                stream: true,
+                response_format: { type: 'json_object' }
+              }),
+            });
+
+            if (!response.ok) {
+              const errText = await response.text();
+              const isRateLimit = response.status === 429 || errText.includes('rate_limit') || errText.includes('429');
+              if (isRateLimit && attempt < attempts) {
+                console.warn(`[AI] Got 429 rate limit on model ${modelName}. Waiting 3s...`);
+                await new Promise(r => setTimeout(r, 3000));
+                continue;
+              }
+              throw new Error(`API failed with status ${response.status}: ${errText}`);
+            }
+
+            console.log(`[AI] Success with Groq model: ${modelName}`);
+            return response.body; // ReadableStream
+          } catch (err) {
+            console.error(`[AI] Model ${modelName} failed on attempt ${attempt}:`, err.message);
+            lastErr = err;
+            if (err.message.includes('429') && attempt < attempts) {
+              console.warn(`[AI] Got 429 on model ${modelName} (exception). Waiting 3s...`);
+              await new Promise(r => setTimeout(r, 3000));
+              continue;
+            }
+          }
+        }
+      }
+      throw lastErr || new Error('All Groq models failed.');
+    } else {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+        'x-api-key': config.apiKey,
+      };
+      const response = await fetch(`${config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          temperature: 0.3,
+          stream: true,
+          response_format: { type: 'json_object' }
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`API failed with status ${response.status}: ${errText}`);
+      }
+
+      return response.body;
     }
-
-    const response = await fetch(`${config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: 0.3,
-        stream: true,
-        response_format: { type: 'json_object' }
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`API failed with status ${response.status}: ${errText}`);
-    }
-
-    return response.body; // ReadableStream
   }
 
   /**
@@ -236,22 +343,36 @@ REPOSITORY CONTEXT END`;
       throw new Error('No AI provider API key is set. Add TRUGEN_API_KEY or GROQ_API_KEY to your .env file.');
     }
 
-    const systemPrompt = this._buildSystemPrompt(repoContext, personaLevel, repoName, styleInstruction);
-    const messages = [
-      { role: 'system', content: systemPrompt },
-    ];
+    // Hard cap total payload at 28,000 characters (~7,000 tokens)
+    const MAX_BUDGET = 28000;
+    const baseSystemPrompt = this._buildSystemPrompt('', personaLevel, repoName, styleInstruction);
+    let baseSize = baseSystemPrompt.length + userMessage.length;
 
-    const recentHistory = history.slice(-20);
+    // Cap at last 8 messages (4 turns) and use only clean content to prevent history token explosion
+    const recentHistory = history.slice(-8);
+    const historyMsgs = [];
     for (const msg of recentHistory) {
-      messages.push({
+      const content = msg.content;
+      baseSize += content.length + 50;
+      historyMsgs.push({
         role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.role === 'assistant' && msg.metadata
-          ? JSON.stringify(msg.metadata)
-          : msg.content,
+        content,
       });
     }
 
-    messages.push({ role: 'user', content: userMessage });
+    const remainingBudget = Math.max(0, MAX_BUDGET - baseSize);
+    let finalRepoContext = repoContext;
+    if (repoContext.length > remainingBudget) {
+      console.warn(`[AI] repoContext length (${repoContext.length}) exceeds remaining budget (${remainingBudget}). Truncating...`);
+      finalRepoContext = repoContext.substring(0, remainingBudget) + '\n\n[Context truncated due to size limits]';
+    }
+
+    const systemPrompt = this._buildSystemPrompt(finalRepoContext, personaLevel, repoName, styleInstruction);
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...historyMsgs,
+      { role: 'user', content: userMessage }
+    ];
 
     try {
       console.log(`[AI] Attempting generateResponse using primary provider: ${primary.name}`);
@@ -273,36 +394,95 @@ REPOSITORY CONTEXT END`;
   }
 
   async _executeResponseCall(config, messages) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
-    };
-    if (!config.isGroq) {
-      headers['x-api-key'] = config.apiKey;
+    let responseText = '';
+    
+    if (config.isGroq) {
+      const models = [
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant',
+        'gemma2-9b-it',
+        'mixtral-8x7b-32768'
+      ];
+      
+      let lastErr = null;
+      for (const modelName of models) {
+        console.log(`[AI] Trying Groq model (non-stream): ${modelName}`);
+        let attempts = 2;
+        let success = false;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            const headers = {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${config.apiKey}`,
+            };
+            const response = await fetch(`${config.baseURL}/chat/completions`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                model: modelName,
+                messages,
+                temperature: 0.3,
+                response_format: { type: 'json_object' }
+              }),
+            });
+
+            if (!response.ok) {
+              const errText = await response.text();
+              const isRateLimit = response.status === 429 || errText.includes('rate_limit') || errText.includes('429');
+              if (isRateLimit && attempt < attempts) {
+                console.warn(`[AI] Got 429 rate limit on non-stream model ${modelName}. Waiting 3s...`);
+                await new Promise(r => setTimeout(r, 3000));
+                continue;
+              }
+              throw new Error(`API failed with status ${response.status}: ${errText}`);
+            }
+
+            const parsedData = await response.json();
+            responseText = parsedData.choices[0]?.message?.content || '';
+            success = true;
+            break;
+          } catch (err) {
+            console.error(`[AI] Non-stream model ${modelName} failed on attempt ${attempt}:`, err.message);
+            lastErr = err;
+            if (err.message.includes('429') && attempt < attempts) {
+              console.warn(`[AI] Got 429 on non-stream model ${modelName} (exception). Waiting 3s...`);
+              await new Promise(r => setTimeout(r, 3000));
+              continue;
+            }
+          }
+        }
+        if (success) break;
+      }
+      if (!responseText && lastErr) throw lastErr;
+    } else {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+        'x-api-key': config.apiKey,
+      };
+      const response = await fetch(`${config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          temperature: 0.3,
+          response_format: { type: 'json_object' }
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`API failed with status ${response.status}: ${errText}`);
+      }
+
+      const parsedData = await response.json();
+      responseText = parsedData.choices[0]?.message?.content || '';
     }
-
-    const response = await fetch(`${config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: 0.3,
-        response_format: { type: 'json_object' }
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`API failed with status ${response.status}: ${errText}`);
-    }
-
-    const parsedData = await response.json();
-    const responseText = parsedData.choices[0]?.message?.content || '';
 
     try {
       const parsed = JSON.parse(responseText);
-      return {
+      const res = {
         text: parsed.text || 'I apologize, I could not generate a response.',
         insight: parsed.insight || null,
         recommendation: parsed.recommendation || null,
@@ -311,6 +491,41 @@ REPOSITORY CONTEXT END`;
         diff: parsed.diff || null,
         conflictResolution: parsed.conflictResolution || null,
       };
+
+      const badRecommendationPatterns = [
+        /check out (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+        /read (?:the\s+)?(?:readme|package\.json|file|docs|documentation|more)/i,
+        /look at (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+        /refer to (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+        /documentation for/i,
+        /go read/i,
+        /view the (?:readme|package\.json|file|docs)/i,
+        /open the (?:readme|package\.json|file|docs)/i,
+        /please read/i,
+        /check the file/i,
+        /more information/i
+      ];
+
+      const badInsightPatterns = [
+        /readme(?:\.md)? (?:file\s+)?contains (?:essential|information|details|an overview|instructions)/i,
+        /readme(?:\.md)? (?:provides|shows|gives) (?:an overview|information|details|essential)/i,
+        /repository (?:contains|has) (?:a readme|essential|information|source code|configuration)/i,
+        /package\.json (?:file\s+)?contains (?:dependencies|scripts|project)/i,
+        /contains (?:essential|general) information/i,
+        /is a standard/i,
+        /essential information about the repository/i,
+        /purpose and functionality/i,
+        /provides details on/i
+      ];
+
+      if (res.recommendation && badRecommendationPatterns.some(p => p.test(res.recommendation))) {
+        res.recommendation = null;
+      }
+      if (res.insight && badInsightPatterns.some(p => p.test(res.insight))) {
+        res.insight = null;
+      }
+
+      return res;
     } catch {
       return {
         text: responseText,
@@ -445,82 +660,125 @@ REPOSITORY CONTEXT END`;
   /**
    * Diagnose issues from automated scanning.
    */
-  async diagnoseIssues(issues, userLevel = 'intermediate') {
+  async diagnoseIssues(issues, userLevel = 'intermediate', token = null, owner = null, repo = null) {
     const { primary, fallback } = this._getAIConfig();
-    
-    if (!primary) {
-      console.warn('[AIService] No API key, skipping diagnosis');
-      return issues.map(i => ({
-        ...i,
-        whatIsTheIssue: i.title,
-        howThisHappened: `Automated scan found this issue.`,
-        fixPlan: {
-          issue: i.id,
-          severity: i.severity === 'error' ? 'high' : 'medium',
-          actions: []
-        }
-      }));
-    }
 
-    const systemPrompt = `You are TruGen AI powered by Huma-2 and Hawkeye-1. You are GitSense AI's issue diagnosis and fix plan generator.
-For the given repository issue, you MUST generate a fix plan in this exact JSON format:
+    const getFilePath = (issue) => {
+      if (issue.filePath) return issue.filePath;
+      if (issue.id === 'missing-gitignore') return '.gitignore';
+      if (issue.affectedResource && !issue.affectedResource.includes(' ') && (issue.affectedResource.includes('.') || issue.affectedResource.startsWith('.'))) {
+        return issue.affectedResource;
+      }
+      return null;
+    };
+
+    const getFallbackIssue = (issue) => {
+      const filePath = getFilePath(issue);
+      const steps = (issue.manualFixCommands || []).map((cmd, idx) => ({
+        description: `Execute manual fix step ${idx + 1}`,
+        command: cmd
+      }));
+      
+      let resolvedContent = '';
+      if (issue.id === 'missing-gitignore') {
+        resolvedContent = `# Git ignore rules for GitSense AI project\nnode_modules/\n.env\n.env.local\n.env.development.local\n.env.test.local\n.env.production.local\ndist/\nbuild/\n.DS_Store\n`;
+      }
+      
+      return {
+        ...issue,
+        title: issue.title || 'Repository Issue',
+        severity: issue.severity || 'warning',
+        rootCause: issue.reason || `Automated scanners detected a repository issue under ${issue.category || 'Quality'}.`,
+        steps: steps.length > 0 ? steps : [{ description: issue.fixDescription || 'Investigate and resolve the issue.' }],
+        filePath: filePath || '',
+        resolvedContent: resolvedContent || null
+      };
+    };
+
+    const systemPrompt = `You are GitSense AI powered by Huma-2 and Hawkeye-1. You are GitSense AI's issue diagnosis and fix plan generator.
+For the given repository issue, you must diagnose the issue and generate a resolution plan in the exact JSON format specified.
+Do NOT include any markdown code blocks, backticks, or other formatting wrapper outside the JSON output.
+
+JSON Format:
 {
-  "issue": "<issue_type>",
-  "severity": "low | medium | high",
-  "actions": [
+  "title": "A short, descriptive, premium title for the issue",
+  "severity": "critical | warning",
+  "rootCause": "A detailed explanation of why this issue exists and what problems it might cause if unresolved",
+  "steps": [
     {
-      "type": "create_file | update_file | delete_branch | update_settings",
-      "path": "<file path if applicable>",
-      "branch": "<branch name if applicable>",
-      "content": "<file content if applicable>",
-      "message": "<commit message>"
+      "description": "Step-by-step instruction on how the user can fix this manually",
+      "command": "Optional single command line to execute for this step (e.g. git command, touch, etc.)"
     }
-  ]
+  ],
+  "filePath": "The relative path of the file to fix/create (e.g. '.gitignore')",
+  "resolvedContent": "The complete, correct, and fully resolved content of the file that fixes the issue"
 }
 
-Rules:
-1. Always return a valid JSON object matching this schema. Never return plain text. Never wrap the JSON in markdown code blocks.
-2. Under 'actions', specify the exact actions required to fix this issue:
-   - For missing .gitignore, create a file at path '.gitignore' with a modern boilerplate content matching the project type (Node, Python, Go, etc.) and a clear commit message.
-   - For stale branch, delete the branch by specifying type 'delete_branch' and the branch name.
-   - For other issues, choose the appropriate action types (create_file, update_file, delete_branch, update_settings).
-3. The 'severity' field should be 'low', 'medium', or 'high'.
-4. Do not invent details not present or not logically derived.`;
+Ensure the "resolvedContent" contains NO placeholders (like '// TODO' or '...'). It must be the complete, ready-to-write file.`;
 
     const diagnosed = [];
     for (const issue of issues) {
-      try {
-        console.log(`[AI] Attempting diagnoseIssues for issue ${issue.id} using primary provider: ${primary.name}`);
-        const content = await this._executeFixPlanCall(primary, systemPrompt, issue, userLevel);
-        const fixPlan = JSON.parse(content);
-        diagnosed.push({
-          ...issue,
-          whatIsTheIssue: issue.title || `Issue detected in category: ${issue.category}`,
-          howThisHappened: `GitSense automated scanners identified a repository quality issue: ${issue.title || issue.id}.`,
-          fixPlan
-        });
-      } catch (err) {
-        console.error(`[AI] Primary provider ${primary.name} diagnosis failed for issue ${issue.id}:`, err.message);
-        let fallbackPlan = null;
-        if (fallback) {
-          try {
-            console.log(`[AI] Reverting/falling back for diagnosis to: ${fallback.name}`);
-            const content = await this._executeFixPlanCall(fallback, systemPrompt, issue, userLevel);
-            fallbackPlan = JSON.parse(content);
-          } catch (fallbackErr) {
-            console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
-          }
+      const filePath = getFilePath(issue);
+      let currentContent = '';
+      let fileFetched = false;
+
+      if (filePath && token && owner && repo) {
+        try {
+          currentContent = await githubService.getFileContent(owner, repo, filePath, token);
+          fileFetched = true;
+          console.log(`[AI Diagnose] Successfully fetched content for ${filePath}`);
+        } catch (err) {
+          console.warn(`[AI Diagnose] Could not fetch content for ${filePath} (may not exist yet):`, err.message);
+          currentContent = '';
         }
+      }
+
+      const issuePayload = {
+        ...issue,
+        filePath,
+        currentContent
+      };
+
+      let resultJson = null;
+      if (primary) {
+        try {
+          console.log(`[AI] Attempting diagnoseIssues for issue ${issue.id} using primary provider: ${primary.name}`);
+          const content = await this._executeFixPlanCall(primary, systemPrompt, issuePayload, userLevel);
+          resultJson = JSON.parse(content);
+        } catch (err) {
+          console.error(`[AI] Primary provider ${primary.name} diagnosis failed for issue ${issue.id}:`, err.message);
+        }
+      }
+
+      if (!resultJson && fallback) {
+        try {
+          console.log(`[AI] Reverting/falling back for diagnosis to: ${fallback.name}`);
+          const content = await this._executeFixPlanCall(fallback, systemPrompt, issuePayload, userLevel);
+          resultJson = JSON.parse(content);
+        } catch (fallbackErr) {
+          console.error(`[AI] Fallback provider ${fallback.name} also failed:`, fallbackErr.message);
+        }
+      }
+
+      if (resultJson) {
+        const mappedSteps = Array.isArray(resultJson.steps) && resultJson.steps.length > 0
+          ? resultJson.steps
+          : (issue.manualFixCommands || []).map((cmd, idx) => ({
+              description: `Execute manual fix step ${idx + 1}`,
+              command: cmd
+            }));
+
         diagnosed.push({
           ...issue,
-          whatIsTheIssue: issue.title || `Issue detected in category: ${issue.category}`,
-          howThisHappened: `GitSense automated scanners identified a repository quality issue: ${issue.title || issue.id}.`,
-          fixPlan: fallbackPlan || {
-            issue: issue.id,
-            severity: issue.severity === 'error' ? 'high' : 'medium',
-            actions: []
-          }
+          title: resultJson.title || issue.title || 'Repository Issue',
+          severity: resultJson.severity || issue.severity || 'warning',
+          rootCause: resultJson.rootCause || issue.reason || 'No root cause analysis available.',
+          steps: mappedSteps.length > 0 ? mappedSteps : [{ description: issue.fixDescription || 'Investigate and resolve the issue.' }],
+          filePath: resultJson.filePath || filePath || '',
+          resolvedContent: resultJson.resolvedContent || null
         });
+      } else {
+        diagnosed.push(getFallbackIssue(issue));
       }
     }
     return diagnosed;

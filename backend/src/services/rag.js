@@ -117,7 +117,7 @@ class RAGService {
    */
   async retrieveRelevantChunks(query, repositoryId, options = {}) {
     const limit = options.limit || 12;
-    const threshold = options.threshold || 0.35;
+    const threshold = options.threshold || 0.30;
 
     try {
       // 1. Embed user query
@@ -132,6 +132,25 @@ class RAGService {
         console.log(`[RAGService] No chunks found in DB for repo ${repositoryId}`);
         return [];
       }
+
+      // Calculate similarity scores for all chunks before filtering for debugging
+      const allScored = dbChunks.map(chunk => {
+        const chunkEmbedding = typeof chunk.embedding === 'string'
+          ? JSON.parse(chunk.embedding)
+          : chunk.embedding;
+        return {
+          sourceType: chunk.sourceType,
+          path: chunk.sourceId,
+          score: embeddingService.cosineSimilarity(queryEmbedding, chunkEmbedding)
+        };
+      });
+      allScored.sort((a, b) => b.score - a.score);
+      const topFiveBeforeFilter = allScored.slice(0, 5).map(s => `${s.sourceType} (${s.path}): ${s.score.toFixed(4)}`).join(', ');
+
+      console.log(`[RAG DEBUG] Querying Repo ID: ${repositoryId}`);
+      console.log(`[RAG DEBUG] Querying Prisma collection: repoChunk`);
+      console.log(`[RAG DEBUG] Total chunks for repo in DB: ${dbChunks.length}`);
+      console.log(`[RAG DEBUG] Top similarity scores before filter: ${topFiveBeforeFilter || 'None'}`);
 
       // 3. Compute similarities and sort
       const scored = embeddingService.search(queryEmbedding, dbChunks, limit, threshold);
@@ -193,7 +212,7 @@ class RAGService {
 
       // 2. Fetch similarity search results in parallel
       const resultsPromises = alternativeQueries.map(q =>
-        this.retrieveRelevantChunks(q, repositoryId, { limit: 10, threshold: 0.35 })
+        this.retrieveRelevantChunks(q, repositoryId, { limit: 10, threshold: 0.30 })
       );
       
       const resultsArrays = await Promise.all(resultsPromises);

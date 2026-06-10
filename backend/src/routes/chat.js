@@ -14,6 +14,13 @@ import webSearchService from '../services/webSearch.js';
 const router = Router();
 const prisma = new PrismaClient();
 
+function isValidBlock(val) {
+  if (!val) return false;
+  if (typeof val !== 'string') return true;
+  const trimmed = val.trim().toLowerCase();
+  return trimmed !== '' && trimmed !== 'none' && trimmed !== 'n/a' && trimmed !== 'null';
+}
+
 router.use(authenticate);
 
 // ── POST /api/chat ──────────────────────────────────────────
@@ -104,28 +111,48 @@ router.post('/', async (req, res) => {
       console.error('[Chat] Style detection failed (non-fatal):', err.message);
     }
 
-    // 2. Expand query & Retrieve Repository Chunks using Vector Store
-    let repoContext = '';
-    let relevantChunks = [];
-    if (repoRecord) {
-      try {
-        relevantChunks = await ragService.retrieveWithExpansion(message, repoRecord.id);
-        repoContext = ragService.formatChunksForContext(relevantChunks);
-      } catch (err) {
-        console.error('[Chat] Failed to retrieve repository chunks:', err.message);
-        repoContext = `Repository: ${repoRecord.fullName} (context unavailable)`;
-      }
-    }
-
-    // Build unified context
+    // 2. Build unified context — CRITICAL FILES FIRST (highest priority, never truncated)
     let unifiedContext = ``;
-    if (repoRecord) {
-      unifiedContext += `${repoContext}\n\n`;
-    } else {
+    let relevantChunks = [];
+
+    if (!repoRecord) {
       unifiedContext += `No connected repository. Answer based on general Git knowledge.\n\n`;
     }
 
-    // 2b. Deep repository context (file tree + configs + source files)
+    // 2a. CRITICAL FILES FIRST — README, package.json, root files (actual decoded content)
+    // These go first so they are NEVER truncated by the token budget
+    if (repoRecord) {
+      try {
+        const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+        const criticalFilesContext = await repoContextBuilder.fetchCriticalFiles(
+          { owner: repoRecord.owner, name: repoRecord.name, defaultBranch: repoRecord.defaultBranch, id: repoRecord.id },
+          user?.githubToken || null
+        );
+        if (criticalFilesContext) {
+          unifiedContext += `${criticalFilesContext}\n\n`;
+          console.log(`[Chat] Critical files context injected: ${criticalFilesContext.length} chars`);
+        } else {
+          console.warn(`[Chat] No critical files context returned for ${repoRecord.fullName}`);
+        }
+      } catch (err) {
+        console.error('[Chat] Critical files fetch failed (non-fatal):', err.message);
+      }
+    }
+
+    // 2b. RAG chunks (medium priority)
+    if (repoRecord) {
+      try {
+        relevantChunks = await ragService.retrieveWithExpansion(message, repoRecord.id);
+        const repoContext = ragService.formatChunksForContext(relevantChunks);
+        if (repoContext) {
+          unifiedContext += `${repoContext}\n\n`;
+        }
+      } catch (err) {
+        console.error('[Chat] Failed to retrieve repository chunks:', err.message);
+      }
+    }
+
+    // 2c. Deep repository context — file tree + configs (LOWEST priority, can be truncated)
     if (repoRecord) {
       try {
         const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -141,7 +168,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 2c. Live file fetch for mentioned files
+    // 2d. Live file fetch for mentioned files
     if (repoRecord) {
       try {
         const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -158,7 +185,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 2d. Web search for external library/framework questions
+    // 2e. Web search for external library/framework questions
     try {
       const searchQuery = repoContextBuilder.detectExternalQuery(message, unifiedContext);
       if (searchQuery) {
@@ -172,6 +199,8 @@ router.post('/', async (req, res) => {
     } catch (err) {
       console.error('[Chat] Web search failed (non-fatal):', err.message);
     }
+
+    console.log(`[Chat] Total unified context size: ${unifiedContext.length} chars`);
 
     // Add Past Conversation Memory if any
     let crossConversationContext = '';
@@ -319,6 +348,59 @@ router.post('/', async (req, res) => {
       };
     }
 
+    const badRecommendationPatterns = [
+      /check out (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+      /read (?:the\s+)?(?:readme|package\.json|file|docs|documentation|more)/i,
+      /look at (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+      /refer to (?:the\s+)?(?:readme|package\.json|file|docs|documentation)/i,
+      /documentation for/i,
+      /go read/i,
+      /view the (?:readme|package\.json|file|docs)/i,
+      /open the (?:readme|package\.json|file|docs)/i,
+      /please read/i,
+      /check the file/i,
+      /more information/i,
+      /carefully read/i,
+      /padho|padhein|dekho|dekhein/i,
+      /understand the project/i,
+      /to understand (?:the|this) (?:project|repo|repository)/i,
+      /familiarize yourself/i,
+      /review (?:the\s+)?readme/i,
+      /explore (?:the\s+)?(?:readme|repo|codebase|files)/i,
+    ];
+
+    const badInsightPatterns = [
+      /readme(?:\.md)? (?:file\s+)?contains (?:essential|information|details|an overview|instructions)/i,
+      /readme(?:\.md)? (?:provides|shows|gives) (?:an overview|information|details|essential)/i,
+      /repository (?:contains|has) (?:a readme|essential|information|source code|configuration)/i,
+      /package\.json (?:file\s+)?contains (?:dependencies|scripts|project)/i,
+      /contains (?:essential|general) information/i,
+      /is a standard/i,
+      /essential information about the repository/i,
+      /purpose and functionality/i,
+      /provides details on/i,
+      /bahut saari details/i,
+      /mein (?:bahut|kaafi|saari) (?:details|information)/i,
+      /important information about/i,
+      /contains (?:useful|important|key|relevant) (?:information|details|data)/i,
+      /file (?:has|contains) (?:the|all) (?:details|information|everything)/i,
+    ];
+
+    if (parsedAI.recommendation) {
+      const isBad = badRecommendationPatterns.some(pattern => pattern.test(parsedAI.recommendation));
+      if (isBad) {
+        console.log(`[Chat] Sanitized / removed generic recommendation: "${parsedAI.recommendation}"`);
+        parsedAI.recommendation = undefined;
+      }
+    }
+    if (parsedAI.insight) {
+      const isBad = badInsightPatterns.some(pattern => pattern.test(parsedAI.insight));
+      if (isBad) {
+        console.log(`[Chat] Sanitized / removed generic insight: "${parsedAI.insight}"`);
+        parsedAI.insight = undefined;
+      }
+    }
+
     // 3. Post-Process: Citation Verification against retrieved chunks
     if (relevantChunks.length > 0) {
       try {
@@ -332,9 +414,11 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Fetch repository issues (Self-diagnosis)
+    // Fetch repository issues (Self-diagnosis) only if the user query is diagnostic/error related
     let diagnosedIssue = null;
-    if (repoRecord) {
+    const isDiagnosticRequest = /fix|error|issue|bug|conflict|broken|fail|warning|problem|diagnose|health/i.test(message);
+    
+    if (repoRecord && isDiagnosticRequest) {
       try {
         const user = await prisma.user.findUnique({ where: { id: req.user.id } });
         const healthDetails = await githubService.getRepoHealth(
@@ -364,12 +448,12 @@ router.post('/', async (req, res) => {
         personaLevel: persona.level,
         personaLabel: persona.label
       };
-      if (parsedAI.insight) metadata.insight = parsedAI.insight;
-      if (parsedAI.recommendation) metadata.recommendation = parsedAI.recommendation;
-      if (parsedAI.codeBlock) metadata.codeBlock = parsedAI.codeBlock;
-      if (parsedAI.commandBlock) metadata.commandBlock = parsedAI.commandBlock;
-      if (parsedAI.diff) metadata.diff = parsedAI.diff;
-      if (parsedAI.conflictResolution) metadata.conflictResolution = parsedAI.conflictResolution;
+      if (isValidBlock(parsedAI.insight)) metadata.insight = parsedAI.insight;
+      if (isValidBlock(parsedAI.recommendation)) metadata.recommendation = parsedAI.recommendation;
+      if (isValidBlock(parsedAI.codeBlock)) metadata.codeBlock = parsedAI.codeBlock;
+      if (isValidBlock(parsedAI.commandBlock)) metadata.commandBlock = parsedAI.commandBlock;
+      if (isValidBlock(parsedAI.diff)) metadata.diff = parsedAI.diff;
+      if (isValidBlock(parsedAI.conflictResolution)) metadata.conflictResolution = parsedAI.conflictResolution;
       if (diagnosedIssue) metadata.diagnosedIssue = diagnosedIssue;
 
       await prisma.message.create({
@@ -405,12 +489,12 @@ router.post('/', async (req, res) => {
       conversationId: conversation?.id,
       response: {
         text: parsedAI.text,
-        insight: parsedAI.insight,
-        recommendation: parsedAI.recommendation,
-        codeBlock: parsedAI.codeBlock,
-        commandBlock: parsedAI.commandBlock,
-        diff: parsedAI.diff,
-        conflictResolution: parsedAI.conflictResolution,
+        insight: isValidBlock(parsedAI.insight) ? parsedAI.insight : undefined,
+        recommendation: isValidBlock(parsedAI.recommendation) ? parsedAI.recommendation : undefined,
+        codeBlock: isValidBlock(parsedAI.codeBlock) ? parsedAI.codeBlock : undefined,
+        commandBlock: isValidBlock(parsedAI.commandBlock) ? parsedAI.commandBlock : undefined,
+        diff: isValidBlock(parsedAI.diff) ? parsedAI.diff : undefined,
+        conflictResolution: isValidBlock(parsedAI.conflictResolution) ? parsedAI.conflictResolution : undefined,
         diagnosedIssue,
         personaLevel: persona.level,
         personaLabel: persona.label
@@ -420,7 +504,35 @@ router.post('/', async (req, res) => {
     res.end();
   } catch (err) {
     console.error('[Chat] Unhandled streaming error:', err);
-    res.write(`data: ${JSON.stringify({ error: err.message || 'Streaming failed.' })}\n\n`);
+    let friendlyError = "I'm having trouble connecting right now — the AI service hit a rate limit. Give me 30 seconds and try again, or ask a shorter question.";
+
+    const errMsg = err.message || '';
+    if (errMsg.includes('github') || errMsg.includes('GitHub') || errMsg.includes('token')) {
+      friendlyError = "I encountered an issue accessing your GitHub repository. Please verify that your GitHub connection is active and valid.";
+    } else if (errMsg.includes('database') || errMsg.includes('prisma') || errMsg.includes('Prisma')) {
+      friendlyError = "I had a database connection issue. Please try again in a moment.";
+    } else if (errMsg.includes('network') || errMsg.includes('fetch') || errMsg.includes('ECONN')) {
+      friendlyError = "Network connection failed. Please ensure the backend is connected and has access to the internet.";
+    } else if (!errMsg.toLowerCase().includes('rate') && !errMsg.toLowerCase().includes('429')) {
+      friendlyError = `An unexpected error occurred: ${err.message}. Please try again.`;
+    }
+    
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+    }
+    
+    res.write(`data: ${JSON.stringify({ token: friendlyError })}\n\n`);
+    res.write(`data: ${JSON.stringify({ 
+      done: true, 
+      conversationId: conversation?.id,
+      response: {
+        text: friendlyError,
+        personaLevel: persona?.level || 2,
+        personaLabel: persona?.label || 'Junior Developer'
+      }
+    })}\n\n`);
     res.end();
   }
 });

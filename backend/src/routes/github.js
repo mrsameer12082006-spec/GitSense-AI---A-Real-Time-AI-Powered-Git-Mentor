@@ -431,4 +431,80 @@ router.post('/disconnect', authenticate, async (req, res) => {
   }
 });
 
+// ── POST /api/github/apply-fix ───────────────────────────────
+// Auto-apply resolved code fix to a GitHub file and push commit
+router.post('/apply-fix', authenticate, async (req, res) => {
+  try {
+    const { repoFullName, filePath, resolvedContent, issueTitle } = req.body;
+    
+    if (!repoFullName || !filePath || !resolvedContent || !issueTitle) {
+      return res.status(400).json({ error: 'repoFullName, filePath, resolvedContent, and issueTitle are required.' });
+    }
+
+    // Load user's GitHub OAuth token from DB
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { githubToken: true }
+    });
+    
+    const token = user?.githubToken;
+    if (!token) {
+      return res.status(401).json({ error: 'GitHub connection not found. Please connect your GitHub account.' });
+    }
+
+    console.log(`[GitHub API] Auto-fixing ${repoFullName} -> File: ${filePath}`);
+
+    // Step 1: Get current file SHA (required by GitHub API for updates)
+    const fileRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/contents/${filePath}`,
+      { 
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        } 
+      }
+    );
+    
+    let sha = undefined;
+    if (fileRes.status === 200) {
+      const fileData = await fileRes.json();
+      sha = fileData.sha;
+    } else if (fileRes.status !== 404) {
+      const errText = await fileRes.text();
+      return res.status(fileRes.status).json({ error: `Failed to retrieve existing file info: ${errText}` });
+    }
+
+    // Step 2: Push resolved content
+    const updateRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/contents/${filePath}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        },
+        body: JSON.stringify({
+          message: `GitSense AI Fix: ${issueTitle}`,
+          content: Buffer.from(resolvedContent).toString('base64'),
+          sha
+        })
+      }
+    );
+
+    if (!updateRes.ok) {
+      const errText = await updateRes.text();
+      return res.status(updateRes.status).json({ error: `Failed to update file on GitHub: ${errText}` });
+    }
+
+    const result = await updateRes.json();
+    res.json({ success: true, commitUrl: result.commit.html_url });
+  } catch (err) {
+    console.error('[GitHub] Apply fix error:', err);
+    res.status(500).json({ error: err.message || 'Server error occurred while applying the fix.' });
+  }
+});
+
 export default router;

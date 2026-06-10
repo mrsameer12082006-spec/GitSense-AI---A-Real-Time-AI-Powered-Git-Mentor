@@ -49,9 +49,25 @@ async function getRepoContext(req) {
 
   // Ensure local clone exists
   const repoPath = path.join(REPO_DIR, repository.id);
+  const gitFolderPath = path.join(repoPath, '.git');
+  
+  let existsAndHasGit = false;
   try {
     await fs.access(repoPath);
-  } catch {
+    await fs.access(gitFolderPath);
+    existsAndHasGit = true;
+  } catch (err) {
+    // Doesn't exist or doesn't have git folder
+  }
+
+  if (!existsAndHasGit) {
+    // If directory exists but has no .git folder, delete it and re-clone
+    try {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    } catch (rmErr) {
+      console.error(`[Workspace] Failed to clean existing repo directory: ${rmErr.message}`);
+    }
+    
     // Clone it
     const cloneUrl = token
       ? `https://${token}@github.com/${repository.owner}/${repository.name}.git`

@@ -100,7 +100,7 @@ class EmbeddingService {
    * @param {number} threshold - Minimum similarity score
    * @returns {{ chunk: any, score: number }[]}
    */
-  search(queryEmbedding, chunks, topK = 10, threshold = 0.35) {
+  search(queryEmbedding, chunks, topK = 10, threshold = 0.30) {
     const scored = chunks.map(chunk => {
       const chunkEmbedding = typeof chunk.embedding === 'string'
         ? JSON.parse(chunk.embedding)

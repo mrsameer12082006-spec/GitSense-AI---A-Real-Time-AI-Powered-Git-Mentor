@@ -77,7 +77,7 @@ async function hasGitignoreLocally(dir) {
 /**
  * Independent Gitignore Detector.
  */
-export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main') {
+export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main', preFetchedTree = null) {
   try {
     // 1. Check if the file exists in the local workspace clone first (recursively, handling subdirectories)
     const repos = await prisma.repository.findMany({
@@ -99,7 +99,7 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
     }
 
     // 2. Fall back to checking GitHub API recursively
-    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
     const hasGitignoreOnGithub = Array.isArray(treeRes?.tree) && treeRes.tree.some(item => 
       item.type === 'blob' && (item.path.toLowerCase() === '.gitignore' || item.path.toLowerCase().endsWith('/.gitignore'))
     );
@@ -460,16 +460,23 @@ export async function detectBranchCollisions(owner, repo, token) {
 
     const fileMap = new Map(); // path -> Array of PR numbers
 
-    for (const pr of prs) {
+    // Fetch files touched by each open PR in parallel
+    const prFilesPromises = prs.map(async (pr) => {
       try {
         const files = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}/files`, token);
-        for (const file of files) {
-          const arr = fileMap.get(file.filename) || [];
-          arr.push(pr.number);
-          fileMap.set(file.filename, arr);
-        }
+        return { prNumber: pr.number, files };
       } catch (e) {
         console.warn(`[Detector] File list fetch failed for PR #${pr.number}: ${e.message}`);
+        return { prNumber: pr.number, files: [] };
+      }
+    });
+
+    const prFilesResults = await Promise.all(prFilesPromises);
+    for (const res of prFilesResults) {
+      for (const file of res.files) {
+        const arr = fileMap.get(file.filename) || [];
+        arr.push(res.prNumber);
+        fileMap.set(file.filename, arr);
       }
     }
 
@@ -572,31 +579,29 @@ export async function detectCIFailures(owner, repo, token, defaultBranch) {
 /**
  * Independent Large Files Detector.
  */
-export async function detectLargeFiles(owner, repo, token, defaultBranch) {
+export async function detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree = null) {
   try {
-    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
-    if (!treeRes || !Array.isArray(treeRes.tree)) {
-      return null;
-    }
+    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+    if (!treeRes || !treeRes.tree) return null;
 
-    const largeFiles = treeRes.tree.filter(item => item.type === 'blob' && item.size && item.size > 5 * 1024 * 1024);
-    if (largeFiles.length === 0) {
-      return null;
-    }
+    // Filter files larger than 50MB (52,428,800 bytes)
+    const largeFiles = treeRes.tree.filter(f => f.type === 'blob' && f.size && f.size > 52428800);
+    if (largeFiles.length === 0) return null;
 
     return {
       id: 'large-files-tracked',
-      category: 'Repository Quality',
+      category: 'Repository Size & Bloat',
       severity: 'warning',
-      title: `${largeFiles.length} Large File(s) Tracked in Git`,
+      title: `${largeFiles.length} Large File(s) Tracked in Git Index`,
       affectedResource: largeFiles.map(f => f.path).join(', '),
       manualFixCommands: largeFiles.map(f => 
-        `# Untrack large file: ${f.path}\n` +
+        `# Remove large file from index (preserves local file)\n` +
         `git rm --cached ${f.path}\n` +
-        `echo "${f.path.split('.').pop() || ''}" >> .gitignore`
+        `# Add it to gitignore to prevent re-adding\n` +
+        `echo "${f.path}" >> .gitignore`
       ),
-      fixType: 'remove_large_file',
-      fixRiskLevel: 'Medium - Requires manual history rewriting',
+      fixType: 'remove_large_files',
+      fixRiskLevel: 'Low - Index change only',
       fixDescription: 'Remove large binary files from git index and add them to .gitignore.',
       isFixed: false,
       rawState: { 
@@ -631,6 +636,14 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   const metadata = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}`, token);
   const defaultBranch = metadata.default_branch || 'main';
 
+  // Pre-fetch recursive tree once to avoid duplicate slow network requests in detectors
+  let preFetchedTree = null;
+  try {
+    preFetchedTree = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+  } catch (err) {
+    console.warn(`[Scan] Failed to pre-fetch recursive tree: ${err.message}`);
+  }
+
   // Fetch branches and PRs count for scan stats
   let totalBranchesChecked = 0;
   let totalPRsChecked = 0;
@@ -647,7 +660,7 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   const promises = [];
   
   if (!targetIssueType || targetIssueType === 'missing-gitignore') {
-    promises.push(detectMissingGitignore(owner, repo, token, defaultBranch));
+    promises.push(detectMissingGitignore(owner, repo, token, defaultBranch, preFetchedTree));
   } else {
     promises.push(Promise.resolve(null));
   }
@@ -683,7 +696,7 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   }
 
   if (!targetIssueType || targetIssueType === 'large-files-tracked') {
-    promises.push(detectLargeFiles(owner, repo, token, defaultBranch));
+    promises.push(detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree));
   } else {
     promises.push(Promise.resolve(null));
   }
@@ -691,21 +704,61 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   const results = await Promise.allSettled(promises);
 
   const rawIssues = [];
+  const checks = {};
+  let scanCompleted = true;
+
+  const checkKeys = [
+    'missing-gitignore',
+    'pr-merge-conflicts',
+    'branch-divergence',
+    'stale-branches',
+    'cross-branch-collisions',
+    'ci-pipeline-failure',
+    'large-files-tracked'
+  ];
+
+  // Map original check keys to the keys expected by frontend checklist
+  const frontendKeysMap = {
+    'missing-gitignore': 'gitignore',
+    'pr-merge-conflicts': 'prDetails',
+    'branch-divergence': 'branchComparison',
+    'stale-branches': 'branches',
+    'cross-branch-collisions': 'pullRequests',
+    'ci-pipeline-failure': 'ciWorkflow',
+    'large-files-tracked': 'largeFiles'
+  };
+
+  // Add default checks successes
+  checks['metadata'] = 'success';
+  checks['ai'] = 'success';
+
   results.forEach((res, idx) => {
-    if (res.status === 'fulfilled' && res.value !== null) {
-      rawIssues.push(res.value);
-    } else if (res.status === 'rejected') {
-      console.error(`[Scan] Detector ${idx} failed to run:`, res.reason);
+    const key = checkKeys[idx];
+    const feKey = frontendKeysMap[key] || key;
+
+    if (res.status === 'fulfilled') {
+      if (res.value !== null) {
+        rawIssues.push(res.value);
+      }
+      checks[key] = 'success';
+      checks[feKey] = 'success';
+    } else {
+      scanCompleted = false;
+      checks[key] = 'skipped';
+      checks[feKey] = 'skipped';
+      console.error(`[Scan] Detector ${key} failed to run:`, res.reason);
     }
   });
 
   // Diagnose issues with AI service
-  const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate');
+  const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate', token, owner, repo);
 
   console.log(`\n=================== SCAN COMPLETED ===================`);
   console.log(`Timestamp: ${new Date().toISOString()}`);
   console.log(`Issues Found: ${diagnosedIssues.length}`);
   console.log(`======================================================\n`);
+
+  const filesScannedCount = Array.isArray(preFetchedTree?.tree) ? preFetchedTree.tree.filter(item => item.type === 'blob').length : 0;
 
   return {
     issues: diagnosedIssues,
@@ -714,6 +767,14 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
     totalBranchesChecked,
     totalPRsChecked,
     scanned: true,
+    scanCompleted,
+    checks,
+    summary: {
+      branchesChecked: totalBranchesChecked,
+      prsChecked: totalPRsChecked,
+      filesScanned: filesScannedCount,
+      timestamp: new Date().toISOString()
+    },
     permissions: {
       push: metadata.permissions ? metadata.permissions.push : true,
       pull: metadata.permissions ? metadata.permissions.pull : true,

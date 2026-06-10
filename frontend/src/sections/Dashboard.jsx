@@ -13,6 +13,7 @@ import {
   getGreeting
 } from '../data/mockDashboardData';
 import IDEPanel from '../components/IDEPanel';
+import HealthIssueCard from '../components/HealthIssueCard';
 
 // ── API Helper ──
 const API_BASE = '/api';
@@ -278,10 +279,35 @@ export default function Dashboard() {
       isRequestRunning = false;
       
       setIssues(prev => {
-        const fixedList = prev.filter(iss => iss.isFixed);
         const newIssues = data.issues || [];
-        const activeIds = newIssues.map(ni => ni.id);
-        const preservedFixed = fixedList.filter(fi => !activeIds.includes(fi.id));
+        const newIssueIds = newIssues.map(ni => ni.id);
+        
+        // If it was a partial scan, preserve issues from skipped checks
+        if (data.scanCompleted === false && data.checks) {
+          const preservedIssues = prev.filter(pi => {
+            if (newIssueIds.includes(pi.id)) return false;
+            
+            // Map issue ID/type to the scanner check key
+            const issueToCheckKey = {
+              'missing-gitignore': 'missing-gitignore',
+              'pr-merge-conflicts': 'pr-merge-conflicts',
+              'branch-divergence': 'branch-divergence',
+              'stale-branches': 'stale-branches',
+              'cross-branch-collisions': 'cross-branch-collisions',
+              'ci-pipeline-failure': 'ci-pipeline-failure',
+              'large-files-tracked': 'large-files-tracked'
+            };
+            
+            const checkKey = issueToCheckKey[pi.id] || pi.id;
+            return data.checks[checkKey] === 'skipped' || data.checks[checkKey] === 'failed';
+          });
+          
+          return [...newIssues, ...preservedIssues];
+        }
+        
+        // If full scan, keep new issues plus manually marked fixed issues
+        const fixedList = prev.filter(iss => iss.isFixed);
+        const preservedFixed = fixedList.filter(fi => !newIssueIds.includes(fi.id));
         return [...newIssues, ...preservedFixed];
       });
       setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
@@ -2233,41 +2259,6 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                {/* Ingestion status indicator above chat input */}
-                {isRepositoryConnected && ingestionState.status && (ingestionState.status === 'running' || ingestionState.status === 'failed') && (
-                  <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-500 ${
-                    ingestionState.status === 'running'
-                      ? 'bg-amber-500/10 border border-amber-500/20 text-amber-400'
-                      : ingestionState.status === 'failed'
-                      ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
-                      : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                  }`}>
-                    {ingestionState.status === 'running' ? (
-                      <>
-                        <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                        <span>📖 Reading repository... {ingestionState.progress > 0 ? `(${ingestionState.progress}%)` : ''}</span>
-                        {ingestionState.currentStep && (
-                          <span className="text-amber-500/70 text-[10px] ml-1 truncate max-w-[200px]">{ingestionState.currentStep}</span>
-                        )}
-                      </>
-                    ) : ingestionState.status === 'failed' ? (
-                      <>
-                        <span>⚠️ Ingestion failed</span>
-                        {ingestionState.errorMessage && (
-                          <span className="text-rose-500/70 text-[10px] ml-1 truncate max-w-[200px]">{ingestionState.errorMessage}</span>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-                        <span>✅ Ready — repository fully loaded</span>
-                        {ingestionState.chunkCount > 0 && (
-                          <span className="text-emerald-500/60 text-[10px] ml-1">({ingestionState.chunkCount} chunks indexed)</span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
 
                 {/* Input container */}
                 <div className="relative flex items-center bg-slate-900/90 border border-white/[0.08] hover:border-white/[0.15] focus-within:border-[#7C5CFF]/60 rounded-xl px-3 py-2.5 transition-all">
@@ -2580,40 +2571,12 @@ export default function Dashboard() {
                             <div className="flex flex-col gap-2 border-t border-white/[0.05] pt-3 mt-1">
                               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Partial Scan Issues ({issues.length})</span>
                               {issues.map(issue => (
-                                <div key={issue.id} className="bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col">
-                                  <button
-                                    onClick={() => toggleIssueExpansion(issue.id)}
-                                    className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
-                                        {issue.severity}
-                                      </span>
-                                      <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                    </div>
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </button>
-                                  {expandedIssueIds.has(issue.id) && (
-                                    <IssueDetails
-                                      issue={issue}
-                                      connectedRepo={connectedRepo}
-                                      repoPermissions={repoPermissions}
-                                      activeSSEFixId={activeSSEFixId}
-                                      sseProgressSteps={sseProgressSteps}
-                                      sseStatus={sseStatus}
-                                      ciDiagnostics={ciDiagnostics}
-                                      activeDiagnosingJobId={activeDiagnosingJobId}
-                                      executeSSEFix={executeSSEFix}
-                                      executePOSTFix={executePOSTFix}
-                                      diagnoseCIFailure={diagnoseCIFailure}
-                                      handleScanRepo={handleScanRepo}
-                                      issueConfirmFixData={issueConfirmFixData}
-                                      setIssueConfirmFixData={setIssueConfirmFixData}
-                                      currentUser={currentUser}
-                                      hasWriteAccess={hasWriteAccess}
-                                    />
-                                  )}
-                                </div>
+                                <HealthIssueCard
+                                  key={issue.id}
+                                  issue={issue}
+                                  currentRepo={connectedRepo?.fullName}
+                                  onVerify={handleScanRepo}
+                                />
                               ))}
                             </div>
                           )}
@@ -2625,65 +2588,12 @@ export default function Dashboard() {
                           </div>
                           <div className="flex flex-col gap-2">
                             {issues.map(issue => (
-                              <div 
-                                key={issue.id} 
-                                className={`bg-slate-900 border ${
-                                  issue.isFixed 
-                                    ? 'border-emerald-500/30 border-l-4 border-l-emerald-500' 
-                                    : issue.severity === 'critical'
-                                      ? 'border-white/[0.05] border-l-4 border-l-rose-500'
-                                      : 'border-white/[0.05] border-l-4 border-l-amber-500'
-                                } rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-85' : ''}`}
-                              >
-                                {/* Header (Clickable) */}
-                                <button
-                                  onClick={() => toggleIssueExpansion(issue.id)}
-                                  className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    {issue.isFixed ? (
-                                      <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-                                    ) : (
-                                      <AlertTriangle size={14} className={issue.severity === 'critical' ? 'text-rose-400 shrink-0' : 'text-amber-400 shrink-0'} />
-                                    )}
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                      issue.isFixed 
-                                        ? 'bg-[#00E38C]/20 text-[#00E38C]' 
-                                        : issue.severity === 'critical' 
-                                          ? 'bg-rose-500/20 text-rose-400' 
-                                          : 'bg-amber-500/20 text-amber-400'
-                                    }`}>
-                                      {issue.isFixed ? 'FIXED' : issue.severity}
-                                    </span>
-                                    <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </div>
-                                </button>
-                                
-                                {/* Expanded Content */}
-                                {expandedIssueIds.has(issue.id) && (
-                                  <IssueDetails
-                                    issue={issue}
-                                    connectedRepo={connectedRepo}
-                                    repoPermissions={repoPermissions}
-                                    activeSSEFixId={activeSSEFixId}
-                                    sseProgressSteps={sseProgressSteps}
-                                    sseStatus={sseStatus}
-                                    ciDiagnostics={ciDiagnostics}
-                                    activeDiagnosingJobId={activeDiagnosingJobId}
-                                    executeSSEFix={executeSSEFix}
-                                    executePOSTFix={executePOSTFix}
-                                    diagnoseCIFailure={diagnoseCIFailure}
-                                    handleScanRepo={handleScanRepo}
-                                    issueConfirmFixData={issueConfirmFixData}
-                                    setIssueConfirmFixData={setIssueConfirmFixData}
-                                    currentUser={currentUser}
-                                    hasWriteAccess={hasWriteAccess}
-                                  />
-                                )}
-                              </div>
+                              <HealthIssueCard
+                                key={issue.id}
+                                issue={issue}
+                                currentRepo={connectedRepo?.fullName}
+                                onVerify={handleScanRepo}
+                              />
                             ))}
                           </div>
                         </div>

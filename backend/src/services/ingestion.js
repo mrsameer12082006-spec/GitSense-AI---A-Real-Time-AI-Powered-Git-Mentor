@@ -93,61 +93,79 @@ class IngestionService {
       // Collect all chunks to embed at the end
       const rawChunks = [];
 
-      // ── Step 1: Ingest Branches (10% progress) ──
-      await this._updateProgress(job.id, repositoryId, 'running', 10, 'Fetching repository branches...', io);
-      const branches = await githubService.getBranches(owner, repoName, token);
+      // ── Step 1: Fetch all initial repository metadata in parallel (10% progress) ──
+      await this._updateProgress(job.id, repositoryId, 'running', 10, 'Fetching branches, commits, PRs, issues, and file tree...', io);
       
-      for (const branch of branches) {
-        // Find ahead/behind comparison against default branch
+      const [branches, commits, prs, mergedPrs, openIssues, closedIssues, tree] = await Promise.all([
+        githubService.getBranches(owner, repoName, token),
+        githubService.getCommits(owner, repoName, token, 100),
+        githubService.getPullRequests(owner, repoName, token),
+        githubService.getMergedPRs(owner, repoName, token),
+        githubService.getIssues(owner, repoName, token),
+        githubService.getClosedIssues(owner, repoName, token),
+        githubService.getFileTree(owner, repoName, defaultBranch, token)
+      ]);
+
+      // ── Step 1b: Process Branches in Parallel ──
+      const branchComparisonsPromises = branches.map(async (branch) => {
         let comparisonStr = '';
         if (branch.name !== defaultBranch) {
-          const comp = await githubService.getBranchComparison(owner, repoName, defaultBranch, branch.name, token);
-          comparisonStr = `Ahead of ${defaultBranch} by ${comp.aheadBy} commits, behind by ${comp.behindBy} commits.`;
+          try {
+            const comp = await githubService.getBranchComparison(owner, repoName, defaultBranch, branch.name, token);
+            comparisonStr = `Ahead of ${defaultBranch} by ${comp.aheadBy} commits, behind by ${comp.behindBy} commits.`;
+          } catch (e) {
+            comparisonStr = 'Ahead/behind comparison unavailable.';
+          }
         } else {
           comparisonStr = 'This is the default branch.';
         }
 
-        rawChunks.push({
+        return {
           sourceType: 'branch',
           sourceId: branch.name,
           priority: 1,
           content: `Branch Name: ${branch.name}\nLatest Commit SHA: ${branch.sha}\nStatus: ${comparisonStr}`,
           metadata: { branchName: branch.name, sha: branch.sha },
-        });
-      }
+        };
+      });
+      const branchChunks = await Promise.all(branchComparisonsPromises);
+      rawChunks.push(...branchChunks);
 
-      // ── Step 2: Ingest Commits (25% progress) ──
-      await this._updateProgress(job.id, repositoryId, 'running', 15, 'Fetching recent commits...', io);
-      // Fetch up to 100 commits to build the commit history context
-      const commits = await githubService.getCommits(owner, repoName, token, 100);
-      
-      // Fetch details for the latest 15 commits (to get diffs/files changed)
+      // ── Step 2: Fetch and Process Commits Details in Parallel (25% progress) ──
+      await this._updateProgress(job.id, repositoryId, 'running', 25, 'Processing recent commits details...', io);
       const detailedCommitsCount = Math.min(commits.length, 15);
+      const commitDetailsPromises = [];
+      for (let i = 0; i < detailedCommitsCount; i++) {
+        commitDetailsPromises.push(
+          githubService.getCommitDetails(owner, repoName, commits[i].sha, token)
+            .then(details => ({ sha: commits[i].sha, details }))
+            .catch((err) => {
+              console.warn(`[Ingestion] Failed to get commit details for ${commits[i].sha}:`, err.message);
+              return { sha: commits[i].sha, details: null };
+            })
+        );
+      }
+      const allCommitDetailsResults = await Promise.all(commitDetailsPromises);
+      const commitDetailsMap = new Map(allCommitDetailsResults.map(r => [r.sha, r.details]));
+
       for (let i = 0; i < commits.length; i++) {
         const c = commits[i];
         let filesChangedText = '';
         let patchDetails = '';
 
-        if (i < detailedCommitsCount) {
-          try {
-            const details = await githubService.getCommitDetails(owner, repoName, c.sha, token);
-            if (details && details.files) {
-              const fileNames = details.files.map(f => `${f.filename} (${f.status}: +${f.additions} -${f.deletions})`).join(', ');
-              filesChangedText = `Files Changed: ${fileNames}`;
-              
-              // Include snippets of patches for first 5 commits
-              if (i < 5) {
-                const patches = details.files
-                  .filter(f => f.patch)
-                  .map(f => `--- a/${f.filename}\n+++ b/${f.filename}\n${f.patch.substring(0, 1000)}`)
-                  .join('\n\n');
-                if (patches) {
-                  patchDetails = `\nPatch Diff (Truncated):\n${patches}`;
-                }
-              }
+        const details = commitDetailsMap.get(c.sha);
+        if (details && details.files) {
+          const fileNames = details.files.map(f => `${f.filename} (${f.status}: +${f.additions} -${f.deletions})`).join(', ');
+          filesChangedText = `Files Changed: ${fileNames}`;
+          
+          if (i < 5) {
+            const patches = details.files
+              .filter(f => f.patch)
+              .map(f => `--- a/${f.filename}\n+++ b/${f.filename}\n${f.patch.substring(0, 1000)}`)
+              .join('\n\n');
+            if (patches) {
+              patchDetails = `\nPatch Diff (Truncated):\n${patches}`;
             }
-          } catch (err) {
-            console.warn(`[Ingestion] Failed to get commit details for ${c.hash}:`, err.message);
           }
         }
 
@@ -160,22 +178,26 @@ class IngestionService {
         });
       }
 
-      // ── Step 3: Ingest Pull Requests (45% progress) ──
-      await this._updateProgress(job.id, repositoryId, 'running', 35, 'Fetching pull requests...', io);
-      const prs = await githubService.getPullRequests(owner, repoName, token);
-      const mergedPrs = await githubService.getMergedPRs(owner, repoName, token);
+      // ── Step 3: Fetch and Process PRs in Parallel (45% progress) ──
+      await this._updateProgress(job.id, repositoryId, 'running', 45, 'Processing pull requests discussion...', io);
       const allPRs = [...prs, ...mergedPrs].slice(0, 30); // Limit to 30 PRs for performance
 
+      const prCommentsPromises = allPRs.map(pr =>
+        githubService.getPRComments(owner, repoName, pr.number, token)
+          .then(comments => ({ number: pr.number, comments }))
+          .catch((err) => {
+            console.warn(`[Ingestion] Failed to fetch PR comments for #${pr.number}:`, err.message);
+            return { number: pr.number, comments: [] };
+          })
+      );
+      const allPrCommentsResults = await Promise.all(prCommentsPromises);
+      const prCommentsMap = new Map(allPrCommentsResults.map(r => [r.number, r.comments]));
+
       for (const pr of allPRs) {
-        // Fetch comments for context
+        const comments = prCommentsMap.get(pr.number) || [];
         let commentsText = '';
-        try {
-          const comments = await githubService.getPRComments(owner, repoName, pr.number, token);
-          if (comments.length > 0) {
-            commentsText = '\nDiscussion / Comments:\n' + comments.map(c => `[${c.author} on ${c.createdAt}]: ${c.body}`).join('\n');
-          }
-        } catch (err) {
-          console.warn(`[Ingestion] Failed to fetch PR comments for #${pr.number}`);
+        if (comments.length > 0) {
+          commentsText = '\nDiscussion / Comments:\n' + comments.map(c => `[${c.author} on ${c.createdAt}]: ${c.body}`).join('\n');
         }
 
         rawChunks.push({
@@ -187,21 +209,26 @@ class IngestionService {
         });
       }
 
-      // ── Step 4: Ingest Issues (60% progress) ──
-      await this._updateProgress(job.id, repositoryId, 'running', 50, 'Fetching issues...', io);
-      const openIssues = await githubService.getIssues(owner, repoName, token);
-      const closedIssues = await githubService.getClosedIssues(owner, repoName, token);
+      // ── Step 4: Fetch and Process Issues in Parallel (60% progress) ──
+      await this._updateProgress(job.id, repositoryId, 'running', 60, 'Processing issue comments...', io);
       const allIssues = [...openIssues, ...closedIssues].slice(0, 30); // Limit to 30 issues
 
+      const issueCommentsPromises = allIssues.map(issue =>
+        githubService.getIssueComments(owner, repoName, issue.number, token)
+          .then(comments => ({ number: issue.number, comments }))
+          .catch((err) => {
+            console.warn(`[Ingestion] Failed to fetch issue comments for #${issue.number}:`, err.message);
+            return { number: issue.number, comments: [] };
+          })
+      );
+      const allIssueCommentsResults = await Promise.all(issueCommentsPromises);
+      const issueCommentsMap = new Map(allIssueCommentsResults.map(r => [r.number, r.comments]));
+
       for (const issue of allIssues) {
+        const comments = issueCommentsMap.get(issue.number) || [];
         let commentsText = '';
-        try {
-          const comments = await githubService.getIssueComments(owner, repoName, issue.number, token);
-          if (comments.length > 0) {
-            commentsText = '\nComments:\n' + comments.map(c => `[${c.author} on ${c.createdAt}]: ${c.body}`).join('\n');
-          }
-        } catch (err) {
-          console.warn(`[Ingestion] Failed to fetch issue comments for #${issue.number}`);
+        if (comments.length > 0) {
+          commentsText = '\nComments:\n' + comments.map(c => `[${c.author} on ${c.createdAt}]: ${c.body}`).join('\n');
         }
 
         rawChunks.push({
@@ -215,7 +242,6 @@ class IngestionService {
 
       // ── Step 5: Ingest Code Files (80% progress) ──
       await this._updateProgress(job.id, repositoryId, 'running', 65, 'Analyzing repository file structure...', io);
-      const tree = await githubService.getFileTree(owner, repoName, defaultBranch, token);
       
       // Filter for files we care about (max 60 files, size < 100KB, code/docs extensions)
       const allowedExtensions = [
@@ -249,40 +275,53 @@ class IngestionService {
         return isAllowedExtension;
       });
 
-      // Limit files to ingest
-      const filesToIngest = fileList.slice(0, 80);
-      console.log(`[Ingestion] Ingesting ${filesToIngest.length} code/doc files.`);
+      // Limit files to ingest (reduce to 20 for 4x speedup, other files will be fetched live on-demand)
+      const filesToIngest = fileList.slice(0, 20);
+      console.log(`[Ingestion] Ingesting ${filesToIngest.length} code/doc files in parallel batches.`);
 
-      for (let idx = 0; idx < filesToIngest.length; idx++) {
-        const file = filesToIngest[idx];
-        const pct = 65 + Math.floor((idx / filesToIngest.length) * 15);
-        if (idx % 10 === 0) {
-          await this._updateProgress(job.id, repositoryId, 'running', pct, `Downloading files: ${file.path} (${idx + 1}/${filesToIngest.length})...`, io);
-        }
+      // Download files in parallel batches of 15 to keep it blazing fast and avoid rate limiting
+      const fileDownloadBatches = [];
+      const downloadBatchSize = 15;
+      for (let i = 0; i < filesToIngest.length; i += downloadBatchSize) {
+        fileDownloadBatches.push(filesToIngest.slice(i, i + downloadBatchSize));
+      }
 
-        try {
-          const content = await githubService.getFileContent(owner, repoName, file.path, token);
-          if (content && content.trim()) {
-            const isReadme = file.path.toLowerCase().endsWith('readme.md');
-            const isConfig = ['package.json', 'tsconfig.json', 'dockerfile'].some(n => file.path.toLowerCase().endsWith(n)) || file.path.includes('.github/workflows/');
+      for (let bIdx = 0; bIdx < fileDownloadBatches.length; bIdx++) {
+        const batch = fileDownloadBatches[bIdx];
+        const batchPct = 65 + Math.floor((bIdx / fileDownloadBatches.length) * 15);
+        await this._updateProgress(job.id, repositoryId, 'running', batchPct, `Downloading repository files batch ${bIdx + 1}/${fileDownloadBatches.length}...`, io);
+
+        const downloadPromises = batch.map(async (file) => {
+          try {
+            const content = await githubService.getFileContent(owner, repoName, file.path, token);
+            return { filePath: file.path, content };
+          } catch (err) {
+            console.warn(`[Ingestion] Failed to download content for ${file.path}:`, err.message);
+            return { filePath: file.path, content: null };
+          }
+        });
+
+        const downloadedResults = await Promise.all(downloadPromises);
+        for (const res of downloadedResults) {
+          if (res.content && res.content.trim()) {
+            const isReadme = res.filePath.toLowerCase().endsWith('readme.md');
+            const isConfig = ['package.json', 'tsconfig.json', 'dockerfile'].some(n => res.filePath.toLowerCase().endsWith(n)) || res.filePath.includes('.github/workflows/');
             
             const priority = isReadme ? 3 : (isConfig ? 2 : 1);
             const type = isReadme ? 'readme' : (isConfig ? 'config' : 'file');
 
             // Chunk large files
-            const chunks = this._chunkText(content, 1200, 150);
+            const chunks = this._chunkText(res.content, 1200, 150);
             chunks.forEach((chunkContent, chunkIdx) => {
               rawChunks.push({
                 sourceType: type,
-                sourceId: file.path,
+                sourceId: res.filePath,
                 priority,
-                content: `File: ${file.path} (Part ${chunkIdx + 1}/${chunks.length})\nPath: ${file.path}\nContent:\n${chunkContent}`,
-                metadata: { filePath: file.path, part: chunkIdx + 1, totalParts: chunks.length },
+                content: `File: ${res.filePath} (Part ${chunkIdx + 1}/${chunks.length})\nPath: ${res.filePath}\nContent:\n${chunkContent}`,
+                metadata: { filePath: res.filePath, part: chunkIdx + 1, totalParts: chunks.length },
               });
             });
           }
-        } catch (err) {
-          console.warn(`[Ingestion] Failed to download content for ${file.path}:`, err.message);
         }
       }
 
