@@ -1226,7 +1226,9 @@ export default function Dashboard() {
         body: JSON.stringify({
           message: text,
           conversationId: activeConversationId,
-          repositoryId: connectedRepo?.id,
+          repositoryId: connectedRepo?.id || null,
+          repoOwner: connectedRepo?.owner || null,
+          repoName: connectedRepo?.name || null,
         }),
       });
 
@@ -1338,8 +1340,12 @@ export default function Dashboard() {
     } catch (err) {
       setMessages(prev => [...prev, {
         sender: 'ai',
-        text: `⚠️ AI Chat Error: ${err.message}`,
-        insight: 'Please verify the backend server is running and your API keys are configured in backend/.env',
+        text: err.message === 'NO_REPO_SELECTED'
+          ? '⚠️ Please select a repository before chatting.'
+          : `⚠️ AI Chat Error: ${err.message}`,
+        insight: err.message === 'NO_REPO_SELECTED'
+          ? 'Select a repository from the left panel.'
+          : 'Please verify the backend server is running and your API keys are configured in backend/.env',
       }]);
     } finally {
       setIsAiTyping(false);
