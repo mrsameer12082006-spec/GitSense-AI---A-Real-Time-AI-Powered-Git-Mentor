@@ -9,6 +9,7 @@ import { authenticate } from '../middleware/auth.js';
 import prisma from '../lib/prisma.js';
 import githubService from '../services/github.js';
 import ingestionService from '../services/ingestion.js';
+import aiService from '../services/ai.js';
 
 const router = Router();
 
@@ -145,6 +146,15 @@ router.get('/callback', async (req, res) => {
       },
     });
     
+    req.session = req.session || {};
+    req.session.githubToken = access_token;
+    await new Promise((resolve) => {
+      req.session.save((err) => {
+        if (err) console.error('[GitHub] Session save error:', err);
+        resolve();
+      });
+    });
+
     console.log(`[GitHub] User connected: ${updatedUser.email} -> @${githubUser.login}`);
     
     // Redirect to dashboard with success
@@ -431,25 +441,66 @@ router.post('/disconnect', authenticate, async (req, res) => {
   }
 });
 
+function getGitignoreTemplate(type) {
+  const templates = {
+    Python:  '__pycache__/\n*.pyc\n*.pyo\nvenv/\n.env\n*.egg-info/\ndist/\nbuild/\n',
+    Node:    'node_modules/\ndist/\nbuild/\n.env\n.env.local\n*.log\ncoverage/\n',
+    Java:    '*.class\ntarget/\n.idea/\n*.iml\n.env\nbuild/\n',
+    default: '*.log\n.env\n.DS_Store\nbuild/\ndist/\n'
+  };
+  return templates[type] || templates.default;
+}
+
 // ── POST /api/github/apply-fix ───────────────────────────────
 // Auto-apply resolved code fix to a GitHub file and push commit
 router.post('/apply-fix', authenticate, async (req, res) => {
   try {
-    const { repoFullName, filePath, resolvedContent, issueTitle } = req.body;
+    const { repoFullName, filePath, resolvedContent, issueTitle, issueType, gitignoreTemplate } = req.body;
     
-    if (!repoFullName || !filePath || !resolvedContent || !issueTitle) {
+    if (!repoFullName || !issueTitle || (issueType !== 'missing-gitignore' && issueType !== 'missing_gitignore' && (!filePath || !resolvedContent))) {
       return res.status(400).json({ error: 'repoFullName, filePath, resolvedContent, and issueTitle are required.' });
     }
 
-    // Load user's GitHub OAuth token from DB
-    const user = await prisma.user.findUnique({
+    // Load user's GitHub OAuth token from session, body, or DB
+    const token = req.session?.githubToken || req.body?.githubToken || (await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { githubToken: true }
-    });
+    }))?.githubToken;
     
-    const token = user?.githubToken;
     if (!token) {
-      return res.status(401).json({ error: 'GitHub connection not found. Please connect your GitHub account.' });
+      return res.status(401).json({
+        success: false,
+        error: 'GitHub token missing. Please reconnect your GitHub account.'
+      });
+    }
+
+    // Handle missing gitignore file creation case specifically (no SHA required)
+    if (issueType === 'missing-gitignore' || issueType === 'missing_gitignore') {
+      const template = getGitignoreTemplate(gitignoreTemplate);
+      const createRes = await fetch(
+        `https://api.github.com/repos/${repoFullName}/contents/.gitignore`,
+        {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'GitSense-AI'
+          },
+          body: JSON.stringify({
+            message: 'GitSense AI: Add .gitignore',
+            content: Buffer.from(template).toString('base64')
+          })
+        }
+      );
+      
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        return res.status(createRes.status).json({ success: false, error: `Failed to create .gitignore on GitHub: ${errText}` });
+      }
+      
+      const result = await createRes.json();
+      return res.json({ success: true, commitUrl: result.commit.html_url });
     }
 
     console.log(`[GitHub API] Auto-fixing ${repoFullName} -> File: ${filePath}`);
@@ -504,6 +555,69 @@ router.post('/apply-fix', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[GitHub] Apply fix error:', err);
     res.status(500).json({ error: err.message || 'Server error occurred while applying the fix.' });
+  }
+});
+
+// ── POST /api/github/generate-fix ───────────────────────────
+// Generate the resolved content for an issue on-demand using AI
+router.post('/generate-fix', authenticate, async (req, res) => {
+  try {
+    const { repoFullName, issueType, filePath, rootCause, issueTitle } = req.body;
+    
+    const token = req.session?.githubToken || req.body?.githubToken || (await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { githubToken: true }
+    }))?.githubToken;
+    
+    let currentContent = '';
+    if (repoFullName && filePath && token) {
+      try {
+        const [owner, repoName] = repoFullName.split('/');
+        currentContent = await githubService.getFileContent(owner, repoName, filePath, token);
+      } catch (err) {
+        console.warn(`[Generate Fix] Could not fetch content for ${filePath} (may not exist yet):`, err.message);
+      }
+    }
+
+    const systemPrompt = `You are GitSense AI. You are a senior frontend/backend developer.
+Your task is to fix the following issue in the repository file.
+You must return only the corrected and fully resolved content of the file that fixes the issue.
+Do NOT include any markdown code block wrappers (like \`\`\`), explanation, backticks, or any other text. Return ONLY the raw file content that will be written directly to the file.
+Ensure the resolved content contains NO placeholders (like '// TODO' or '...'). It must be the complete, ready-to-write file.`;
+
+    const userPrompt = `Issue Title: ${issueTitle || ''}
+Issue Type: ${issueType || ''}
+File Path: ${filePath || ''}
+Root Cause of Issue: ${rootCause || ''}
+
+Current File Content:
+${currentContent || '(File is currently empty or does not exist)'}
+`;
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ];
+
+    console.log(`[GitHub API] Generating fix using AI for: ${repoFullName} -> File: ${filePath}`);
+    const aiResponse = await aiService.generateCompletion(messages, 0.2);
+    
+    let resolvedContent = aiResponse.trim();
+    if (resolvedContent.startsWith('```')) {
+      const firstNewline = resolvedContent.indexOf('\n');
+      if (firstNewline !== -1) {
+        resolvedContent = resolvedContent.substring(firstNewline + 1);
+      }
+      if (resolvedContent.endsWith('```')) {
+        resolvedContent = resolvedContent.substring(0, resolvedContent.length - 3);
+      }
+      resolvedContent = resolvedContent.trim();
+    }
+
+    res.json({ success: true, resolvedContent });
+  } catch (err) {
+    console.error('[GitHub] Generate fix error:', err);
+    res.status(500).json({ error: err.message || 'Server error occurred while generating the AI fix.' });
   }
 });
 

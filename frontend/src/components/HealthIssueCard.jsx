@@ -26,8 +26,70 @@ export default function HealthIssueCard({ issue, currentRepo, onVerify }) {
     setErrorMsg(null);
     try {
       const token = getToken();
+
+      // Special case: gitignore needs to be CREATED not updated
+      if (issue.type === 'missing-gitignore' || issue.type === 'missing_gitignore' || issue.id === 'missing-gitignore' || issue.title.toLowerCase().includes('gitignore')) {
+        const res = await fetch(`${API_BASE}/github/apply-fix`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            repoFullName: currentRepo,
+            issueType: 'missing-gitignore',
+            gitignoreTemplate: issue.gitignoreTemplate || 'default',
+            issueTitle: issue.title
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          setCommitUrl(data.commitUrl);
+          setMode('done');
+          if (onVerify) {
+            onVerify();
+          }
+        } else {
+          setErrorMsg(data.error || 'Failed to apply .gitignore fix.');
+          setMode('error');
+        }
+        return;
+      }
+
+      // Normal fix flow for other issues
+      let contentToApply = issue.resolvedContent;
+
+      // If resolvedContent was not pre-generated, generate it now
+      if (!contentToApply) {
+        const aiRes = await fetch(`${API_BASE}/github/generate-fix`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            repoFullName: currentRepo,
+            issueType: issue.type,
+            filePath: issue.filePath,
+            rootCause: issue.rootCause,
+            issueTitle: issue.title
+          })
+        });
+        const aiData = await aiRes.json();
+        if (!aiRes.ok || !aiData.success) {
+          setErrorMsg(aiData.error || 'Failed to generate AI fix.');
+          setMode('error');
+          return;
+        }
+        contentToApply = aiData.resolvedContent;
+      }
+
+      // Then apply the fix
       const res = await fetch(`${API_BASE}/github/apply-fix`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
@@ -35,30 +97,39 @@ export default function HealthIssueCard({ issue, currentRepo, onVerify }) {
         body: JSON.stringify({
           repoFullName: currentRepo,
           filePath: issue.filePath,
-          resolvedContent: issue.resolvedContent,
-          issueTitle: issue.title
+          resolvedContent: contentToApply,
+          issueTitle: issue.title,
+          issueType: issue.type
         })
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to apply automatic fix.');
+      if (!res.ok || !data.success) {
+        setErrorMsg(data.error || 'Fix failed. Please try again.');
+        setMode('error');
+        return;
       }
 
       setCommitUrl(data.commitUrl);
       setMode('done');
       if (onVerify) {
-        // Trigger verification scan
         onVerify();
       }
     } catch (err) {
       console.error('[HealthIssueCard] Auto-fix error:', err);
-      setErrorMsg(err.message || 'An unexpected error occurred while applying the fix.');
+      setErrorMsg('Network error. Check your connection.');
       setMode('error');
     }
   };
 
-  const isCritical = issue.severity === 'critical' || issue.severity === 'error' || issue.severity === 'high';
+  const severityConfig = {
+    critical: { className: 'bg-rose-500/10 border-rose-500/20 text-rose-400', icon: '🔴', label: 'CRITICAL' },
+    warning:  { className: 'bg-amber-500/10 border-amber-500/20 text-amber-400', icon: '🟡', label: 'WARNING' },
+    info:     { className: 'bg-blue-500/10 border-blue-500/20 text-blue-400',   icon: 'ℹ️',  label: 'INFO' }
+  };
+
+  const severity = issue.severity || 'warning';
+  const badge = severityConfig[severity] || severityConfig.warning;
 
   return (
     <div className={`gitsense-card bg-slate-950/80 border ${
@@ -77,12 +148,8 @@ export default function HealthIssueCard({ issue, currentRepo, onVerify }) {
       {/* 1. Header (Severity Badge + Title) */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <span className={`text-[9px] font-bold tracking-wider px-2 py-0.5 rounded-full uppercase border ${
-            isCritical 
-              ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
-              : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-          }`}>
-            {isCritical ? 'Critical' : 'Warning'}
+          <span className={`text-[9px] font-bold tracking-wider px-2 py-0.5 rounded-full uppercase border ${badge.className}`}>
+            {badge.icon} {badge.label}
           </span>
           <h4 className="text-slate-100 font-heading font-bold text-sm leading-snug">
             {issue.title || 'Repository Health Issue'}
@@ -162,15 +229,19 @@ export default function HealthIssueCard({ issue, currentRepo, onVerify }) {
             <div className="flex gap-2.5 mt-1">
               <button
                 onClick={handleAIFix}
-                disabled={!issue.resolvedContent}
-                className="px-4 py-2 bg-[#00E38C] hover:bg-[#00c57a] disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all duration-200 cursor-pointer flex-1"
-                title={!issue.resolvedContent ? "AI fix details are not available for this issue" : ""}
+                disabled={mode === 'applying'}
+                className={
+                  mode === 'applying'
+                    ? "px-4 py-2 bg-slate-800 text-slate-500 opacity-50 pointer-events-none cursor-not-allowed rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all duration-200 flex-1"
+                    : "px-4 py-2 bg-[#00E38C] hover:bg-[#00c57a] active:scale-95 opacity-100 cursor-pointer text-slate-950 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all duration-200 flex-1"
+                }
+                title={mode === 'applying' ? "Applying fix..." : "Fix this issue automatically"}
               >
                 <Wand2 size={13} /> Fix Through AI
               </button>
               <button
                 onClick={() => setMode('idle')}
-                className="px-4 py-2 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 font-semibold rounded-lg text-xs transition-all duration-200 cursor-pointer"
+                className="px-4 py-2 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 active:scale-95 text-slate-300 font-semibold rounded-lg text-xs transition-all duration-200 cursor-pointer"
               >
                 I'll Do It Myself
               </button>

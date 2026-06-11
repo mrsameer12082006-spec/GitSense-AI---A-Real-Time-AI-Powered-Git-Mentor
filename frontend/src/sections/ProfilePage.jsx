@@ -45,6 +45,7 @@ export default function ProfilePage() {
         let res;
         try {
           res = await fetch(`${API_URL}/api/auth/me`, {
+            credentials: 'include',
             headers: { 'Authorization': `Bearer ${token}` }
           });
         } catch (fetchErr) {
@@ -120,6 +121,7 @@ export default function ProfilePage() {
       try {
         res = await fetch(`${API_URL}/api/auth/profile`, {
           method: 'PUT',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`

@@ -79,7 +79,9 @@ async function hasGitignoreLocally(dir) {
  */
 export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main', preFetchedTree = null) {
   try {
-    // 1. Check if the file exists in the local workspace clone first (recursively, handling subdirectories)
+    const repoFullName = `${owner}/${repo}`;
+    
+    // 1. Check if the file exists in the local workspace clone first
     const repos = await prisma.repository.findMany({
       where: { owner, name: repo }
     });
@@ -98,122 +100,123 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
       return null; // File exists locally, no issue
     }
 
-    // 2. Fall back to checking GitHub API recursively
-    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
-    const hasGitignoreOnGithub = Array.isArray(treeRes?.tree) && treeRes.tree.some(item => 
-      item.type === 'blob' && (item.path.toLowerCase() === '.gitignore' || item.path.toLowerCase().endsWith('/.gitignore'))
+    // 2. Check if .gitignore exists in GitHub root
+    const rootRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/contents/`,
+      { 
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        } 
+      }
     );
-
-    if (hasGitignoreOnGithub) {
-      console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists on GitHub.`);
-      return null; // File exists on GitHub, no issue
+    if (rootRes.status === 200) {
+      const rootFiles = await rootRes.json();
+      if (Array.isArray(rootFiles)) {
+        const hasGitignore = rootFiles.some(f => f.name === '.gitignore');
+        if (hasGitignore) return null;
+      }
     }
 
-    // 3. Extract all file extensions/paths present in the repo to perform the smart checks
-    const paths = Array.isArray(treeRes?.tree) ? treeRes.tree.filter(item => item.type === 'blob').map(item => item.path) : [];
+    // 3. Get full repo tree
+    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${repoFullName}/git/trees/${defaultBranch}?recursive=1`, token);
+    const allPaths = Array.isArray(treeRes?.tree) ? treeRes.tree.map(f => f.path) : [];
+
+    const hasGitignoreInTree = allPaths.some(p => p.toLowerCase() === '.gitignore' || p.toLowerCase().endsWith('/.gitignore'));
+    if (hasGitignoreInTree) return null;
 
     // Do NOT flag empty or single-file repos
-    if (paths.length <= 1) {
-      console.log(`[Detector] Missing Gitignore -> Checked tree. Repo is empty or single-file. Skipping flag.`);
+    if (allPaths.length <= 1) {
       return null;
     }
 
-    let shouldFlag = false;
-    let reason = '';
+    // 4. Detect language
+    const hasPython = allPaths.some(p => p.endsWith('.py'));
+    const hasNode   = allPaths.some(p => p.endsWith('package.json'));
+    const hasJava   = allPaths.some(p => p.endsWith('.java'));
 
-    for (const p of paths) {
-      const lowercasePath = p.toLowerCase();
-      const ext = path.extname(lowercasePath);
-      const base = path.basename(lowercasePath);
-
-      // Check build configurations / build systems
-      if (base === 'package.json') {
-        shouldFlag = true;
-        reason = 'Repo contains package.json but no .gitignore — node_modules may get committed accidentally';
-        break;
-      }
-      if (base === 'pom.xml') {
-        shouldFlag = true;
-        reason = 'Repo contains pom.xml but no .gitignore — target/ build artifacts may get committed accidentally';
-        break;
-      }
-      if (base === 'build.gradle') {
-        shouldFlag = true;
-        reason = 'Repo contains build.gradle but no .gitignore — build/ artifacts may get committed accidentally';
-        break;
-      }
-      if (base === 'requirements.txt') {
-        shouldFlag = true;
-        reason = 'Repo contains requirements.txt but no .gitignore — Python virtual environments or cached files may get committed accidentally';
-        break;
-      }
-      if (base === 'cargo.toml') {
-        shouldFlag = true;
-        reason = 'Repo contains Cargo.toml but no .gitignore — target/ build artifacts may get committed accidentally';
-        break;
-      }
-      if (base === 'go.mod') {
-        shouldFlag = true;
-        reason = 'Repo contains go.mod but no .gitignore — vendor/ or binary artifacts may get committed accidentally';
-        break;
-      }
-
-      // Check sensitive files
-      if (base === '.env' || base.endsWith('.env') || base === '.env.example') {
-        shouldFlag = true;
-        reason = `Repo contains sensitive environment file (${base}) but no .gitignore — credentials may be leaked`;
-        break;
-      }
-
-      // Check languages
-      if (['.js', '.ts', '.jsx', '.tsx'].includes(ext)) {
-        shouldFlag = true;
-        reason = `Repo contains JavaScript/TypeScript files (${base}) but no .gitignore — node_modules or build output may get committed accidentally`;
-        break;
-      }
-      if (ext === '.py') {
-        shouldFlag = true;
-        reason = `Repo contains Python files (${base}) but no .gitignore — __pycache__ or venv/ directories may get committed accidentally`;
-        break;
-      }
-      if (['.java', '.kt'].includes(ext)) {
-        shouldFlag = true;
-        reason = `Repo contains Java/Kotlin source files (${base}) but no .gitignore — compiled .class or target/ files may get committed accidentally`;
-        break;
-      }
-      if (ext === '.cs') {
-        shouldFlag = true;
-        reason = `Repo contains C# files (${base}) but no .gitignore — bin/ or obj/ build directories may get committed accidentally`;
-        break;
-      }
+    // 5. Check if artifact directories/files ACTUALLY exist in repo
+    const committedArtifacts = [];
+    if (hasPython) {
+      if (allPaths.some(p => p.includes('__pycache__'))) committedArtifacts.push('__pycache__/');
+      if (allPaths.some(p => p.includes('venv/')))       committedArtifacts.push('venv/');
+      if (allPaths.some(p => p.endsWith('.pyc')))        committedArtifacts.push('*.pyc files');
+    }
+    if (hasNode) {
+      if (allPaths.some(p => p.includes('node_modules'))) committedArtifacts.push('node_modules/');
+      if (allPaths.some(p => p.includes('dist/')))        committedArtifacts.push('dist/');
+    }
+    if (hasJava) {
+      if (allPaths.some(p => p.endsWith('.class'))) committedArtifacts.push('*.class files');
+      if (allPaths.some(p => p.includes('target/'))) committedArtifacts.push('target/');
     }
 
-    if (!shouldFlag) {
-      console.log(`[Detector] Missing Gitignore -> Smart check passed. No flag needed for this repository.`);
-      return null;
+    // 6. Check for .env committed (always critical)
+    const hasEnvCommitted = allPaths.some(p => p === '.env' || p.endsWith('/.env'));
+
+    const shouldWarn = committedArtifacts.length > 0 || hasEnvCommitted;
+
+    if (!shouldWarn) {
+      // Repo is clean — .gitignore is recommended but not a warning
+      return {
+        id: 'missing-gitignore',
+        type: 'missing_gitignore',
+        category: 'Repository Quality',
+        affectedResource: '.gitignore',
+        title: '.gitignore Recommended',
+        severity: 'info',
+        rootCause: `This ${hasPython ? 'Python' : hasNode ? 'Node.js' : 'code'} repo has no .gitignore yet. No artifacts are committed currently, but adding one is good practice to prevent accidental commits later.`,
+        steps: [
+          {
+            description: 'Create a .gitignore for this project type',
+            command: hasPython
+              ? 'curl -o .gitignore https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore'
+              : 'npx gitignore node'
+          },
+          { description: 'Commit the .gitignore', command: 'git add .gitignore && git commit -m "chore: add .gitignore"' }
+        ],
+        autoFixable: true,
+        gitignoreTemplate: hasPython ? 'Python' : hasNode ? 'Node' : hasJava ? 'Java' : 'default',
+        fixType: 'create_gitignore',
+        fixRiskLevel: 'Safe',
+        fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
+        isFixed: false,
+        rawState: { status: 404, hasPython, hasNode, hasJava }
+      };
     }
 
-    console.log(`[Detector] Missing Gitignore -> Smart check failed (${reason}). Flagging issue.`);
+    // Artifacts ARE committed — real warning
+    const artifactList = [
+      ...committedArtifacts,
+      ...(hasEnvCommitted ? ['.env (security risk!)'] : [])
+    ].join(', ');
+
     return {
       id: 'missing-gitignore',
       type: 'missing_gitignore',
       category: 'Repository Quality',
-      severity: 'warning',
-      title: 'Missing .gitignore File',
       affectedResource: '.gitignore',
-      reason,
-      autoFixable: true,
-      manualFixCommands: [
-        `touch .gitignore`,
-        `echo "node_modules/\n.env" >> .gitignore`,
-        `git add .gitignore`,
-        `git commit -m "Add .gitignore"`
+      title: 'Generated/Sensitive Files Committed Without .gitignore',
+      severity: hasEnvCommitted ? 'critical' : 'warning',
+      rootCause: `The following files should NOT be in version control but are committed: ${artifactList}. A .gitignore is missing which caused these to be tracked.`,
+      steps: [
+        {
+          description: 'Create .gitignore first',
+          command: hasPython
+            ? 'curl -o .gitignore https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore'
+            : 'npx gitignore node'
+        },
+        { description: 'Remove committed artifacts from tracking', command: `git rm -r --cached ${committedArtifacts[0] || '.env'}` },
+        { description: 'Commit the cleanup', command: 'git add . && git commit -m "chore: remove artifacts and add .gitignore"' }
       ],
+      autoFixable: true,
+      gitignoreTemplate: hasPython ? 'Python' : hasNode ? 'Node' : hasJava ? 'Java' : 'default',
       fixType: 'create_gitignore',
       fixRiskLevel: 'Safe',
       fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
       isFixed: false,
-      rawState: { status: 404, reason }
+      rawState: { status: 404, committedArtifacts, hasEnvCommitted }
     };
   } catch (err) {
     if (err.message.includes('not found') || err.message.includes('404')) {
