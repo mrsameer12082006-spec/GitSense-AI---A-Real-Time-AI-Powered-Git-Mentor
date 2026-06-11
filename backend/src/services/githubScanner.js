@@ -77,9 +77,11 @@ async function hasGitignoreLocally(dir) {
 /**
  * Independent Gitignore Detector.
  */
-export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main') {
+export async function detectMissingGitignore(owner, repo, token, defaultBranch = 'main', preFetchedTree = null) {
   try {
-    // 1. Check if the file exists in the local workspace clone first (recursively, handling subdirectories)
+    const repoFullName = `${owner}/${repo}`;
+    
+    // 1. Check if the file exists in the local workspace clone first
     const repos = await prisma.repository.findMany({
       where: { owner, name: repo }
     });
@@ -98,59 +100,129 @@ export async function detectMissingGitignore(owner, repo, token, defaultBranch =
       return null; // File exists locally, no issue
     }
 
-    // 2. Fall back to checking GitHub API recursively
-    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
-    const hasGitignoreOnGithub = Array.isArray(treeRes?.tree) && treeRes.tree.some(item => 
-      item.type === 'blob' && (item.path === '.gitignore' || item.path.endsWith('/.gitignore'))
+    // 2. Check if .gitignore exists in GitHub root
+    const rootRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/contents/`,
+      { 
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        } 
+      }
     );
-
-    if (hasGitignoreOnGithub) {
-      console.log(`[Detector] Missing Gitignore -> Check succeeded. Gitignore exists on GitHub.`);
-      return null; // File exists on GitHub, no issue
+    if (rootRes.status === 200) {
+      const rootFiles = await rootRes.json();
+      if (Array.isArray(rootFiles)) {
+        const hasGitignore = rootFiles.some(f => f.name === '.gitignore');
+        if (hasGitignore) return null;
+      }
     }
 
-    console.log(`[Detector] Missing Gitignore -> Checked local & GitHub tree. Gitignore is missing.`);
-    return {
-      id: 'missing-gitignore',
-      category: 'Repository Quality',
-      severity: 'warning',
-      title: 'Missing .gitignore File',
-      affectedResource: '.gitignore',
-      manualFixCommands: [
-        `touch .gitignore`,
-        `echo "node_modules/\n.env" >> .gitignore`,
-        `git add .gitignore`,
-        `git commit -m "Add .gitignore"`
-      ],
-      fixType: 'create_gitignore',
-      fixRiskLevel: 'Safe',
-      fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
-      isFixed: false,
-      rawState: { status: 404 }
-    };
-  } catch (err) {
-    if (err.message.includes('not found') || err.message.includes('404')) {
-      console.log(`[Detector] Missing Gitignore -> 404 confirmed. Reporting issue.`);
+    // 3. Get full repo tree
+    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${repoFullName}/git/trees/${defaultBranch}?recursive=1`, token);
+    const allPaths = Array.isArray(treeRes?.tree) ? treeRes.tree.map(f => f.path) : [];
+
+    const hasGitignoreInTree = allPaths.some(p => p.toLowerCase() === '.gitignore' || p.toLowerCase().endsWith('/.gitignore'));
+    if (hasGitignoreInTree) return null;
+
+    // Do NOT flag empty or single-file repos
+    if (allPaths.length <= 1) {
+      return null;
+    }
+
+    // 4. Detect language
+    const hasPython = allPaths.some(p => p.endsWith('.py'));
+    const hasNode   = allPaths.some(p => p.endsWith('package.json'));
+    const hasJava   = allPaths.some(p => p.endsWith('.java'));
+
+    // 5. Check if artifact directories/files ACTUALLY exist in repo
+    const committedArtifacts = [];
+    if (hasPython) {
+      if (allPaths.some(p => p.includes('__pycache__'))) committedArtifacts.push('__pycache__/');
+      if (allPaths.some(p => p.includes('venv/')))       committedArtifacts.push('venv/');
+      if (allPaths.some(p => p.endsWith('.pyc')))        committedArtifacts.push('*.pyc files');
+    }
+    if (hasNode) {
+      if (allPaths.some(p => p.includes('node_modules'))) committedArtifacts.push('node_modules/');
+      if (allPaths.some(p => p.includes('dist/')))        committedArtifacts.push('dist/');
+    }
+    if (hasJava) {
+      if (allPaths.some(p => p.endsWith('.class'))) committedArtifacts.push('*.class files');
+      if (allPaths.some(p => p.includes('target/'))) committedArtifacts.push('target/');
+    }
+
+    // 6. Check for .env committed (always critical)
+    const hasEnvCommitted = allPaths.some(p => p === '.env' || p.endsWith('/.env'));
+
+    const shouldWarn = committedArtifacts.length > 0 || hasEnvCommitted;
+
+    if (!shouldWarn) {
+      // Repo is clean — .gitignore is recommended but not a warning
       return {
         id: 'missing-gitignore',
+        type: 'missing_gitignore',
         category: 'Repository Quality',
-        severity: 'warning',
-        title: 'Missing .gitignore File',
         affectedResource: '.gitignore',
-        manualFixCommands: [
-          `touch .gitignore`,
-          `echo "node_modules/\n.env" >> .gitignore`,
-          `git add .gitignore`,
-          `git commit -m "Add .gitignore"`
+        title: '.gitignore Recommended',
+        severity: 'info',
+        rootCause: `This ${hasPython ? 'Python' : hasNode ? 'Node.js' : 'code'} repo has no .gitignore yet. No artifacts are committed currently, but adding one is good practice to prevent accidental commits later.`,
+        steps: [
+          {
+            description: 'Create a .gitignore for this project type',
+            command: hasPython
+              ? 'curl -o .gitignore https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore'
+              : 'npx gitignore node'
+          },
+          { description: 'Commit the .gitignore', command: 'git add .gitignore && git commit -m "chore: add .gitignore"' }
         ],
+        autoFixable: true,
+        gitignoreTemplate: hasPython ? 'Python' : hasNode ? 'Node' : hasJava ? 'Java' : 'default',
         fixType: 'create_gitignore',
         fixRiskLevel: 'Safe',
         fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
         isFixed: false,
-        rawState: { status: 404 }
+        rawState: { status: 404, hasPython, hasNode, hasJava }
       };
     }
-    // Rate limit or auth error -> return null to avoid false positive
+
+    // Artifacts ARE committed — real warning
+    const artifactList = [
+      ...committedArtifacts,
+      ...(hasEnvCommitted ? ['.env (security risk!)'] : [])
+    ].join(', ');
+
+    return {
+      id: 'missing-gitignore',
+      type: 'missing_gitignore',
+      category: 'Repository Quality',
+      affectedResource: '.gitignore',
+      title: 'Generated/Sensitive Files Committed Without .gitignore',
+      severity: hasEnvCommitted ? 'critical' : 'warning',
+      rootCause: `The following files should NOT be in version control but are committed: ${artifactList}. A .gitignore is missing which caused these to be tracked.`,
+      steps: [
+        {
+          description: 'Create .gitignore first',
+          command: hasPython
+            ? 'curl -o .gitignore https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore'
+            : 'npx gitignore node'
+        },
+        { description: 'Remove committed artifacts from tracking', command: `git rm -r --cached ${committedArtifacts[0] || '.env'}` },
+        { description: 'Commit the cleanup', command: 'git add . && git commit -m "chore: remove artifacts and add .gitignore"' }
+      ],
+      autoFixable: true,
+      gitignoreTemplate: hasPython ? 'Python' : hasNode ? 'Node' : hasJava ? 'Java' : 'default',
+      fixType: 'create_gitignore',
+      fixRiskLevel: 'Safe',
+      fixDescription: 'Create a default .gitignore file with standard node_modules and .env exclusions.',
+      isFixed: false,
+      rawState: { status: 404, committedArtifacts, hasEnvCommitted }
+    };
+  } catch (err) {
+    if (err.message.includes('not found') || err.message.includes('404')) {
+      console.log(`[Detector] Missing Gitignore -> 404 tree/ref. Skip flagging empty repository.`);
+      return null;
+    }
     console.warn(`[Detector] Missing Gitignore check skipped due to error: ${err.message}`);
     return null;
   }
@@ -391,16 +463,23 @@ export async function detectBranchCollisions(owner, repo, token) {
 
     const fileMap = new Map(); // path -> Array of PR numbers
 
-    for (const pr of prs) {
+    // Fetch files touched by each open PR in parallel
+    const prFilesPromises = prs.map(async (pr) => {
       try {
         const files = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}/files`, token);
-        for (const file of files) {
-          const arr = fileMap.get(file.filename) || [];
-          arr.push(pr.number);
-          fileMap.set(file.filename, arr);
-        }
+        return { prNumber: pr.number, files };
       } catch (e) {
         console.warn(`[Detector] File list fetch failed for PR #${pr.number}: ${e.message}`);
+        return { prNumber: pr.number, files: [] };
+      }
+    });
+
+    const prFilesResults = await Promise.all(prFilesPromises);
+    for (const res of prFilesResults) {
+      for (const file of res.files) {
+        const arr = fileMap.get(file.filename) || [];
+        arr.push(res.prNumber);
+        fileMap.set(file.filename, arr);
       }
     }
 
@@ -503,31 +582,29 @@ export async function detectCIFailures(owner, repo, token, defaultBranch) {
 /**
  * Independent Large Files Detector.
  */
-export async function detectLargeFiles(owner, repo, token, defaultBranch) {
+export async function detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree = null) {
   try {
-    const treeRes = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
-    if (!treeRes || !Array.isArray(treeRes.tree)) {
-      return null;
-    }
+    const treeRes = preFetchedTree || await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+    if (!treeRes || !treeRes.tree) return null;
 
-    const largeFiles = treeRes.tree.filter(item => item.type === 'blob' && item.size && item.size > 5 * 1024 * 1024);
-    if (largeFiles.length === 0) {
-      return null;
-    }
+    // Filter files larger than 50MB (52,428,800 bytes)
+    const largeFiles = treeRes.tree.filter(f => f.type === 'blob' && f.size && f.size > 52428800);
+    if (largeFiles.length === 0) return null;
 
     return {
       id: 'large-files-tracked',
-      category: 'Repository Quality',
+      category: 'Repository Size & Bloat',
       severity: 'warning',
-      title: `${largeFiles.length} Large File(s) Tracked in Git`,
+      title: `${largeFiles.length} Large File(s) Tracked in Git Index`,
       affectedResource: largeFiles.map(f => f.path).join(', '),
       manualFixCommands: largeFiles.map(f => 
-        `# Untrack large file: ${f.path}\n` +
+        `# Remove large file from index (preserves local file)\n` +
         `git rm --cached ${f.path}\n` +
-        `echo "${f.path.split('.').pop() || ''}" >> .gitignore`
+        `# Add it to gitignore to prevent re-adding\n` +
+        `echo "${f.path}" >> .gitignore`
       ),
-      fixType: 'remove_large_file',
-      fixRiskLevel: 'Medium - Requires manual history rewriting',
+      fixType: 'remove_large_files',
+      fixRiskLevel: 'Low - Index change only',
       fixDescription: 'Remove large binary files from git index and add them to .gitignore.',
       isFixed: false,
       rawState: { 
@@ -558,97 +635,325 @@ export async function scanRepository(owner, repo, token, targetIssueType = null)
   console.log(`Target Issue Type: ${targetIssueType || 'ALL'}`);
   console.log(`====================================================\n`);
 
+  const repoFullName = `${owner}/${repo}`;
+
   // Call Repo Metadata
   const metadata = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}`, token);
   const defaultBranch = metadata.default_branch || 'main';
 
-  // Fetch branches and PRs count for scan stats
-  let totalBranchesChecked = 0;
-  let totalPRsChecked = 0;
+  // Fetch all branches
+  let branches = [];
   try {
-    const branches = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=1`, token);
-    totalBranchesChecked = branches.length;
-    const prs = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=1`, token);
-    totalPRsChecked = prs.length;
+    const branchesRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/branches?per_page=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        }
+      }
+    );
+    if (branchesRes.ok) {
+      branches = await branchesRes.json();
+    }
   } catch (err) {
-    // Continue if stats fails
+    console.warn(`[Scan] Failed to fetch branches: ${err.message}`);
   }
+  const totalBranchesChecked = branches.length || 1;
 
-  // Construct target promises
-  const promises = [];
-  
-  if (!targetIssueType || targetIssueType === 'missing-gitignore') {
-    promises.push(detectMissingGitignore(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
+  // Fetch all open PRs
+  let prs = [];
+  try {
+    const prsRes = await fetch(
+      `https://api.github.com/repos/${repoFullName}/pulls?state=open&per_page=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'GitSense-AI'
+        }
+      }
+    );
+    if (prsRes.ok) {
+      prs = await prsRes.json();
+    }
+  } catch (err) {
+    console.warn(`[Scan] Failed to fetch PRs: ${err.message}`);
   }
+  const totalPRsChecked = prs.length;
 
-  if (!targetIssueType || targetIssueType === 'pr-merge-conflicts') {
-    promises.push(detectMergeConflicts(owner, repo, token));
-  } else {
-    promises.push(Promise.resolve(null));
+  // Pre-fetch recursive tree once to avoid duplicate slow network requests in detectors
+  let preFetchedTree = null;
+  try {
+    preFetchedTree = await fetchWithAuth(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, token);
+  } catch (err) {
+    console.warn(`[Scan] Failed to pre-fetch recursive tree: ${err.message}`);
   }
-
-  if (!targetIssueType || targetIssueType === 'branch-divergence') {
-    promises.push(detectBranchDivergence(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'stale-branches') {
-    promises.push(detectStaleBranches(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'cross-branch-collisions') {
-    promises.push(detectBranchCollisions(owner, repo, token));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'ci-pipeline-failure') {
-    promises.push(detectCIFailures(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  if (!targetIssueType || targetIssueType === 'large-files-tracked') {
-    promises.push(detectLargeFiles(owner, repo, token, defaultBranch));
-  } else {
-    promises.push(Promise.resolve(null));
-  }
-
-  const results = await Promise.allSettled(promises);
 
   const rawIssues = [];
-  results.forEach((res, idx) => {
-    if (res.status === 'fulfilled' && res.value !== null) {
-      rawIssues.push(res.value);
-    } else if (res.status === 'rejected') {
-      console.error(`[Scan] Detector ${idx} failed to run:`, res.reason);
+  const checks = {};
+  let scanCompleted = true;
+
+  checks['metadata'] = 'success';
+  checks['ai'] = 'success';
+
+  // Layer 1 - Branch Divergence Check
+  try {
+    for (const branch of branches) {
+      if (branch.name === defaultBranch) continue;
+      await checkBranchDivergence(repoFullName, token, rawIssues, defaultBranch, branch.name);
     }
-  });
+    checks['branch-divergence'] = 'success';
+    checks['branchComparison'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 1 failed:', err.message);
+    scanCompleted = false;
+    checks['branch-divergence'] = 'failed';
+    checks['branchComparison'] = 'failed';
+  }
+
+  // Layer 2 - PR Conflict Check
+  try {
+    await checkPRConflicts(repoFullName, token, rawIssues, prs);
+    checks['pr-merge-conflicts'] = 'success';
+    checks['prDetails'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 2 failed:', err.message);
+    scanCompleted = false;
+    checks['pr-merge-conflicts'] = 'failed';
+    checks['prDetails'] = 'failed';
+  }
+
+  // Layer 3 - Unresolved Conflict Markers File Scan
+  try {
+    await scanFileConflictMarkers(repoFullName, token, rawIssues, defaultBranch, preFetchedTree);
+    checks['conflict-markers'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Layer 3 failed:', err.message);
+    scanCompleted = false;
+    checks['conflict-markers'] = 'failed';
+  }
+
+  // Run additional quality checks
+  try {
+    const gitignoreIssue = await detectMissingGitignore(owner, repo, token, defaultBranch, preFetchedTree);
+    if (gitignoreIssue) rawIssues.push(gitignoreIssue);
+    checks['missing-gitignore'] = 'success';
+    checks['gitignore'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Gitignore check failed:', err.message);
+    checks['missing-gitignore'] = 'failed';
+    checks['gitignore'] = 'failed';
+  }
+
+  try {
+    const staleIssue = await detectStaleBranches(owner, repo, token, defaultBranch);
+    if (staleIssue) rawIssues.push(staleIssue);
+    checks['stale-branches'] = 'success';
+    checks['branches'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Stale branches check failed:', err.message);
+    checks['stale-branches'] = 'failed';
+    checks['branches'] = 'failed';
+  }
+
+  try {
+    const collisionIssue = await detectBranchCollisions(owner, repo, token);
+    if (collisionIssue) rawIssues.push(collisionIssue);
+    checks['cross-branch-collisions'] = 'success';
+    checks['pullRequests'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Branch collisions check failed:', err.message);
+    checks['cross-branch-collisions'] = 'failed';
+    checks['pullRequests'] = 'failed';
+  }
+
+  try {
+    const ciIssue = await detectCIFailures(owner, repo, token, defaultBranch);
+    if (ciIssue) rawIssues.push(ciIssue);
+    checks['ci-pipeline-failure'] = 'success';
+    checks['ciWorkflow'] = 'success';
+  } catch (err) {
+    console.error('[Scan] CI check failed:', err.message);
+    checks['ci-pipeline-failure'] = 'failed';
+    checks['ciWorkflow'] = 'failed';
+  }
+
+  try {
+    const largeFilesIssue = await detectLargeFiles(owner, repo, token, defaultBranch, preFetchedTree);
+    if (largeFilesIssue) rawIssues.push(largeFilesIssue);
+    checks['large-files-tracked'] = 'success';
+    checks['largeFiles'] = 'success';
+  } catch (err) {
+    console.error('[Scan] Large files check failed:', err.message);
+    checks['large-files-tracked'] = 'failed';
+    checks['largeFiles'] = 'failed';
+  }
 
   // Diagnose issues with AI service
-  const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate');
+  const diagnosedIssues = await aiService.diagnoseIssues(rawIssues, 'intermediate', token, owner, repo);
 
   console.log(`\n=================== SCAN COMPLETED ===================`);
   console.log(`Timestamp: ${new Date().toISOString()}`);
   console.log(`Issues Found: ${diagnosedIssues.length}`);
   console.log(`======================================================\n`);
 
+  const filesScannedCount = Array.isArray(preFetchedTree?.tree) ? preFetchedTree.tree.filter(item => item.type === 'blob').length : 0;
+
+  const status = diagnosedIssues.length === 0 ? 'healthy' : 'issues';
+
   return {
+    status,
+    message: status === 'healthy' ? 'All Clear! Repository is Healthy' : undefined,
     issues: diagnosedIssues,
     scanTimestamp: new Date().toISOString(),
     defaultBranch,
     totalBranchesChecked,
     totalPRsChecked,
     scanned: true,
+    scanCompleted,
+    checks,
+    summary: {
+      branchesChecked: totalBranchesChecked,
+      prsChecked: totalPRsChecked,
+      filesScanned: filesScannedCount,
+      timestamp: new Date().toISOString()
+    },
     permissions: {
       push: metadata.permissions ? metadata.permissions.push : true,
       pull: metadata.permissions ? metadata.permissions.pull : true,
       admin: metadata.permissions ? metadata.permissions.admin : false
     }
   };
+}
+
+/**
+ * Helper to perform safe fetch calls catching any network/status error and continuing.
+ */
+async function safeFetchJson(url, token) {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'GitSense-AI'
+      }
+    });
+    if (!res.ok) {
+      console.warn(`[safeFetchJson] status ${res.status} for URL: ${url}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error(`[safeFetchJson] error for URL: ${url}`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Layer 1 — Branch divergence check:
+ */
+async function checkBranchDivergence(repoFullName, token, issues, baseBranch, headBranch) {
+  const url = `https://api.github.com/repos/${repoFullName}/compare/${baseBranch}...${headBranch}`;
+  const compareData = await safeFetchJson(url, token);
+  
+  if (compareData && compareData.ahead_by > 0 && compareData.behind_by > 0) {
+    issues.push({
+      id: `branch-divergence-${headBranch}`,
+      category: 'Branch Divergence',
+      title: `Merge Conflict Risk: ${headBranch} diverged from ${baseBranch}`,
+      severity: 'critical',
+      rootCause: `Branch '${headBranch}' is ${compareData.ahead_by} commits ahead`,
+      rootCause2: `and ${compareData.behind_by} commits behind '${baseBranch}'.`,
+      rootCause3: `These branches have diverged and will conflict on merge.`,
+      steps: [
+        { description: 'Switch to the head branch', command: `git checkout ${headBranch}` },
+        { description: 'Rebase onto base branch', command: `git rebase ${baseBranch}` },
+        { description: 'Resolve any conflicts, then push', command: 'git push --force-with-lease' }
+      ],
+      filePath: null,
+      resolvedContent: null,
+      autoFixable: false,
+      isFixed: false
+    });
+  }
+}
+
+/**
+ * Layer 2 — PR conflict check:
+ */
+async function checkPRConflicts(repoFullName, token, issues, prsList) {
+  const prs = prsList || [];
+  for (const pr of prs) {
+    const detailUrl = `https://api.github.com/repos/${repoFullName}/pulls/${pr.number}`;
+    const prData = await safeFetchJson(detailUrl, token);
+    
+    if (prData && prData.mergeable === false) {
+      issues.push({
+        id: `pr-merge-conflicts-${pr.number}`,
+        category: 'Pull Requests',
+        title: `PR #${pr.number} has merge conflicts`,
+        severity: 'critical',
+        rootCause: `Pull Request '${pr.title}' cannot be merged automatically.`,
+        rootCause2: `Conflicting changes exist between ${pr.head.ref} and ${pr.base.ref}.`,
+        steps: [
+          { description: 'Checkout the PR branch', command: `git checkout ${pr.head.ref}` },
+          { description: 'Merge base branch in', command: `git merge ${pr.base.ref}` },
+          { description: 'Fix conflicts, commit, push', command: 'git add . && git commit -m "fix: resolve conflicts" && git push' }
+        ],
+        filePath: null,
+        resolvedContent: null,
+        autoFixable: false,
+        isFixed: false
+      });
+    }
+  }
+}
+
+/**
+ * Layer 3 — File content scan for unresolved conflict markers:
+ */
+async function scanFileConflictMarkers(repoFullName, token, issues, defaultBranch, preFetchedTree) {
+  let tree = preFetchedTree;
+  if (!tree) {
+    const url = `https://api.github.com/repos/${repoFullName}/git/trees/${defaultBranch}?recursive=1`;
+    tree = await safeFetchJson(url, token);
+  }
+  
+  if (tree && Array.isArray(tree.tree)) {
+    const codeFiles = tree.tree.filter(f =>
+      f.type === 'blob' &&
+      /\.(js|jsx|ts|tsx|py|java|go|rb|php|css|html)$/.test(f.path)
+    );
+    
+    for (const file of codeFiles.slice(0, 50)) {
+      const contentUrl = `https://api.github.com/repos/${repoFullName}/contents/${file.path}`;
+      const contentData = await safeFetchJson(contentUrl, token);
+      
+      if (contentData && contentData.encoding === 'base64' && contentData.content) {
+        const decoded = Buffer.from(contentData.content, 'base64').toString('utf-8');
+        
+        if (decoded.includes('<<<<<<<') && decoded.includes('=======') && decoded.includes('>>>>>>>')) {
+          issues.push({
+            id: `unresolved-conflict-${file.path}`,
+            category: 'Repository Quality',
+            title: `Unresolved conflict markers in ${file.path}`,
+            severity: 'critical',
+            rootCause: `File '${file.path}' contains unresolved Git conflict markers.`,
+            rootCause2: `This file was left in a conflicted state after a failed merge.`,
+            steps: [
+              { description: 'Open file and search for conflict markers', command: `grep -n '<<<<<<' ${file.path}` },
+              { description: 'Manually edit to remove markers and keep correct code', command: '' },
+              { description: 'Stage and commit the resolved file', command: `git add ${file.path} && git commit -m "fix: resolve conflict in ${file.path}"` }
+            ],
+            filePath: file.path,
+            resolvedContent: null,
+            autoFixable: true,
+            isFixed: false
+          });
+        }
+      }
+    }
+  }
 }

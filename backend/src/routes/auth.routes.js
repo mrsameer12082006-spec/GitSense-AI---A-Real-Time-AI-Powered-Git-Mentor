@@ -387,6 +387,7 @@ router.get('/github/callback', async (req, res) => {
     req.session.tokenScopes = scopes;
     req.session.hasWriteAccess = scopes.includes('repo');
     req.session.isAuthenticated = true;
+    req.session.githubToken = accessToken;
 
     req.session.save((err) => {
       if (err) {

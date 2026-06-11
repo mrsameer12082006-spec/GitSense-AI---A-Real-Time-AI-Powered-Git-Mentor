@@ -13,27 +13,71 @@ import {
   getGreeting
 } from '../data/mockDashboardData';
 import IDEPanel from '../components/IDEPanel';
+import HealthIssueCard from '../components/HealthIssueCard';
 
 // ── API Helper ──
 const API_BASE = '/api';
 const getToken = () => localStorage.getItem('gitsense_token');
 const apiFetch = async (path, options = {}) => {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-  if (res.status === 401) {
-    localStorage.removeItem('gitsense_token');
-    window.location.hash = '#login';
-    throw new Error('Session expired');
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('gitsense_token');
+      window.location.hash = '#login';
+      throw new Error('Session expired');
+    }
+
+    const originalJson = res.json.bind(res);
+    const originalText = res.text.bind(res);
+
+    let cachedText = null;
+    const getText = async () => {
+      if (cachedText !== null) return cachedText;
+      try {
+        cachedText = await originalText();
+      } catch (err) {
+        cachedText = '';
+      }
+      return cachedText;
+    };
+
+    res.text = getText;
+    res.json = async () => {
+      const text = await getText();
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+          return { error: 'Connection refused. Please check if the backend server is running.' };
+        }
+        return { error: text || 'Invalid server response (non-JSON)' };
+      }
+    };
+
+    return res;
+  } catch (fetchErr) {
+    return {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: {
+        get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null
+      },
+      json: async () => ({ error: 'Connection refused. Please check if the backend server is running.' }),
+      text: async () => JSON.stringify({ error: 'Connection refused. Please check if the backend server is running.' }),
+      clone() { return this; }
+    };
   }
-  return res;
 };
 
 export default function Dashboard() {
@@ -96,6 +140,13 @@ export default function Dashboard() {
     return 'chat';
   });
 
+  const [externalCommand, setExternalCommand] = useState(null);
+
+  const handleRunCommandInTerminal = (cmd) => {
+    setExternalCommand(cmd);
+    setActiveSection('ide');
+  };
+
   // ── Sync activeSection with URL hash parameter ──
   useEffect(() => {
     const handleHashChange = () => {
@@ -113,6 +164,7 @@ export default function Dashboard() {
 
   // ── Repository Health & Autonomous Fix State ──
   const [issues, setIssues] = useState([]);
+  const [healthy, setHealthy] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [scanSteps, setScanSteps] = useState([]);
   const [expandedIssueIds, setExpandedIssueIds] = useState(new Set());
@@ -225,15 +277,47 @@ export default function Dashboard() {
       }
 
       const data = await res.json();
+      const scanResult = data;
       isRequestRunning = false;
       
-      setIssues(prev => {
-        const fixedList = prev.filter(iss => iss.isFixed);
-        const newIssues = data.issues || [];
-        const activeIds = newIssues.map(ni => ni.id);
-        const preservedFixed = fixedList.filter(fi => !activeIds.includes(fi.id));
-        return [...newIssues, ...preservedFixed];
-      });
+      if (scanResult.status === 'healthy') {
+        setHealthy(true);
+        setIssues([]);
+      } else {
+        setHealthy(false);
+        setIssues(prev => {
+          const newIssues = scanResult.issues || [];
+          const newIssueIds = newIssues.map(ni => ni.id);
+          
+          // If it was a partial scan, preserve issues from skipped checks
+          if (scanResult.scanCompleted === false && scanResult.checks) {
+            const preservedIssues = prev.filter(pi => {
+              if (newIssueIds.includes(pi.id)) return false;
+              
+              // Map issue ID/type to the scanner check key
+              const issueToCheckKey = {
+                'missing-gitignore': 'missing-gitignore',
+                'pr-merge-conflicts': 'pr-merge-conflicts',
+                'branch-divergence': 'branch-divergence',
+                'stale-branches': 'stale-branches',
+                'cross-branch-collisions': 'cross-branch-collisions',
+                'ci-pipeline-failure': 'ci-pipeline-failure',
+                'large-files-tracked': 'large-files-tracked'
+              };
+              
+              const checkKey = issueToCheckKey[pi.id] || pi.id;
+              return scanResult.checks[checkKey] === 'skipped' || scanResult.checks[checkKey] === 'failed';
+            });
+            
+            return [...newIssues, ...preservedIssues];
+          }
+          
+          // If full scan, keep new issues plus manually marked fixed issues
+          const fixedList = prev.filter(iss => iss.isFixed);
+          const preservedFixed = fixedList.filter(fi => !newIssueIds.includes(fi.id));
+          return [...newIssues, ...preservedFixed];
+        });
+      }
       setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
       setHasWriteAccess(true);
       setScanSummary(data.summary || null);
@@ -302,7 +386,7 @@ export default function Dashboard() {
   const fetchAuthState = async () => {
     setAuthLoading(true);
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await apiFetch('/auth/me', {
         credentials: 'include'
       });
 
@@ -489,12 +573,8 @@ export default function Dashboard() {
       const repo = connectedRepo.name;
       const token = currentUser?.githubToken || '';
 
-      const response = await fetch(`${API_BASE}/repo/fix`, {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getToken()}`
-        },
         body: JSON.stringify({
           owner,
           repo,
@@ -1146,7 +1226,9 @@ export default function Dashboard() {
         body: JSON.stringify({
           message: text,
           conversationId: activeConversationId,
-          repositoryId: connectedRepo?.id,
+          repositoryId: connectedRepo?.id || null,
+          repoOwner: connectedRepo?.owner || null,
+          repoName: connectedRepo?.name || null,
         }),
       });
 
@@ -1258,8 +1340,12 @@ export default function Dashboard() {
     } catch (err) {
       setMessages(prev => [...prev, {
         sender: 'ai',
-        text: `⚠️ AI Chat Error: ${err.message}`,
-        insight: 'Please verify the backend server is running and your API keys are configured in backend/.env',
+        text: err.message === 'NO_REPO_SELECTED'
+          ? '⚠️ Please select a repository before chatting.'
+          : `⚠️ AI Chat Error: ${err.message}`,
+        insight: err.message === 'NO_REPO_SELECTED'
+          ? 'Select a repository from the left panel.'
+          : 'Please verify the backend server is running and your API keys are configured in backend/.env',
       }]);
     } finally {
       setIsAiTyping(false);
@@ -1369,11 +1455,8 @@ export default function Dashboard() {
 
     try {
       const token = getToken();
-      const res = await fetch('/api/kb/upload', {
+      const res = await apiFetch('/kb/upload', {
         method: 'POST',
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: formData
       });
 
@@ -1896,7 +1979,11 @@ export default function Dashboard() {
         {/* ── CENTRAL MAIN WORKSPACE PANELS ── */}
         <div className="flex-1 flex overflow-hidden min-w-0">
 
-          {activeSection === 'ide' ? (
+          {/* IDE PANEL CONTAINER */}
+          <div 
+            style={{ display: activeSection === 'ide' ? 'flex' : 'none' }} 
+            className="flex-1 flex overflow-hidden min-w-0"
+          >
             <IDEPanel
               connectedRepo={connectedRepo}
               apiFetch={apiFetch}
@@ -1905,10 +1992,16 @@ export default function Dashboard() {
                 setInputVal(`Analyze this file: ${filename}\n\n\`\`\`\n${content}\n\`\`\``);
                 setTimeout(() => chatInputRef.current?.focus(), 50);
               }}
+              externalCommand={externalCommand}
+              onClearExternalCommand={() => setExternalCommand(null)}
             />
-          ) : (
-            /* GIT ASSISTANT CHAT INTERFACE */
-            <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
+          </div>
+
+          {/* GIT ASSISTANT CHAT INTERFACE */}
+          <div 
+            style={{ display: activeSection === 'chat' ? 'flex' : 'none' }}
+            className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]"
+          >
             
             {/* Chat Messages List */}
             <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
@@ -1933,48 +2026,7 @@ export default function Dashboard() {
                     {welcomeSubtitle}
                   </p>
 
-                  {isRepositoryConnected && getProactiveSuggestions().length > 0 && (
-                    <div className="mt-4 w-full flex flex-col gap-4 text-left select-text max-w-[640px]">
-                      <h4 className="text-xs font-bold font-heading uppercase text-slate-500 tracking-wider text-center mb-1 flex items-center justify-center gap-1.5">
-                        <Sparkles size={12} className="text-[#00D4FF]" /> Proactive Repository Observations
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {getProactiveSuggestions().map((s) => (
-                          <div
-                            key={s.id}
-                            className="bg-slate-950/40 border border-white/[0.06] hover:border-[#7C5CFF]/30 p-4 rounded-xl flex flex-col justify-between transition-all group relative overflow-hidden backdrop-blur-md"
-                          >
-                            <div className="absolute top-0 right-0 w-16 h-16 bg-[#7C5CFF] opacity-5 filter blur-xl rounded-full group-hover:scale-150 transition-transform duration-500" />
-                            
-                            <div className="flex flex-col gap-1.5 z-10">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-slate-200">{s.title}</span>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDismissedSuggestions(prev => [...prev, s.id]);
-                                  }}
-                                  className="text-slate-500 hover:text-rose-400 p-0.5 rounded cursor-pointer transition-colors"
-                                  title="Dismiss observation"
-                                >
-                                  <X size={12} />
-                                </button>
-                              </div>
-                              <p className="text-[11px] text-slate-400 leading-normal">{s.description}</p>
-                            </div>
-                            
-                            <button
-                              onClick={() => handleSelectSuggestion(s)}
-                              className="mt-3 w-full py-1.5 px-3 bg-[#7C5CFF]/10 hover:bg-[#7C5CFF]/20 border border-[#7C5CFF]/20 hover:border-[#7C5CFF]/40 text-[#00D4FF] text-[10px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer z-10"
-                            >
-                              <span>Ask AI About This</span>
-                              <ArrowRight size={10} className="group-hover:translate-x-0.5 transition-transform" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+
                 </div>
               ) : (
                 /* Conversation flow */
@@ -2067,6 +2119,7 @@ export default function Dashboard() {
                           idx={idx} 
                           copiedIndex={copiedIndex}
                           copyToClipboard={copyToClipboard}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
 
@@ -2078,6 +2131,7 @@ export default function Dashboard() {
                           connectedRepo={connectedRepo}
                           setMessages={setMessages}
                           apiFetch={apiFetch}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
 
@@ -2112,6 +2166,7 @@ export default function Dashboard() {
                           idx={idx}
                           copiedIndex={copiedIndex}
                           copyToClipboard={copyToClipboard}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
                       </div>
@@ -2218,6 +2273,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+
                 {/* Input container */}
                 <div className="relative flex items-center bg-slate-900/90 border border-white/[0.08] hover:border-white/[0.15] focus-within:border-[#7C5CFF]/60 rounded-xl px-3 py-2.5 transition-all">
                   
@@ -2304,7 +2360,6 @@ export default function Dashboard() {
             </div>
 
           </div>
-        )}
 
         </div>
 
@@ -2406,28 +2461,7 @@ export default function Dashboard() {
 
               {activeSidebarTab === 'insights' ? (
                 <>
-                  {/* Minimal Repo Intelligence Status Bar */}
-                  <div className="flex items-center justify-between bg-slate-950/60 border border-white/[0.06] rounded-xl px-3 py-2 mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-1.5 h-1.5 rounded-full ${ingestionState.status === 'running' ? 'bg-amber-500 animate-pulse' : ingestionState.status === 'failed' ? 'bg-rose-500' : 'bg-[#00E38C]'}`} />
-                      <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Repo Intelligence</span>
-                      <span className={`text-[9px] font-semibold ${ingestionState.status === 'running' ? 'text-amber-400' : ingestionState.status === 'failed' ? 'text-rose-400' : 'text-[#00E38C]'}`}>
-                        {ingestionState.status === 'running' ? 'Indexing' : ingestionState.status === 'failed' ? 'Offline' : 'Active'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {ingestionState.chunkCount > 0 && (
-                        <span className="text-[9px] text-slate-500 font-mono">{ingestionState.chunkCount} chunks</span>
-                      )}
-                      <button
-                        onClick={handleSyncRepo}
-                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-                        title="Re-sync Repository Index"
-                      >
-                        <RefreshCw size={10} className={ingestionState.status === 'running' ? 'animate-spin text-amber-400' : ''} />
-                      </button>
-                    </div>
-                  </div>
+
 
                   {/* Token Scope Warning Banner */}
                   {!hasWriteAccess && (
@@ -2551,110 +2585,29 @@ export default function Dashboard() {
                             <div className="flex flex-col gap-2 border-t border-white/[0.05] pt-3 mt-1">
                               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Partial Scan Issues ({issues.length})</span>
                               {issues.map(issue => (
-                                <div key={issue.id} className="bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col">
-                                  <button
-                                    onClick={() => toggleIssueExpansion(issue.id)}
-                                    className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
-                                        {issue.severity}
-                                      </span>
-                                      <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                    </div>
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </button>
-                                  {expandedIssueIds.has(issue.id) && (
-                                    <IssueDetails
-                                      issue={issue}
-                                      connectedRepo={connectedRepo}
-                                      repoPermissions={repoPermissions}
-                                      activeSSEFixId={activeSSEFixId}
-                                      sseProgressSteps={sseProgressSteps}
-                                      sseStatus={sseStatus}
-                                      ciDiagnostics={ciDiagnostics}
-                                      activeDiagnosingJobId={activeDiagnosingJobId}
-                                      executeSSEFix={executeSSEFix}
-                                      executePOSTFix={executePOSTFix}
-                                      diagnoseCIFailure={diagnoseCIFailure}
-                                      handleScanRepo={handleScanRepo}
-                                      issueConfirmFixData={issueConfirmFixData}
-                                      setIssueConfirmFixData={setIssueConfirmFixData}
-                                      currentUser={currentUser}
-                                      hasWriteAccess={hasWriteAccess}
-                                    />
-                                  )}
-                                </div>
+                                <HealthIssueCard
+                                  key={issue.id}
+                                  issue={issue}
+                                  currentRepo={connectedRepo?.fullName}
+                                  onVerify={handleScanRepo}
+                                />
                               ))}
                             </div>
                           )}
                         </div>
-                      ) : issues.filter(i => !i.isFixed).length > 0 ? (
+                      ) : !healthy && issues.filter(i => !i.isFixed).length > 0 ? (
                         <div className="flex flex-col gap-3">
                           <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
                             <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
                           </div>
                           <div className="flex flex-col gap-2">
                             {issues.map(issue => (
-                              <div 
-                                key={issue.id} 
-                                className={`bg-slate-900 border ${
-                                  issue.isFixed 
-                                    ? 'border-emerald-500/30 border-l-4 border-l-emerald-500' 
-                                    : issue.severity === 'critical'
-                                      ? 'border-white/[0.05] border-l-4 border-l-rose-500'
-                                      : 'border-white/[0.05] border-l-4 border-l-amber-500'
-                                } rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-85' : ''}`}
-                              >
-                                {/* Header (Clickable) */}
-                                <button
-                                  onClick={() => toggleIssueExpansion(issue.id)}
-                                  className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    {issue.isFixed ? (
-                                      <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-                                    ) : (
-                                      <AlertTriangle size={14} className={issue.severity === 'critical' ? 'text-rose-400 shrink-0' : 'text-amber-400 shrink-0'} />
-                                    )}
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                      issue.isFixed 
-                                        ? 'bg-[#00E38C]/20 text-[#00E38C]' 
-                                        : issue.severity === 'critical' 
-                                          ? 'bg-rose-500/20 text-rose-400' 
-                                          : 'bg-amber-500/20 text-amber-400'
-                                    }`}>
-                                      {issue.isFixed ? 'FIXED' : issue.severity}
-                                    </span>
-                                    <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </div>
-                                </button>
-                                
-                                {/* Expanded Content */}
-                                {expandedIssueIds.has(issue.id) && (
-                                  <IssueDetails
-                                    issue={issue}
-                                    connectedRepo={connectedRepo}
-                                    repoPermissions={repoPermissions}
-                                    activeSSEFixId={activeSSEFixId}
-                                    sseProgressSteps={sseProgressSteps}
-                                    sseStatus={sseStatus}
-                                    ciDiagnostics={ciDiagnostics}
-                                    activeDiagnosingJobId={activeDiagnosingJobId}
-                                    executeSSEFix={executeSSEFix}
-                                    executePOSTFix={executePOSTFix}
-                                    diagnoseCIFailure={diagnoseCIFailure}
-                                    handleScanRepo={handleScanRepo}
-                                    issueConfirmFixData={issueConfirmFixData}
-                                    setIssueConfirmFixData={setIssueConfirmFixData}
-                                    currentUser={currentUser}
-                                    hasWriteAccess={hasWriteAccess}
-                                  />
-                                )}
-                              </div>
+                              <HealthIssueCard
+                                key={issue.id}
+                                issue={issue}
+                                currentRepo={connectedRepo?.fullName}
+                                onVerify={handleScanRepo}
+                              />
                             ))}
                           </div>
                         </div>
@@ -3121,7 +3074,7 @@ const parseGitCommand = (word) => {
 };
 
 // ── Command Card Component ──
-function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
+function CommandCard({ command, idx, copiedIndex, copyToClipboard, onRunCommand }) {
   const info = parseGitCommand(command);
   const [isHovered, setIsHovered] = useState(false);
 
@@ -3130,9 +3083,19 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
       <div className="mt-3 rounded-xl overflow-hidden border border-white/[0.08] bg-[#060913]">
         <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
           <span>Terminal</span>
-          <button onClick={() => copyToClipboard(command, `cmd-${idx}`)} className="hover:text-white cursor-pointer flex items-center gap-1">
-            {copiedIndex === `cmd-${idx}` ? 'Copied!' : 'Copy'}
-          </button>
+          <div className="flex items-center gap-2">
+            {onRunCommand && (
+              <button
+                onClick={() => onRunCommand(command)}
+                className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+              >
+                <Play size={10} /> Run
+              </button>
+            )}
+            <button onClick={() => copyToClipboard(command, `cmd-${idx}`)} className="hover:text-white cursor-pointer flex items-center gap-1">
+              {copiedIndex === `cmd-${idx}` ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
         </div>
         <pre className="p-3 text-[11px] font-mono text-left bg-[#010409] text-slate-300"><code>{command}</code></pre>
       </div>
@@ -3152,6 +3115,16 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
           <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${riskColor}`}>
             Risk: {info.level}
           </span>
+          {onRunCommand && (
+            <button
+              onClick={() => onRunCommand(command)}
+              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-[#00D4FF] transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold border border-white/[0.06] hover:border-[#00D4FF]/30 ml-2"
+              title="Execute in IDE Terminal"
+            >
+              <Play size={10} />
+              <span>Run</span>
+            </button>
+          )}
           <button
             onClick={() => copyToClipboard(command, `cmd-${idx}`)}
             className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -3221,7 +3194,7 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
 }
 
 // ── Guided Conflict Resolver Component ──
-function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFetch }) {
+function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFetch, onRunCommand }) {
   const [resolvedCode, setResolvedCode] = useState(conflict.recommendedResolution || '');
   const [isResolved, setIsResolved] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState(null);
@@ -3246,11 +3219,47 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
 
     if (connectedRepo) {
       try {
-        await apiFetch(`/repos/${connectedRepo.id}/fix`, {
-          method: 'POST',
-          body: JSON.stringify({ issueId: `conflict-pr-resolved`, action: 'resolve_conflict' })
+        // Fetch current file content from the local clone to resolve conflict markers safely
+        let resolvedFileContent = code;
+        try {
+          const fileRes = await apiFetch(`/repos/${connectedRepo.id}/contents/file?path=${encodeURIComponent(conflict.conflictFile)}`);
+          if (fileRes.ok) {
+            const fileData = await fileRes.json();
+            const currentContent = fileData.content || '';
+            if (currentContent.includes(conflict.conflictLines)) {
+              resolvedFileContent = currentContent.replace(conflict.conflictLines, code);
+            } else {
+              // Try replacing normalized version (CRLF vs LF)
+              const normContent = currentContent.replace(/\r\n/g, '\n');
+              const normConflict = conflict.conflictLines.replace(/\r\n/g, '\n');
+              if (normContent.includes(normConflict)) {
+                resolvedFileContent = normContent.replace(normConflict, code);
+              }
+            }
+          }
+        } catch (fileErr) {
+          console.warn('Failed to load file for inline conflict replacement, falling back to writing code block:', fileErr);
+        }
+
+        // Save the resolved content to the local clone
+        await apiFetch(`/workspace/${connectedRepo.id}/file`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: conflict.conflictFile,
+            content: resolvedFileContent,
+            commitMessage: `Resolve merge conflict in ${conflict.conflictFile} via GitSense AI`
+          })
         });
-      } catch (err) {}
+
+        // Trigger staging and commit commands in the terminal
+        if (onRunCommand) {
+          const runCmd = `git add "${conflict.conflictFile}" && git commit -m "Resolve merge conflict in ${conflict.conflictFile}"`;
+          onRunCommand(runCmd);
+        }
+      } catch (err) {
+        console.error('Failed to resolve conflict:', err);
+      }
     }
 
     setMessages(prev => [...prev, {
@@ -3382,7 +3391,7 @@ function RepairTimeline({ steps }) {
 }
 
 // ── Proactive Diagnosed Issue Card Component ──
-function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
+function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard, onRunCommand }) {
   const [isFixed, setIsFixed] = useState(false);
 
   return (
@@ -3419,12 +3428,22 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
           <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
             <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
               <span>Terminal Command</span>
-              <button
-                onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
-                className="hover:text-white cursor-pointer flex items-center gap-1"
-              >
-                {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
-              </button>
+              <div className="flex items-center gap-3">
+                {onRunCommand && (
+                  <button
+                    onClick={() => onRunCommand(issue.command)}
+                    className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                  >
+                    <Play size={10} /> Run
+                  </button>
+                )}
+                <button
+                  onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
+                  className="hover:text-white cursor-pointer flex items-center gap-1"
+                >
+                  {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
             </div>
             <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
               <code>{issue.command}</code>
@@ -3460,9 +3479,8 @@ function StaleBranchCardItem({ s, idx, connectedRepo, currentUser, hasWriteAcces
     setFixStep('Verifying branch exists...');
     
     try {
-      const response = await fetch('/api/repo/fix', {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           owner: repoOwner,
           repo: repoName,
@@ -3662,6 +3680,52 @@ function IssueDetails({
     }
   }, [issue, owner, repo]);
 
+  // Polling for automated merge status
+  useEffect(() => {
+    if (!conflictModal?.jobId || conflictModal?.mergeStatus === 'completed' || conflictModal?.mergeStatus === 'failed') {
+      return;
+    }
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/auto-fix/status/${conflictModal.jobId}`);
+        if (!res.ok) throw new Error('Failed to fetch status');
+        const data = await res.json();
+        
+        if (isMounted && data.success && data.job) {
+          const status = data.job.status;
+          const progress = data.job.progress;
+          const error = data.job.error;
+          const result = data.job.result;
+
+          setConflictModal(prev => {
+            if (!prev || prev.jobId !== conflictModal.jobId) return prev;
+            return {
+              ...prev,
+              mergeStatus: status,
+              mergeProgress: progress,
+              error: status === 'failed' ? error : prev.error,
+              mergeResult: result
+            };
+          });
+
+          if (status === 'completed' || status === 'failed') {
+            clearInterval(interval);
+            if (handleScanRepo) handleScanRepo();
+          }
+        }
+      } catch (err) {
+        console.error('[Merge Polling Error]', err);
+      }
+    }, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [conflictModal?.jobId, conflictModal?.mergeStatus]);
+
   const handleSyncBranchAutomated = async (branchName) => {
     setSyncingBranch(branchName);
     setSyncErrors(prev => ({ ...prev, [branchName]: null }));
@@ -3757,7 +3821,10 @@ function IssueDetails({
         setConflictModal(prev => ({
           ...prev,
           loadingApply: false,
-          prCreated: data.pullRequest
+          prCreated: data.pullRequest,
+          jobId: data.jobId,
+          mergeStatus: 'processing',
+          mergeProgress: 'Resolving conflicts & merging...'
         }));
         if (handleScanRepo) handleScanRepo();
       } else {
@@ -4504,7 +4571,71 @@ git push origin SECOND_PR_BRANCH_NAME --force-with-lease`}
                 {/* Content body */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-4 text-xs">
                   {/* PR Created Status / Success State */}
-                  {conflictModal.prCreated ? (
+                  {conflictModal.jobId ? (
+                    <div className="flex flex-col items-center justify-center text-center py-8 px-4 bg-slate-900/40 border border-white/[0.05] rounded-3xl gap-4 w-full">
+                      {conflictModal.mergeStatus === 'processing' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 flex items-center justify-center text-[#7C5CFF]">
+                            <Loader2 size={24} className="animate-spin text-[#00D4FF]" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Resolving Conflicts & Merging...</h4>
+                            <p className="text-slate-400 max-w-md text-[11px] leading-relaxed">
+                              {conflictModal.mergeProgress || 'Analyzing branch delta and preparing changes...'}
+                            </p>
+                          </div>
+                        </>
+                      )}
+
+                      {conflictModal.mergeStatus === 'completed' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#00E38C]/15 border border-[#00E38C]/30 flex items-center justify-center text-[#00E38C]">
+                            <CheckCircle2 size={24} className="text-[#00E38C] animate-pulse" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Merged successfully</h4>
+                            <p className="text-slate-400 max-w-md text-[11px] leading-relaxed">
+                              GitSense AI successfully resolved conflicts and squash-merged the PR back into the target branch.
+                            </p>
+                            {conflictModal.mergeResult?.conflictsResolved?.length > 0 && (
+                              <div className="mt-2 text-[10px] text-slate-500 font-mono">
+                                Resolved files: {conflictModal.mergeResult.conflictsResolved.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {conflictModal.mergeStatus === 'failed' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#FF4F5E]/15 border border-[#FF4F5E]/30 flex items-center justify-center text-[#FF4F5E]">
+                            <AlertTriangle size={24} className="text-[#FF4F5E]" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Manual review needed</h4>
+                            <p className="text-[#FF4F5E] max-w-md text-[11px] leading-relaxed font-semibold">
+                              {conflictModal.error || 'Conflict resolution could not be safely automated.'}
+                            </p>
+                            <p className="text-slate-400 max-w-md text-[10px] leading-relaxed mt-1">
+                              Please resolve conflicts manually on GitHub or in your local workspace.
+                            </p>
+                          </div>
+                          {conflictModal.prCreated && (
+                            <a 
+                              href={conflictModal.prCreated.html_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2 px-4 py-2 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 hover:opacity-90 shadow-lg shadow-purple-950/20"
+                            >
+                              <GitPullRequest size={13} />
+                              View PR on GitHub #{conflictModal.prCreated.number}
+                              <ExternalLink size={11} />
+                            </a>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : conflictModal.prCreated ? (
                     <div className="flex flex-col items-center justify-center text-center py-8 px-4 bg-[#00E38C]/5 border border-[#00E38C]/10 rounded-2xl gap-3">
                       <div className="w-12 h-12 rounded-full bg-[#00E38C]/10 border border-[#00E38C]/20 flex items-center justify-center text-[#00E38C]">
                         <CheckCircle2 size={24} className="animate-bounce" />
