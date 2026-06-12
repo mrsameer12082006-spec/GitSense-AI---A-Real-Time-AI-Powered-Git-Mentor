@@ -13,18 +13,80 @@ import githubService from './github.js';
 class AIService {
   constructor() {
     this.model = 'llama-3.3-70b-versatile';
+    this.trugenAvailable = true;
+    this.groqAvailable = true;
+    this.geminiAvailable = true;
   }
 
   /**
-   * Helper to dynamically get config for TruGen AI and Groq.
-   * Auto-detects if TruGen API key starts with gsk_ (indicating a Groq key).
+   * Health checks the configured providers by performing light API pings.
+   * Marks providers returning 404 or >= 500 as unavailable.
+   */
+  async checkProviderHealth() {
+    const trugenKey = process.env.TRUGEN_API_KEY;
+    if (trugenKey && !trugenKey.startsWith('gsk_')) {
+      try {
+        const trugenBaseURL = process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1';
+        const res = await fetch(`${trugenBaseURL}/models`, {
+          headers: {
+            'Authorization': `Bearer ${trugenKey}`,
+            'x-api-key': trugenKey
+          }
+        });
+        if (res.status === 404 || res.status >= 500) {
+          console.warn(`[AI Health Check] TruGen returned status ${res.status}. Marking TruGen as unavailable.`);
+          this.trugenAvailable = false;
+        } else {
+          this.trugenAvailable = true;
+        }
+      } catch (err) {
+        console.warn(`[AI Health Check] TruGen ping failed: ${err.message}. Marking TruGen as unavailable.`);
+        this.trugenAvailable = false;
+      }
+    } else {
+      this.trugenAvailable = false;
+    }
+
+    const groqKey = process.env.GROQ_API_KEY || (trugenKey && trugenKey.startsWith('gsk_') ? trugenKey : null);
+    if (groqKey) {
+      try {
+        const res = await fetch(`https://api.groq.com/openai/v1/models`, {
+          headers: {
+            'Authorization': `Bearer ${groqKey}`
+          }
+        });
+        if (res.status === 404 || res.status >= 500) {
+          console.warn(`[AI Health Check] Groq returned status ${res.status}. Marking Groq as unavailable.`);
+          this.groqAvailable = false;
+        } else {
+          this.groqAvailable = true;
+        }
+      } catch (err) {
+        console.warn(`[AI Health Check] Groq ping failed: ${err.message}. Marking Groq as unavailable.`);
+        this.groqAvailable = false;
+      }
+    } else {
+      this.groqAvailable = false;
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    this.geminiAvailable = !!geminiKey;
+
+    console.log(`[AI Health Check] Health check summary — Groq: ${this.groqAvailable ? 'AVAILABLE' : 'OFFLINE'}, TruGen: ${this.trugenAvailable ? 'AVAILABLE' : 'OFFLINE'}, Gemini: ${this.geminiAvailable ? 'AVAILABLE' : 'OFFLINE'}`);
+  }
+
+  /**
+   * Helper to dynamically get config for TruGen AI, Groq, and Gemini.
+   * Prioritizes Groq over TruGen, skipping unavailable providers.
    */
   _getAIConfig() {
     const trugenKey = process.env.TRUGEN_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY || (trugenKey && trugenKey.startsWith('gsk_') ? trugenKey : null);
+    const geminiKey = process.env.GEMINI_API_KEY;
 
     let primary = null;
     let fallback = null;
+    let gemini = null;
 
     const trugenBaseURL = process.env.TRUGEN_BASE_URL || 'https://api.trugen.ai/v1';
     const trugenModel = process.env.TRUGEN_MODEL || 'llama-3.3-70b-versatile';
@@ -32,8 +94,7 @@ class AIService {
     const groqBaseURL = 'https://api.groq.com/openai/v1';
     const groqModel = 'llama-3.3-70b-versatile';
 
-    // Promote Groq as primary if available
-    if (groqKey) {
+    if (groqKey && this.groqAvailable) {
       primary = {
         apiKey: groqKey,
         baseURL: groqBaseURL,
@@ -41,36 +102,31 @@ class AIService {
         isGroq: true,
         name: 'Groq'
       };
-      if (trugenKey && !trugenKey.startsWith('gsk_')) {
-        fallback = {
-          apiKey: trugenKey,
-          baseURL: trugenBaseURL,
-          model: trugenModel,
-          isGroq: false,
-          name: 'TruGen'
-        };
-      }
-    } else if (trugenKey) {
-      if (trugenKey.startsWith('gsk_')) {
-        primary = {
-          apiKey: trugenKey,
-          baseURL: groqBaseURL,
-          model: groqModel,
-          isGroq: true,
-          name: 'Groq (via TruGen Key)'
-        };
+    }
+
+    if (trugenKey && !trugenKey.startsWith('gsk_') && this.trugenAvailable) {
+      const trugenConfig = {
+        apiKey: trugenKey,
+        baseURL: trugenBaseURL,
+        model: trugenModel,
+        isGroq: false,
+        name: 'TruGen'
+      };
+      if (!primary) {
+        primary = trugenConfig;
       } else {
-        primary = {
-          apiKey: trugenKey,
-          baseURL: trugenBaseURL,
-          model: trugenModel,
-          isGroq: false,
-          name: 'TruGen'
-        };
+        fallback = trugenConfig;
       }
     }
 
-    return { primary, fallback };
+    if (geminiKey && this.geminiAvailable) {
+      gemini = {
+        apiKey: geminiKey,
+        name: 'Gemini'
+      };
+    }
+
+    return { primary, fallback, gemini };
   }
 
   /**
@@ -255,8 +311,8 @@ REPOSITORY CONTEXT END`;
       const models = [
         'llama-3.3-70b-versatile',
         'llama-3.1-8b-instant',
-        'gemma2-9b-it',
-        'mixtral-8x7b-32768'
+        'llama3-70b-8192',
+        'llama3-8b-8192'
       ];
       
       let lastErr = null;
@@ -400,8 +456,8 @@ REPOSITORY CONTEXT END`;
       const models = [
         'llama-3.3-70b-versatile',
         'llama-3.1-8b-instant',
-        'gemma2-9b-it',
-        'mixtral-8x7b-32768'
+        'llama3-70b-8192',
+        'llama3-8b-8192'
       ];
       
       let lastErr = null;
@@ -540,6 +596,251 @@ REPOSITORY CONTEXT END`;
   }
 
   /**
+   * Safe chat response generator with strict token budgeting, Groq model rotation, 
+   * and Google Gemini fallback. Returns the response text or overload fallback message.
+   */
+  async generateChatResponse({
+    systemPrompt = '',
+    chatHistory = [],
+    ragChunks = [],
+    repoContext = '',
+    userMessage = ''
+  }) {
+    // 1. Core System Prompt: max 1500 tokens (approx 6000 chars)
+    let finalSystemPrompt = systemPrompt;
+    if (finalSystemPrompt.length > 6000) {
+      finalSystemPrompt = finalSystemPrompt.substring(0, 6000) + '\n[System prompt truncated to stay within token limits]';
+    }
+
+    // 2. Last 6 chat messages only
+    const slicedHistory = chatHistory.slice(-6).map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.content
+    }));
+
+    // 3. RAG chunks: max 4000 tokens (approx 16000 chars), top 10 chunks
+    const topChunks = ragChunks.slice(0, 10);
+    let formattedRAG = '';
+    if (topChunks.length > 0) {
+      formattedRAG = '\n\n### RELEVANT CODEBASE CHUNKS (from ingested repository data)\n' +
+        topChunks.map((c, idx) => {
+          const label = c.sourceType ? `[${c.sourceType.toUpperCase()}] ` : '';
+          return `--- Chunk ${idx + 1} ${label}---\n${c.content}`;
+        }).join('\n\n');
+      if (formattedRAG.length > 16000) {
+        formattedRAG = formattedRAG.substring(0, 16000) + '\n[RAG chunks truncated to stay within token limits]';
+      }
+    }
+
+    // 4. Repo context: max 2000 tokens (approx 8000 chars)
+    let formattedRepoContext = repoContext || '';
+    if (formattedRepoContext.length > 8000) {
+      formattedRepoContext = formattedRepoContext.substring(0, 8000) + '\n[Repository context truncated to stay within token limits]';
+    }
+
+    // Combine sections
+    let systemContent = `${finalSystemPrompt}${formattedRAG}`;
+    if (formattedRepoContext) {
+      systemContent += `\n\n### REPOSITORY LIVE CONTEXT\n${formattedRepoContext}`;
+    }
+
+    // Hard limit total payload size to 48,000 characters (~12,000 tokens) to accommodate RAG chunks
+    const MAX_BUDGET = 48000;
+    const historyTextLength = slicedHistory.reduce((acc, m) => acc + m.content.length + 50, 0);
+    const totalCurrentSize = systemContent.length + historyTextLength + userMessage.length;
+
+    if (totalCurrentSize > MAX_BUDGET) {
+      console.warn(`[AI] Total character payload ${totalCurrentSize} exceeds 12000 tokens budget (${MAX_BUDGET}). Shrinking context.`);
+      const excess = totalCurrentSize - MAX_BUDGET;
+      if (formattedRepoContext.length > excess) {
+        formattedRepoContext = formattedRepoContext.substring(0, formattedRepoContext.length - excess) + '\n[Repository context truncated to stay within hard budget]';
+      } else {
+        formattedRepoContext = '';
+        const remainingExcess = excess - repoContext.length;
+        if (formattedRAG.length > remainingExcess) {
+          formattedRAG = formattedRAG.substring(0, formattedRAG.length - remainingExcess) + '\n[RAG chunks truncated to stay within hard budget]';
+        } else {
+          formattedRAG = '';
+        }
+      }
+      
+      systemContent = `${finalSystemPrompt}${formattedRAG}`;
+      if (formattedRepoContext) {
+        systemContent += `\n\n### REPOSITORY LIVE CONTEXT\n${formattedRepoContext}`;
+      }
+    }
+
+    const messages = [
+      { role: 'system', content: systemContent },
+      ...slicedHistory,
+      { role: 'user', content: userMessage }
+    ];
+
+    const { primary, fallback, gemini } = this._getAIConfig();
+    const providersToTry = [];
+    if (primary) providersToTry.push(primary);
+    if (fallback) providersToTry.push(fallback);
+
+    let lastError = null;
+
+    // Try primary and fallback providers (TruGen/Groq)
+    for (const provider of providersToTry) {
+      try {
+        console.log(`[AI] Attempting chat response with provider: ${provider.name}`);
+        const reply = await this._executeProviderChat(provider, messages);
+        if (reply) return reply;
+      } catch (err) {
+        console.error(`[AI] Provider ${provider.name} chat execution failed:`, err.message);
+        lastError = err;
+      }
+    }
+
+    // Fallback to Google Gemini
+    if (gemini) {
+      try {
+        console.log(`[AI] Primary/fallback providers rate limited or offline. Trying Gemini fallback...`);
+        const reply = await this._executeGeminiChat(gemini, systemContent, slicedHistory, userMessage);
+        if (reply) return reply;
+      } catch (geminiErr) {
+        console.error('[AI] Google Gemini fallback failed:', geminiErr.message);
+        lastError = geminiErr;
+      }
+    }
+
+    console.error('[AI] All AI providers failed. Returning overload fallback message.');
+    return "I'm a bit overloaded right now — give me 30 seconds and try again.";
+  }
+
+  async _executeProviderChat(provider, messages) {
+    if (provider.isGroq) {
+      const models = [
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant',
+        'gemma2-9b-it',
+        'mixtral-8x7b-32768'
+      ];
+
+      let lastErr = null;
+      for (const modelName of models) {
+        try {
+          console.log(`[AI] Calling Groq model: ${modelName}`);
+          const res = await fetch(`${provider.baseURL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${provider.apiKey}`
+            },
+            body: JSON.stringify({
+              model: modelName,
+              messages,
+              temperature: 0.3
+            })
+          });
+
+          if (!res.ok) {
+            const errText = await res.text();
+            if (res.status === 429 || errText.includes('rate_limit') || errText.includes('429')) {
+              console.warn(`[AI] Groq model ${modelName} rate limited (429). Rotating immediately...`);
+              continue;
+            }
+            throw new Error(`API failed status ${res.status}: ${errText}`);
+          }
+
+          const data = await res.json();
+          const content = data.choices?.[0]?.message?.content;
+          if (content) {
+            return content;
+          }
+        } catch (err) {
+          console.error(`[AI] Groq model ${modelName} request error:`, err.message);
+          lastErr = err;
+          if (err.message.includes('429') || err.message.includes('rate limit')) {
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw lastErr || new Error('All Groq models rate limited or failed.');
+    } else {
+      const res = await fetch(`${provider.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${provider.apiKey}`,
+          'x-api-key': provider.apiKey
+        },
+        body: JSON.stringify({
+          model: provider.model,
+          messages,
+          temperature: 0.3
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`TruGen failed status ${res.status}: ${errText}`);
+      }
+
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content || null;
+    }
+  }
+
+  async _executeGeminiChat(config, systemPrompt, chatHistory, userMessage) {
+    try {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.apiKey}`;
+      
+      const contents = [
+        ...chatHistory.map(msg => ({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
+        })),
+        {
+          role: 'user',
+          parts: [{ text: userMessage }]
+        }
+      ];
+
+      const body = {
+        contents,
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 1024
+        }
+      };
+
+      if (systemPrompt) {
+        body.systemInstruction = {
+          parts: [{ text: systemPrompt }]
+        };
+      }
+
+      const res = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini API failed status ${res.status}: ${errText}`);
+      }
+
+      const data = await res.json();
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (content) {
+        return content;
+      }
+      throw new Error('Gemini returned empty candidate content');
+    } catch (err) {
+      console.error('[AI] Gemini API request error:', err.message);
+      throw err;
+    }
+  }
+
+  /**
    * General-purpose completion helper for non-mentorship tasks (like query expansion).
    */
   async generateCompletion(messages, temperature = 0.5) {
@@ -569,31 +870,83 @@ REPOSITORY CONTEXT END`;
   }
 
   async _executeCompletionCall(config, messages, temperature) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
-    };
-    if (!config.isGroq) {
+    if (config.isGroq) {
+      const models = [
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant'
+      ];
+      
+      let lastErr = null;
+      for (const modelName of models) {
+        console.log(`[AI] Trying Groq model (completion): ${modelName}`);
+        let attempts = 2;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            const headers = {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${config.apiKey}`,
+            };
+            const response = await fetch(`${config.baseURL}/chat/completions`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                model: modelName,
+                messages,
+                temperature,
+                response_format: { type: 'json_object' }
+              }),
+            });
+
+            if (!response.ok) {
+              const errText = await response.text();
+              const isRateLimit = response.status === 429 || errText.includes('rate_limit') || errText.includes('429');
+              if (isRateLimit && attempt < attempts) {
+                console.warn(`[AI] Got 429 rate limit on completion model ${modelName}. Waiting 3s...`);
+                await new Promise(r => setTimeout(r, 3000));
+                continue;
+              }
+              throw new Error(`API failed with status ${response.status}: ${errText}`);
+            }
+
+            const parsedData = await response.json();
+            return parsedData.choices[0]?.message?.content || '';
+          } catch (err) {
+            console.error(`[AI] Completion model ${modelName} failed on attempt ${attempt}:`, err.message);
+            lastErr = err;
+            if (err.message.includes('429') && attempt < attempts) {
+              console.warn(`[AI] Got 429 on completion model ${modelName} (exception). Waiting 3s...`);
+              await new Promise(r => setTimeout(r, 3000));
+              continue;
+            }
+          }
+        }
+      }
+      throw lastErr || new Error('All Groq models failed.');
+    } else {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+      };
       headers['x-api-key'] = config.apiKey;
+
+      const response = await fetch(`${config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          temperature,
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`API failed with status ${response.status}: ${errText}`);
+      }
+
+      const parsedData = await response.json();
+      return parsedData.choices[0]?.message?.content || '';
     }
-
-    const response = await fetch(`${config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature,
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`API failed with status ${response.status}: ${errText}`);
-    }
-
-    const parsedData = await response.json();
-    return parsedData.choices[0]?.message?.content || '';
   }
 
   /**

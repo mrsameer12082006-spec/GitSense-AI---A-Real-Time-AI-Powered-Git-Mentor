@@ -25,6 +25,7 @@ import githubRoutes from './src/routes/github.js';
 import ingestionRoutes from './src/routes/ingestion.js';
 import workspaceRoutes from './src/routes/workspace.js';
 import aiService from './src/services/ai.js';
+import selfImprovementService from './src/services/selfImprovement.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -160,11 +161,27 @@ app.use((err, _req, res, _next) => {
 });
 
 // ── Start ──
-httpServer.listen(PORT, () => {
-  console.log(`\n  🚀 GitSense AI Backend running on http://localhost:${PORT}`);
-  console.log(`  📡 Socket.io ready`);
-  console.log(`  🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:5173'}\n`);
-});
+(async () => {
+  try {
+    await selfImprovementService.init();
+    selfImprovementService.startInterval();
+  } catch (err) {
+    console.error('[Server] Failed to initialize self-improvement service:', err.message);
+  }
+
+  try {
+    console.log('[Server] Running AI provider health checks...');
+    await aiService.checkProviderHealth();
+  } catch (err) {
+    console.error('[Server] Failed to run AI health checks:', err.message);
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`\n  🚀 GitSense AI Backend running on http://localhost:${PORT}`);
+    console.log(`  📡 Socket.io ready`);
+    console.log(`  🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:5173'}\n`);
+  });
+})();
 
 // ── Port Error Handling ──
 httpServer.on('error', (err) => {

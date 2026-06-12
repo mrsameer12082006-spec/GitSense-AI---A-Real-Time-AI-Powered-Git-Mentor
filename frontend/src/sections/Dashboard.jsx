@@ -219,142 +219,8 @@ export default function Dashboard() {
   };
 
   const handleScanRepo = async () => {
-    if (!connectedRepo) return;
-    setIsScanning(true);
-    setScanCompleted(null);
-    setRateLimitResetTime(null);
-    setScanChecks(null);
-    setScanError(null);
-    
-    setScanSteps([
-      { label: 'Fetching repository metadata', status: 'active', key: 'metadata' },
-      { label: 'Retrieving repository branches', status: 'pending', key: 'branches' },
-      { label: 'Comparing branches against base', status: 'pending', key: 'branchComparison' },
-      { label: 'Retrieving pull requests', status: 'pending', key: 'pullRequests' },
-      { label: 'Verifying PR mergeability', status: 'pending', key: 'prDetails' },
-      { label: 'Checking .gitignore rules', status: 'pending', key: 'gitignore' },
-      { label: 'Scanning files for issues', status: 'pending', key: 'largeFiles' },
-      { label: 'Verifying CI/CD status', status: 'pending', key: 'ciWorkflow' },
-      { label: 'Generating AI explanations', status: 'pending', key: 'ai' }
-    ]);
-
-    // Animate steps placeholder sequentially
-    let isRequestRunning = true;
-    const runAnimation = async () => {
-      for (let i = 0; i < 8; i++) {
-        if (!isRequestRunning) break;
-        await new Promise(r => setTimeout(r, 450));
-        setScanSteps(prev => {
-          return prev.map((s, idx) => {
-            if (idx === i && s.status === 'active') return { ...s, status: 'success' };
-            if (idx === i + 1 && s.status === 'pending') return { ...s, status: 'active' };
-            return s;
-          });
-        });
-      }
-    };
-    
-    const animationPromise = runAnimation();
-
-    try {
-      const owner = connectedRepo.owner;
-      const repo = connectedRepo.name;
-      const token = currentUser?.githubToken || '';
-
-      const res = await apiFetch(`/repo/scan`, {
-        method: 'POST',
-        body: JSON.stringify({ owner, repo, token })
-      });
-
-      if (!res.ok) {
-        let errMsg = 'Failed to scan repository';
-        try {
-          const errData = await res.json();
-          errMsg = errData.error || errMsg;
-        } catch (_) {}
-        setScanError(errMsg);
-        throw new Error(errMsg);
-      }
-
-      const data = await res.json();
-      const scanResult = data;
-      isRequestRunning = false;
-      
-      if (scanResult.status === 'healthy') {
-        setHealthy(true);
-        setIssues([]);
-      } else {
-        setHealthy(false);
-        setIssues(prev => {
-          const newIssues = scanResult.issues || [];
-          const newIssueIds = newIssues.map(ni => ni.id);
-          
-          // If it was a partial scan, preserve issues from skipped checks
-          if (scanResult.scanCompleted === false && scanResult.checks) {
-            const preservedIssues = prev.filter(pi => {
-              if (newIssueIds.includes(pi.id)) return false;
-              
-              // Map issue ID/type to the scanner check key
-              const issueToCheckKey = {
-                'missing-gitignore': 'missing-gitignore',
-                'pr-merge-conflicts': 'pr-merge-conflicts',
-                'branch-divergence': 'branch-divergence',
-                'stale-branches': 'stale-branches',
-                'cross-branch-collisions': 'cross-branch-collisions',
-                'ci-pipeline-failure': 'ci-pipeline-failure',
-                'large-files-tracked': 'large-files-tracked'
-              };
-              
-              const checkKey = issueToCheckKey[pi.id] || pi.id;
-              return scanResult.checks[checkKey] === 'skipped' || scanResult.checks[checkKey] === 'failed';
-            });
-            
-            return [...newIssues, ...preservedIssues];
-          }
-          
-          // If full scan, keep new issues plus manually marked fixed issues
-          const fixedList = prev.filter(iss => iss.isFixed);
-          const preservedFixed = fixedList.filter(fi => !newIssueIds.includes(fi.id));
-          return [...newIssues, ...preservedFixed];
-        });
-      }
-      setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
-      setHasWriteAccess(true);
-      setScanSummary(data.summary || null);
-      setScanCompleted(data.scanCompleted);
-      setScanChecks(data.checks || null);
-      
-      if (data.scanCompleted === false && data.rateLimitResetTime) {
-        setRateLimitResetTime(data.rateLimitResetTime);
-      }
-      
-      // Update steps status instantly based on checks results
-      if (data.checks) {
-        setScanSteps(prev => prev.map(s => {
-          if (s.key === 'ai') {
-            return { ...s, status: data.scanCompleted ? 'success' : 'skipped' };
-          }
-          const checkStatus = data.checks[s.key];
-          return {
-            ...s,
-            status: checkStatus === 'success' ? 'success' :
-                    checkStatus === 'rate_limited' ? 'failed' :
-                    checkStatus === 'skipped' ? 'skipped' : s.status
-          };
-        }));
-      } else {
-        setScanSteps(prev => prev.map(s => ({ ...s, status: 'success' })));
-      }
-      
-    } catch (err) {
-      isRequestRunning = false;
-      console.error('[Scan] Failed to scan repository:', err);
-      // Ensure we have set an error message in state
-      setScanError(prev => prev || err.message || 'Failed to connect to the backend server.');
-    } finally {
-      await animationPromise;
-      setIsScanning(false);
-    }
+    // Health scanner is permanently disabled
+    return;
   };
 
   useEffect(() => {
@@ -373,7 +239,6 @@ export default function Dashboard() {
     if (connectedRepo && currentUser && localStorage.getItem('gitsense_reconnecting') === 'true') {
       localStorage.removeItem('gitsense_reconnecting');
       setIssues([]);
-      handleScanRepo();
     }
   }, [connectedRepo, currentUser]);
 
@@ -1075,6 +940,7 @@ export default function Dashboard() {
     lastIngestedAt: null,
     chunkCount: 0
   });
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   const [dismissedSuggestions, setDismissedSuggestions] = useState([]);
 
@@ -1083,13 +949,19 @@ export default function Dashboard() {
     try {
       const res = await apiFetch(`/repos/${repoId}/ingestion-status`);
       const data = await res.json();
-      setIngestionState({
-        status: data.status || 'none',
-        progress: data.progress || 0,
-        currentStep: data.currentStep || 'Not started',
-        errorMessage: data.errorMessage || null,
-        lastIngestedAt: data.lastIngestedAt || null,
-        chunkCount: data.chunkCount || 0
+      setIngestionState(prev => {
+        if (prev.status === 'running' && data.status === 'completed') {
+          setShowSuccessBanner(true);
+          setTimeout(() => setShowSuccessBanner(false), 5000);
+        }
+        return {
+          status: data.status || 'none',
+          progress: data.progress || 0,
+          currentStep: data.currentStep || 'Not started',
+          errorMessage: data.errorMessage || null,
+          lastIngestedAt: data.lastIngestedAt || null,
+          chunkCount: data.chunkCount || 0
+        };
       });
       return data;
     } catch (err) {
@@ -1107,7 +979,6 @@ export default function Dashboard() {
       const statusData = await fetchIngestionStatus(connectedRepo.id);
       if (statusData && (statusData.status === 'completed' || statusData.status === 'failed')) {
         clearInterval(intervalId);
-        handleScanRepo();
         apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
           if (ins.insights) setRepoInsights(ins.insights);
         }).catch(() => {});
@@ -2003,6 +1874,47 @@ export default function Dashboard() {
             className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]"
           >
             
+            {/* Ingestion Progress Bar (Non-intrusive banner at the top of the chat interface) */}
+            {false && ingestionState.status === 'running' && (
+              <div className="w-full bg-slate-900/90 border-b border-white/[0.08] px-6 py-2.5 flex items-center justify-between z-10 shadow-md">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 text-[#7C5CFF] animate-spin flex-shrink-0" />
+                  <span className="text-xs font-semibold text-slate-300">
+                    {ingestionState.currentStep || 'Analyzing Repository...'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 flex-1 max-w-[240px] ml-4">
+                  <div className="flex-1 bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-[#7C5CFF] h-full rounded-full transition-all duration-500 ease-out" 
+                      style={{ width: `${ingestionState.progress}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono font-bold text-slate-400">
+                    {ingestionState.progress}%
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Ingestion Success Banner */}
+            {showSuccessBanner && (
+              <div className="w-full bg-[#7C5CFF]/15 border-b border-[#7C5CFF]/25 px-6 py-2.5 flex items-center justify-between z-10 animate-fade-in shadow-md">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 animate-pulse" />
+                  <span className="text-xs font-semibold text-slate-200">
+                    Repository fully analyzed. Ask me anything.
+                  </span>
+                </div>
+                <button 
+                  onClick={() => setShowSuccessBanner(false)}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            
             {/* Chat Messages List */}
             <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
               
@@ -2481,163 +2393,6 @@ export default function Dashboard() {
                       </button>
                     </div>
                   )}
-
-                  {/* Repository Health Scanner */}
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                        <ShieldAlert size={13} className="text-[#7C5CFF]" /> Health Scanner
-                      </h4>
-                      <button
-                        onClick={handleScanRepo}
-                        disabled={isScanning}
-                        className="px-3 py-1 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#7C5CFF] text-[10px] font-bold rounded cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1"
-                      >
-                        {isScanning ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                        Scan Repo
-                      </button>
-                    </div>
-                    
-                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                      {isScanning ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="flex items-center gap-2 text-[#00D4FF] mb-2">
-                            <Activity size={16} className="animate-pulse" />
-                            <span className="text-xs font-bold uppercase tracking-widest animate-pulse">Running Deep Scan...</span>
-                          </div>
-                          {scanSteps.map((step, idx) => (
-                            <div key={idx} className="flex items-center gap-2 text-[10px]">
-                              {step.status === 'success' ? <CheckCircle2 size={12} className="text-[#00E38C]" /> :
-                               step.status === 'active' ? <Loader2 size={12} className="text-amber-400 animate-spin" /> :
-                               step.status === 'failed' ? <AlertTriangle size={12} className="text-rose-400" /> :
-                               step.status === 'skipped' ? <div className="w-3 h-3 rounded-full border border-slate-600 flex items-center justify-center text-[8px] text-slate-500 font-bold">-</div> :
-                               <div className="w-3 h-3 rounded-full border border-slate-700" />}
-                              <span className={step.status === 'success' ? 'text-slate-400' : step.status === 'active' ? 'text-amber-400 font-semibold' : 'text-slate-600'}>
-                                {step.label}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : scanError ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-2">
-                            <AlertTriangle size={16} className="text-rose-400 shrink-0 mt-0.5" />
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Scan Error</span>
-                              <p className="text-[11px] text-slate-300 leading-normal">
-                                {scanError}
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            onClick={handleScanRepo}
-                            className="w-full py-1.5 bg-gradient-to-r from-rose-500 to-rose-600 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer"
-                          >
-                            <RefreshCw size={10} />
-                            Retry Scan
-                          </button>
-                        </div>
-                      ) : scanCompleted === false ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-2">
-                            <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Rate Limit Warning</span>
-                              <p className="text-[10px] text-slate-400 leading-normal">
-                                GitHub API rate limit reached. Some checks were skipped. Results may be incomplete.
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1.5 bg-slate-900/60 p-3 rounded-xl border border-white/[0.04] text-[10px]">
-                            <span className="text-slate-500 font-bold uppercase tracking-wider">Checks Run</span>
-                            {scanSteps.map(step => {
-                              const status = scanChecks ? scanChecks[step.key] : step.status;
-                              return (
-                                <div key={step.key} className="flex items-center justify-between text-[10px]">
-                                  <span className="text-slate-400">{step.label}</span>
-                                  <div className="flex items-center gap-1.5 font-mono text-[9px]">
-                                    {status === 'success' && <span className="text-[#00E38C]">PASSED</span>}
-                                    {status === 'rate_limited' && <span className="text-rose-400">LIMIT</span>}
-                                    {status === 'skipped' && <span className="text-slate-600 font-bold">SKIP</span>}
-                                    {status === 'failed' && <span className="text-rose-500">FAILED</span>}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div className="flex flex-col gap-2 mt-2">
-                            <div className="text-[10px] text-slate-500 text-center font-mono">
-                              Rate limit resets in: <span className="text-amber-400 font-bold">{formatCountdown(rateLimitCountdown)}</span>
-                            </div>
-                            <button
-                              onClick={handleScanRepo}
-                              disabled={rateLimitCountdown > 0 || isScanning}
-                              className="w-full py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <RefreshCw size={10} className={isScanning ? 'animate-spin' : ''} />
-                              Resume Scan
-                            </button>
-                          </div>
-
-                          {issues.length > 0 && (
-                            <div className="flex flex-col gap-2 border-t border-white/[0.05] pt-3 mt-1">
-                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Partial Scan Issues ({issues.length})</span>
-                              {issues.map(issue => (
-                                <HealthIssueCard
-                                  key={issue.id}
-                                  issue={issue}
-                                  currentRepo={connectedRepo?.fullName}
-                                  onVerify={handleScanRepo}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ) : !healthy && issues.filter(i => !i.isFixed).length > 0 ? (
-                        <div className="flex flex-col gap-3">
-                          <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
-                            <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            {issues.map(issue => (
-                              <HealthIssueCard
-                                key={issue.id}
-                                issue={issue}
-                                currentRepo={connectedRepo?.fullName}
-                                onVerify={handleScanRepo}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center py-8 px-4 gap-3 text-center bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 rounded-2xl shadow-lg shadow-emerald-500/5">
-                          <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center mb-1 animate-pulse">
-                            <CheckCircle2 size={24} className="text-[#00E38C]" />
-                          </div>
-                          <span className="text-sm font-bold text-emerald-400 font-sans">All Clear! Repository is Healthy</span>
-                          <p className="text-[11px] text-slate-400 max-w-[220px] leading-relaxed">
-                            No active issues detected. All scanned checks passed successfully.
-                          </p>
-                          {scanSummary ? (
-                            <div className="flex flex-col gap-1 mt-1 text-[10px] text-slate-500 font-mono">
-                              <div>Branches Checked: {scanSummary.branchesChecked}</div>
-                              <div>PRs Checked: {scanSummary.prsChecked}</div>
-                              <div>Files Scanned: {scanSummary.filesScanned}</div>
-                              <div className="mt-1 text-[9px] opacity-75">
-                                Timestamp: {new Date(scanSummary.timestamp).toLocaleTimeString()}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-slate-500 text-center max-w-[200px]">No issues detected in the latest scan.</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-
 
                   {/* Repo Summary Card */}
                   <div className="flex flex-col gap-3">
@@ -3393,17 +3148,37 @@ function RepairTimeline({ steps }) {
 // ── Proactive Diagnosed Issue Card Component ──
 function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard, onRunCommand }) {
   const [isFixed, setIsFixed] = useState(false);
+  const hasSteps = issue.commands && Array.isArray(issue.commands) && issue.commands.length > 0;
+
+  // Error type badge colors
+  const errorColors = {
+    merge_conflict: { bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border-rose-500/20' },
+    push_rejected: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/20' },
+    build_error: { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/20' },
+    not_git_repo: { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/20' },
+    branch_error: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/20' },
+    permission_error: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/20' },
+    generic: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border-cyan-500/20' },
+  };
+  const colors = errorColors[issue.errorType] || errorColors.generic;
 
   return (
-    <div className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]">
+    <div className={`mt-3 rounded-2xl border ${colors.border} bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]`}>
       {!isFixed ? (
         <div className="flex flex-col gap-3">
           <div className="flex gap-3 items-start">
-            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 flex-shrink-0">
+            <div className={`p-2 rounded-xl ${colors.bg} ${colors.text} flex-shrink-0`}>
               <AlertTriangle size={18} />
             </div>
             <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+                {issue.errorType && (
+                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${colors.bg} ${colors.text} border ${colors.border}`}>
+                    {issue.errorType.replace('_', ' ').toUpperCase()}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">{issue.description}</p>
             </div>
           </div>
@@ -3411,7 +3186,7 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard, onRunCom
             onClick={() => setIsFixed(true)}
             className="w-full py-2 px-3 rounded-xl bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-[#00E38C]/10"
           >
-            Yes, Fix It
+            Show Fix Plan ({hasSteps ? `${issue.commands.length} steps` : '1 command'})
           </button>
         </div>
       ) : (
@@ -3421,34 +3196,84 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard, onRunCom
               <CheckCircle2 size={18} />
             </div>
             <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-bold text-slate-100">Fix Plan Revealed</h4>
-              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Please execute the recommended fix commands in your terminal.</p>
+              <h4 className="text-sm font-bold text-slate-100">Fix Plan — {issue.title}</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Execute these commands sequentially in your terminal.</p>
             </div>
           </div>
-          <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-              <span>Terminal Command</span>
-              <div className="flex items-center gap-3">
-                {onRunCommand && (
+
+          {hasSteps ? (
+            <div className="flex flex-col gap-2">
+              {issue.commands.map((cmd, cmdIdx) => (
+                <div key={cmdIdx} className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+                    <span className="flex items-center gap-2">
+                      <span className="w-4 h-4 rounded-full bg-[#7C5CFF]/20 text-[#7C5CFF] flex items-center justify-center text-[9px] font-bold flex-shrink-0">{cmd.step}</span>
+                      <span className="text-slate-300 font-semibold">{cmd.desc}</span>
+                    </span>
+                    <div className="flex items-center gap-3">
+                      {onRunCommand && (
+                        <button
+                          onClick={() => onRunCommand(cmd.cmd)}
+                          className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                        >
+                          <Play size={10} /> Run
+                        </button>
+                      )}
+                      <button
+                        onClick={() => copyToClipboard(cmd.cmd, `issue-cmd-${idx}-${cmdIdx}`)}
+                        className="hover:text-white cursor-pointer flex items-center gap-1"
+                      >
+                        {copiedIndex === `issue-cmd-${idx}-${cmdIdx}` ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+                    <code>$ {cmd.cmd}</code>
+                  </pre>
+                  {cmd.expectedOutput && (
+                    <div className="px-3 py-1 text-[9px] font-mono text-slate-500 border-t border-white/[0.04] bg-[#030712]">
+                      ✓ Expected: {cmd.expectedOutput}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+                <span>Terminal Command</span>
+                <div className="flex items-center gap-3">
+                  {onRunCommand && (
+                    <button
+                      onClick={() => onRunCommand(issue.command)}
+                      className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                    >
+                      <Play size={10} /> Run
+                    </button>
+                  )}
                   <button
-                    onClick={() => onRunCommand(issue.command)}
-                    className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                    onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
+                    className="hover:text-white cursor-pointer flex items-center gap-1"
                   >
-                    <Play size={10} /> Run
+                    {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
                   </button>
-                )}
-                <button
-                  onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
-                  className="hover:text-white cursor-pointer flex items-center gap-1"
-                >
-                  {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
-                </button>
+                </div>
               </div>
+              <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+                <code>{issue.command}</code>
+              </pre>
             </div>
-            <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
-              <code>{issue.command}</code>
-            </pre>
-          </div>
+          )}
+
+          {/* Run All button for step-by-step commands */}
+          {hasSteps && onRunCommand && (
+            <button
+              onClick={() => onRunCommand(issue.command)}
+              className="w-full py-2 px-3 rounded-xl bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#7C5CFF] font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Play size={12} /> Run All Commands Sequentially
+            </button>
+          )}
 
           <div className="p-3 rounded-xl bg-slate-900/40 border border-white/[0.04] text-[11px] text-slate-400 italic">
             Please run the commands above in your local terminal. Do not share credentials or sensitive tokens.
