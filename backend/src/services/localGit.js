@@ -22,26 +22,41 @@ class LocalGitService {
   getRepoPath(repositoryId) {
     return path.join(REPO_DIR, repositoryId);
   }
-
   async ensureClone(repositoryId, owner, repoName, token) {
     const repoPath = this.getRepoPath(repositoryId);
+    const gitFolderPath = path.join(repoPath, '.git');
+    
+    let existsAndHasGit = false;
     try {
       await fs.access(repoPath);
-      // Exists, let's fetch to update
+      await fs.access(gitFolderPath);
+      existsAndHasGit = true;
+    } catch (err) {
+      // One of them doesn't exist
+    }
+
+    if (existsAndHasGit) {
+      console.log(`[LocalGit] Repo directory exists and has .git folder: ${repoPath}. Skipping clone.`);
       try {
         await execAsync('git fetch --all', { cwd: repoPath });
       } catch (e) {
         console.error('[LocalGit] Fetch failed:', e.message);
       }
       return repoPath;
-    } catch (err) {
-      // Doesn't exist, clone it
+    } else {
+      // If directory exists but has no .git folder, delete it and re-clone
+      try {
+        await fs.rm(repoPath, { recursive: true, force: true });
+      } catch (rmErr) {
+        console.error(`[LocalGit] Failed to clean existing repo directory: ${rmErr.message}`);
+      }
+      
       const cloneUrl = `https://${token}@github.com/${owner}/${repoName}.git`;
+      console.log(`[LocalGit] Cloning repository ${owner}/${repoName} into ${repoPath}...`);
       await execAsync(`git clone ${cloneUrl} "${repoPath}"`);
       return repoPath;
     }
   }
-
   async getGitState(repositoryId) {
     const repoPath = this.getRepoPath(repositoryId);
     const state = {

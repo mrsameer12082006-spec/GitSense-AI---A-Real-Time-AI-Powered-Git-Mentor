@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────
 // GitSense AI — Embedding Service (Local Vector Embeddings)
-// Uses @xenova/transformers to run all-MiniLM-L6-v2 in Node.js
+// Uses @xenova/transformers to run bge-small-en-v1.5 in Node.js
 // ─────────────────────────────────────────────────────────────
 
 let pipeline = null;
@@ -18,8 +18,8 @@ async function getEmbedder() {
     const { pipeline: pipelineFn } = await import('@xenova/transformers');
     pipeline = pipelineFn;
 
-    console.log('[Embedding] Loading all-MiniLM-L6-v2 model (first time may download ~30MB)...');
-    embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+    console.log('[Embedding] Loading bge-small-en-v1.5 model (first time may download ~30MB)...');
+    embedder = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
       quantized: true, // Use quantized version for speed
     });
     console.log('[Embedding] Model loaded successfully.');
@@ -50,7 +50,7 @@ class EmbeddingService {
    * @param {number} batchSize
    * @returns {Promise<number[][]>}
    */
-  async embedBatch(texts, batchSize = 16) {
+  async embedBatch(texts, batchSize = 32) {
     const results = [];
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
@@ -100,7 +100,7 @@ class EmbeddingService {
    * @param {number} threshold - Minimum similarity score
    * @returns {{ chunk: any, score: number }[]}
    */
-  search(queryEmbedding, chunks, topK = 10, threshold = 0.35) {
+  search(queryEmbedding, chunks, topK = 10, threshold = 0.40) {
     const scored = chunks.map(chunk => {
       const chunkEmbedding = typeof chunk.embedding === 'string'
         ? JSON.parse(chunk.embedding)

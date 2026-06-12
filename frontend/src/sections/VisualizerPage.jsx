@@ -18,20 +18,64 @@ const API_BASE = '/api';
 const getToken = () => localStorage.getItem('gitsense_token');
 const apiFetch = async (path, options = {}) => {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-  if (res.status === 401) {
-    localStorage.removeItem('gitsense_token');
-    window.location.hash = '#login';
-    throw new Error('Session expired');
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('gitsense_token');
+      window.location.hash = '#login';
+      throw new Error('Session expired');
+    }
+
+    const originalJson = res.json.bind(res);
+    const originalText = res.text.bind(res);
+
+    let cachedText = null;
+    const getText = async () => {
+      if (cachedText !== null) return cachedText;
+      try {
+        cachedText = await originalText();
+      } catch (err) {
+        cachedText = '';
+      }
+      return cachedText;
+    };
+
+    res.text = getText;
+    res.json = async () => {
+      const text = await getText();
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+          return { error: 'Connection refused. Please check if the backend server is running.' };
+        }
+        return { error: text || 'Invalid server response (non-JSON)' };
+      }
+    };
+
+    return res;
+  } catch (fetchErr) {
+    return {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: {
+        get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null
+      },
+      json: async () => ({ error: 'Connection refused. Please check if the backend server is running.' }),
+      text: async () => JSON.stringify({ error: 'Connection refused. Please check if the backend server is running.' }),
+      clone() { return this; }
+    };
   }
-  return res;
 };
 
 export default function VisualizerPage() {

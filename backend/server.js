@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 // Route imports
 import authRoutes from './src/routes/auth.routes.js';
 import repoRoutes from './src/routes/repositories.js';
+import fixRoutes from './src/routes/fix.js';
 import chatRoutes from './src/routes/chat.js';
 import conversationRoutes from './src/routes/conversations.js';
 import activityRoutes from './src/routes/activity.js';
@@ -24,6 +25,7 @@ import githubRoutes from './src/routes/github.js';
 import ingestionRoutes from './src/routes/ingestion.js';
 import workspaceRoutes from './src/routes/workspace.js';
 import aiService from './src/services/ai.js';
+import selfImprovementService from './src/services/selfImprovement.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -123,6 +125,8 @@ app.get('/api/test-ai', async (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/repos', repoRoutes);
 app.use('/api/repo', repoRoutes);
+app.use('/api/fix', fixRoutes);
+app.use('/api/auto-fix', fixRoutes);
 app.use('/api/repos', ingestionRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/chat', chatRoutes);
@@ -157,11 +161,27 @@ app.use((err, _req, res, _next) => {
 });
 
 // ── Start ──
-httpServer.listen(PORT, () => {
-  console.log(`\n  🚀 GitSense AI Backend running on http://localhost:${PORT}`);
-  console.log(`  📡 Socket.io ready`);
-  console.log(`  🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:5173'}\n`);
-});
+(async () => {
+  try {
+    await selfImprovementService.init();
+    selfImprovementService.startInterval();
+  } catch (err) {
+    console.error('[Server] Failed to initialize self-improvement service:', err.message);
+  }
+
+  try {
+    console.log('[Server] Running AI provider health checks...');
+    await aiService.checkProviderHealth();
+  } catch (err) {
+    console.error('[Server] Failed to run AI health checks:', err.message);
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`\n  🚀 GitSense AI Backend running on http://localhost:${PORT}`);
+    console.log(`  📡 Socket.io ready`);
+    console.log(`  🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:5173'}\n`);
+  });
+})();
 
 // ── Port Error Handling ──
 httpServer.on('error', (err) => {
