@@ -736,5 +736,186 @@ html.light input:-webkit-autofill:active {
   margin-left: 2px;
 }
 
+/* ─── Light Mode Repository Sidebar Card Overrides ─── */
+html.light .group\/repo {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+html.light .group\/repo:hover {
+  background-color: rgba(0, 0, 0, 0.015) !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* Active repository item card in light mode */
+html.light .group\/repo.border-\[\#00E38C\]\/30 {
+  background-color: rgba(0, 227, 140, 0.08) !important;
+  border-color: rgba(0, 227, 140, 0.35) !important;
+  box-shadow: 0 2px 6px rgba(0, 227, 140, 0.06) !important;
+}
+
+/* Repository title text contrast */
+html.light .group\/repo .text-slate-300 {
+  color: #1F2937 !important; /* gray-800 */
+}
+
+html.light .group\/repo:hover .group-hover\/repo\:text-white {
+  color: #111827 !important; /* gray-900 */
+}
+
+/* Active repository title text contrast */
+html.light .group\/repo.border-\[\#00E38C\]\/30 .text-white {
+  color: #065F46 !important; /* emerald-800 */
+}
+
+/* Connect profile form container override in light mode */
+html.light aside.sidebar-collapsible form {
+  background: #FFFFFF !important;
+  background-image: none !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Connect profile input field override in light mode */
+html.light aside.sidebar-collapsible input {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  color: #111827 !important;
+}
+
+/* Import button styles within repo cards in light mode */
+html.light aside.sidebar-collapsible .group\/repo button {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  color: #374151 !important;
+}
+
+html.light aside.sidebar-collapsible .group\/repo button:hover {
+  background-color: rgba(124, 92, 255, 0.08) !important;
+  border-color: rgba(124, 92, 255, 0.25) !important;
+  color: #6D28D9 !important; /* violet-700 */
+}
+
+/* ─── Light Mode IDE Panel Overrides ─── */
+
+/* Right Source Control sidebar background & borders */
+html.light aside.w-\[280px\] {
+  background-color: #FFFFFF !important;
+  border-left-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.02) !important;
+}
+
+/* Global bg-[#060913]/90 wrapper override (right sidebar, editor tab bar container) */
+html.light .bg-\[\#060913\]\/90 {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Right sidebar sub-header borders */
+html.light aside.w-\[280px\] .border-b.border-white\/\[0\.06\] {
+  border-bottom-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Labels and text in Right Sidebar */
+html.light aside.w-\[280px\] label, 
+html.light aside.w-\[280px\] span {
+  color: #4B5563 !important;
+}
+
+html.light aside.w-\[280px\] span.text-slate-500 {
+  color: #6B7280 !important;
+}
+
+/* Pull / Push buttons */
+html.light aside.w-\[280px\] button.py-2.bg-slate-900\/60 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  color: #374151 !important;
+}
+
+html.light aside.w-\[280px\] button.py-2.bg-slate-900\/60:hover {
+  background-color: rgba(124, 92, 255, 0.08) !important;
+  border-color: rgba(124, 92, 255, 0.25) !important;
+  color: #6D28D9 !important;
+}
+
+/* Sync Branch button */
+html.light aside.w-\[280px\] button.py-2\.5 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  color: #374151 !important;
+}
+
+html.light aside.w-\[280px\] button.py-2\.5:hover {
+  background-color: rgba(124, 92, 255, 0.08) !important;
+  border-color: rgba(124, 92, 255, 0.25) !important;
+  color: #6D28D9 !important;
+}
+
+/* Staged / Changed files list items */
+html.light aside.w-\[280px\] .bg-slate-950\/40 {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.01) !important;
+}
+
+html.light aside.w-\[280px\] .bg-slate-950\/40 .text-slate-300 {
+  color: #1F2937 !important;
+}
+
+html.light aside.w-\[280px\] .bg-slate-950\/40 button:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  color: #111827 !important;
+}
+
+/* Terminal Panel frame overrides */
+html.light .h-\[220px\] {
+  background-color: #FFFFFF !important;
+  border-top-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Terminal Tab Bar */
+html.light .h-9.border-b.border-white\/\[0\.04\] {
+  background-color: #F3F4F6 !important;
+  border-bottom-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Terminal Tab Buttons */
+html.light .h-9.border-b.border-white\/\[0\.04\] button {
+  color: #4B5563 !important;
+}
+
+html.light .h-9.border-b.border-white\/\[0\.04\] button:hover {
+  color: #111827 !important;
+}
+
+html.light .h-9.border-b.border-white\/\[0\.04\] button.text-\[\#00D4FF\] {
+  color: #7C5CFF !important;
+}
+
+/* Terminal indicator line */
+html.light .h-9.border-b.border-white\/\[0\.04\] div.bg-\[\#00D4FF\] {
+  background-color: #7C5CFF !important;
+}
+
+/* Keep terminal console logs viewport dark for color log readability */
+html.light .h-\[220px\] .bg-black\/35 {
+  background-color: #0C101A !important;
+}
+
+/* Inactive tabs background in editor top bar */
+html.light .bg-\[\#060913\]\/20 {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Active tab text contrast in editor top bar */
+html.light .text-\[\#F8FAFC\] {
+  color: #111827 !important;
+}
+
+
+
 
 

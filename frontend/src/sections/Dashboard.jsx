@@ -3267,11 +3267,11 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
     let code = '';
     if (branchOption === 'A') {
       const lines = conflict.conflictLines || '';
-      const match = lines.match(/<<<<<<<[\s\S]*?\n([\s\S]*?)=======/);
+      const match = lines.match(/<<<<<<<[^\n]*\n([\s\S]*?)\n=======/);
       code = match ? match[1].trim() : 'Branch A content';
     } else if (branchOption === 'B') {
       const lines = conflict.conflictLines || '';
-      const match = lines.match(/=======[\s\S]*?\n([\s\S]*?)>>>>>>>/);
+      const match = lines.match(/\n=======[\s\S]*?\n([\s\S]*?)\n>>>>>>>/);
       code = match ? match[1].trim() : 'Branch B content';
     } else {
       code = conflict.recommendedResolution;
@@ -3284,7 +3284,18 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
       try {
         await apiFetch(`/repos/${connectedRepo.id}/fix`, {
           method: 'POST',
-          body: JSON.stringify({ issueId: `conflict-pr-resolved`, action: 'resolve_conflict' })
+          body: JSON.stringify({
+            issueId: `conflict-pr-resolved`,
+            fixType: 'resolve_conflict',
+            action: 'resolve_conflict',
+            rawState: {
+              conflictFile: conflict.conflictFile,
+              branchA: conflict.branchA,
+              branchB: conflict.branchB,
+              branchOption: branchOption,
+              recommendedResolution: conflict.recommendedResolution
+            }
+          })
         });
       } catch (err) {}
     }
