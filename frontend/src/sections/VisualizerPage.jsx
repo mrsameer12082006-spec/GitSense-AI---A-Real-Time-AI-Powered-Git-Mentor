@@ -806,39 +806,13 @@ export default function VisualizerPage() {
         {/* Central main visualizer workspace */}
         <div className="flex-1 overflow-y-auto px-6 py-6 bg-[var(--bg-color)] custom-scrollbar flex flex-col gap-6">
           <div className="max-w-[900px] mx-auto w-full flex flex-col gap-4">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-col gap-1">
-                <div className="badge self-start bg-[#00D4FF]/10 border-[#00D4FF]/30 text-[#00D4FF] flex items-center gap-1.5">
-                  <Activity size={12} /> COMMIT MAP VISUALIZER
-                </div>
-                <h3 className="text-2xl font-bold font-heading text-slate-100">
-                  Branch Relationship Graph
-                </h3>
+            <div className="flex flex-col gap-1">
+              <div className="badge self-start bg-[#00D4FF]/10 border-[#00D4FF]/30 text-[#00D4FF] flex items-center gap-1.5">
+                <Activity size={12} /> COMMIT MAP VISUALIZER
               </div>
-
-              {/* Workflow State Selector Buttons */}
-              <div className="flex bg-slate-950 p-1 rounded-xl border border-white/[0.06] self-start">
-                {[
-                  { key: 'normal', label: 'Clean Branch' },
-                  { key: 'diverged', label: 'Diverged Heads' },
-                  { key: 'conflict', label: 'Merge Conflict' }
-                ].map((stateOpt) => (
-                  <button
-                    key={stateOpt.key}
-                    onClick={() => {
-                      setGraphState(stateOpt.key);
-                      setSelectedNodeDetails(null);
-                    }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                      graphState === stateOpt.key
-                        ? 'bg-[#7C5CFF] text-white shadow-lg shadow-[#7C5CFF]/20'
-                        : 'text-[var(--text-muted)] hover:text-[var(--text)]'
-                    }`}
-                  >
-                    {stateOpt.label}
-                  </button>
-                ))}
-              </div>
+              <h3 className="text-2xl font-bold font-heading text-slate-100">
+                Branch Relationship Graph
+              </h3>
             </div>
 
             <p className="text-slate-400 text-sm">
