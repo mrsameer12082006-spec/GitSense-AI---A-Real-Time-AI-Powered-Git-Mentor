@@ -472,6 +472,14 @@ export default function VisualizerPage() {
               <Activity size={16} className="text-[#7C5CFF]" />
               <span>Visualization Graph</span>
             </button>
+
+            <button
+              onClick={() => window.location.hash = '#merge-control'}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
+            >
+              <GitBranch size={16} className="text-slate-400" />
+              <span>Merge & Resolve</span>
+            </button>
           </div>
 
           {/* GitHub Repositories Section */}

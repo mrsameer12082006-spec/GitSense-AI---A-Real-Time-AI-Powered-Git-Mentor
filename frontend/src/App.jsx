@@ -15,6 +15,7 @@ import ProfilePage from './sections/ProfilePage';
 import SettingsPage from './sections/SettingsPage';
 import AboutUsPage from './sections/AboutUsPage';
 import PrivacyPage from './sections/PrivacyPage';
+import MergeControlPage from './sections/MergeControlPage';
 import { ShaderAnimation } from './components/ui/shader-animation';
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
     if (hash === '#visualizer-page') return 'visualizer';
     if (hash === '#profile') return 'profile';
     if (hash === '#settings') return 'settings';
+    if (hash === '#merge-control') return 'merge-control';
     if (hash === '#about-us') return 'about';
     if (hash === '#terms') return 'terms';
     return 'home';
@@ -85,6 +87,8 @@ export default function App() {
         setCurrentPage('profile');
       } else if (hash === '#settings') {
         setCurrentPage('settings');
+      } else if (hash === '#merge-control') {
+        setCurrentPage('merge-control');
       } else if (hash === '#about-us') {
         setCurrentPage('about');
       } else if (hash === '#terms') {
@@ -138,6 +142,8 @@ export default function App() {
           <Dashboard />
         ) : currentPage === 'visualizer' ? (
           <VisualizerPage />
+        ) : currentPage === 'merge-control' ? (
+          <MergeControlPage />
         ) : currentPage === 'profile' ? (
           <ProfilePage />
         ) : currentPage === 'settings' ? (

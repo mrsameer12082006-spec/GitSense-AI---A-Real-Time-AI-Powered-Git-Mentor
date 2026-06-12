@@ -895,6 +895,15 @@ class GitHubService {
       return { status: 'unknown', aheadBy: 0, behindBy: 0, totalCommits: 0 };
     }
   }
+
+  /**
+   * Invalidate the cache for a specific repository.
+   */
+  clearCache(owner, repo) {
+    const cacheKey = `branch_commits:${owner}/${repo}`;
+    this.cache.delete(cacheKey);
+    console.log(`[GitHub] Cleared commits cache for: ${owner}/${repo}`);
+  }
 }
 
 // Singleton export
