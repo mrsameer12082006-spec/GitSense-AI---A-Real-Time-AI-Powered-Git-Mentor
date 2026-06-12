@@ -13,27 +13,71 @@ import {
   getGreeting
 } from '../data/mockDashboardData';
 import IDEPanel from '../components/IDEPanel';
+import HealthIssueCard from '../components/HealthIssueCard';
 
 // ── API Helper ──
 const API_BASE = '/api';
 const getToken = () => localStorage.getItem('gitsense_token');
 const apiFetch = async (path, options = {}) => {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-  if (res.status === 401) {
-    localStorage.removeItem('gitsense_token');
-    window.location.hash = '#login';
-    throw new Error('Session expired');
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('gitsense_token');
+      window.location.hash = '#login';
+      throw new Error('Session expired');
+    }
+
+    const originalJson = res.json.bind(res);
+    const originalText = res.text.bind(res);
+
+    let cachedText = null;
+    const getText = async () => {
+      if (cachedText !== null) return cachedText;
+      try {
+        cachedText = await originalText();
+      } catch (err) {
+        cachedText = '';
+      }
+      return cachedText;
+    };
+
+    res.text = getText;
+    res.json = async () => {
+      const text = await getText();
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        if (text.includes('http proxy error') || text.includes('ECONNREFUSED') || text.includes('Gateway Timeout') || text.includes('Bad Gateway')) {
+          return { error: 'Connection refused. Please check if the backend server is running.' };
+        }
+        return { error: text || 'Invalid server response (non-JSON)' };
+      }
+    };
+
+    return res;
+  } catch (fetchErr) {
+    return {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: {
+        get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null
+      },
+      json: async () => ({ error: 'Connection refused. Please check if the backend server is running.' }),
+      text: async () => JSON.stringify({ error: 'Connection refused. Please check if the backend server is running.' }),
+      clone() { return this; }
+    };
   }
-  return res;
 };
 
 export default function Dashboard() {
@@ -96,6 +140,13 @@ export default function Dashboard() {
     return 'chat';
   });
 
+  const [externalCommand, setExternalCommand] = useState(null);
+
+  const handleRunCommandInTerminal = (cmd) => {
+    setExternalCommand(cmd);
+    setActiveSection('ide');
+  };
+
   // ── Sync activeSection with URL hash parameter ──
   useEffect(() => {
     const handleHashChange = () => {
@@ -113,6 +164,7 @@ export default function Dashboard() {
 
   // ── Repository Health & Autonomous Fix State ──
   const [issues, setIssues] = useState([]);
+  const [healthy, setHealthy] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [scanSteps, setScanSteps] = useState([]);
   const [expandedIssueIds, setExpandedIssueIds] = useState(new Set());
@@ -128,16 +180,7 @@ export default function Dashboard() {
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
   const [scanError, setScanError] = useState(null);
   const [repoPermissions, setRepoPermissions] = useState(null);
-  const [hasWriteAccess, setHasWriteAccess] = useState(() => {
-    try {
-      const saved = localStorage.getItem('gitsense_user');
-      const user = saved ? JSON.parse(saved) : null;
-      const scopesList = user?.githubScopes ? user.githubScopes.split(',').map(s => s.trim()) : [];
-      return scopesList.includes('repo');
-    } catch {
-      return false;
-    }
-  });
+  const [hasWriteAccess, setHasWriteAccess] = useState(true);
   const [activeSSEFixId, setActiveSSEFixId] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState('');
@@ -176,110 +219,8 @@ export default function Dashboard() {
   };
 
   const handleScanRepo = async () => {
-    if (!connectedRepo) return;
-    setIsScanning(true);
-    setScanCompleted(null);
-    setRateLimitResetTime(null);
-    setScanChecks(null);
-    setScanError(null);
-    
-    setScanSteps([
-      { label: 'Fetching repository metadata', status: 'active', key: 'metadata' },
-      { label: 'Retrieving repository branches', status: 'pending', key: 'branches' },
-      { label: 'Comparing branches against base', status: 'pending', key: 'branchComparison' },
-      { label: 'Retrieving pull requests', status: 'pending', key: 'pullRequests' },
-      { label: 'Verifying PR mergeability', status: 'pending', key: 'prDetails' },
-      { label: 'Checking .gitignore rules', status: 'pending', key: 'gitignore' },
-      { label: 'Scanning files for issues', status: 'pending', key: 'largeFiles' },
-      { label: 'Verifying CI/CD status', status: 'pending', key: 'ciWorkflow' },
-      { label: 'Generating AI explanations', status: 'pending', key: 'ai' }
-    ]);
-
-    // Animate steps placeholder sequentially
-    let isRequestRunning = true;
-    const runAnimation = async () => {
-      for (let i = 0; i < 8; i++) {
-        if (!isRequestRunning) break;
-        await new Promise(r => setTimeout(r, 450));
-        setScanSteps(prev => {
-          return prev.map((s, idx) => {
-            if (idx === i && s.status === 'active') return { ...s, status: 'success' };
-            if (idx === i + 1 && s.status === 'pending') return { ...s, status: 'active' };
-            return s;
-          });
-        });
-      }
-    };
-    
-    const animationPromise = runAnimation();
-
-    try {
-      const owner = connectedRepo.owner;
-      const repo = connectedRepo.name;
-      const token = currentUser?.githubToken || '';
-
-      const res = await apiFetch(`/repo/scan`, {
-        method: 'POST',
-        body: JSON.stringify({ owner, repo, token })
-      });
-
-      if (!res.ok) {
-        let errMsg = 'Failed to scan repository';
-        try {
-          const errData = await res.json();
-          errMsg = errData.error || errMsg;
-        } catch (_) {}
-        setScanError(errMsg);
-        throw new Error(errMsg);
-      }
-
-      const data = await res.json();
-      isRequestRunning = false;
-      
-      setIssues(prev => {
-        const fixedList = prev.filter(iss => iss.isFixed);
-        const newIssues = data.issues || [];
-        const activeIds = newIssues.map(ni => ni.id);
-        const preservedFixed = fixedList.filter(fi => !activeIds.includes(fi.id));
-        return [...newIssues, ...preservedFixed];
-      });
-      setRepoPermissions(data.permissions || { push: true, pull: true, admin: false });
-      setHasWriteAccess(data.hasWriteAccess ?? false);
-      setScanSummary(data.summary || null);
-      setScanCompleted(data.scanCompleted);
-      setScanChecks(data.checks || null);
-      
-      if (data.scanCompleted === false && data.rateLimitResetTime) {
-        setRateLimitResetTime(data.rateLimitResetTime);
-      }
-      
-      // Update steps status instantly based on checks results
-      if (data.checks) {
-        setScanSteps(prev => prev.map(s => {
-          if (s.key === 'ai') {
-            return { ...s, status: data.scanCompleted ? 'success' : 'skipped' };
-          }
-          const checkStatus = data.checks[s.key];
-          return {
-            ...s,
-            status: checkStatus === 'success' ? 'success' :
-                    checkStatus === 'rate_limited' ? 'failed' :
-                    checkStatus === 'skipped' ? 'skipped' : s.status
-          };
-        }));
-      } else {
-        setScanSteps(prev => prev.map(s => ({ ...s, status: 'success' })));
-      }
-      
-    } catch (err) {
-      isRequestRunning = false;
-      console.error('[Scan] Failed to scan repository:', err);
-      // Ensure we have set an error message in state
-      setScanError(prev => prev || err.message || 'Failed to connect to the backend server.');
-    } finally {
-      await animationPromise;
-      setIsScanning(false);
-    }
+    // Health scanner is permanently disabled
+    return;
   };
 
   useEffect(() => {
@@ -298,7 +239,6 @@ export default function Dashboard() {
     if (connectedRepo && currentUser && localStorage.getItem('gitsense_reconnecting') === 'true') {
       localStorage.removeItem('gitsense_reconnecting');
       setIssues([]);
-      handleScanRepo();
     }
   }, [connectedRepo, currentUser]);
 
@@ -311,7 +251,7 @@ export default function Dashboard() {
   const fetchAuthState = async () => {
     setAuthLoading(true);
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await apiFetch('/auth/me', {
         credentials: 'include'
       });
 
@@ -336,7 +276,7 @@ export default function Dashboard() {
           localStorage.setItem('gitsense_user', JSON.stringify(u));
         }
         setGithubToken(data.token || '');
-        setHasWriteAccess(data.hasWriteAccess || false);
+        setHasWriteAccess(true);
         setTokenScopes(data.scopes || '');
         setIsAuthenticated(true);
       } else {
@@ -498,12 +438,8 @@ export default function Dashboard() {
       const repo = connectedRepo.name;
       const token = currentUser?.githubToken || '';
 
-      const response = await fetch(`${API_BASE}/repo/fix`, {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getToken()}`
-        },
         body: JSON.stringify({
           owner,
           repo,
@@ -621,9 +557,18 @@ export default function Dashboard() {
     setActiveFixingIssueId(issue.id);
 
     try {
-      const res = await apiFetch(`/repos/${connectedRepo.id}/fix`, {
+      // Execute the fix plan via POST /api/fix/execute
+      const res = await apiFetch('/fix/execute', {
         method: 'POST',
-        body: JSON.stringify({ issueId: issue.id, fixType: issue.fixType, rawState: issue.rawState }),
+        body: JSON.stringify({
+          owner: connectedRepo.owner,
+          repo: connectedRepo.name,
+          fixPlan: issue.fixPlan || {
+            issue: issue.id,
+            severity: issue.severity === 'critical' || issue.severity === 'error' ? 'high' : 'medium',
+            actions: []
+          }
+        }),
       });
       const data = await res.json();
 
@@ -635,23 +580,67 @@ export default function Dashboard() {
       await new Promise(resolve => setTimeout(resolve, 600));
       
       if (data.success) {
-        setIssues(prev => prev.map(i => i.id === issue.id ? { ...i, isFixed: true } : i));
-        setMessages(prev => [...prev, {
-          sender: 'ai',
-          text: `✅ **Action Executed Safely**: I resolved **${issue.title}**.\n\n* **Result**: ${data.message}`,
-          insight: 'Repository state is clean.',
-          recommendation: 'Continue linear integration workflows.'
-        }]);
+        // Targeted scan verification check for this specific issue type
+        const verifyRes = await apiFetch('/repo/scan', {
+          method: 'POST',
+          body: JSON.stringify({
+            owner: connectedRepo.owner,
+            repo: connectedRepo.name,
+            token: currentUser?.githubToken || '',
+            issueType: issue.id
+          })
+        });
+
+        if (verifyRes.ok) {
+          const verifyData = await verifyRes.json();
+          // Check if the issue is no longer detected in the updated scanner results
+          const isStillPresent = (verifyData.issues || []).some(i => i.id === issue.id);
+
+          if (!isStillPresent) {
+            setIssues(prev => prev.map(i => i.id === issue.id ? { ...i, isFixed: true } : i));
+            setMessages(prev => [...prev, {
+              sender: 'ai',
+              text: `✅ **Fixed**: I resolved **${issue.title}** successfully.\n\n* **Verification**: Checked repository state, the issue is no longer detected.`,
+              insight: 'Repository state is clean.',
+              recommendation: 'Continue developer workflows.'
+            }]);
+          } else {
+            setMessages(prev => [...prev, {
+              sender: 'ai',
+              text: `❌ **Fix Failed**: The actions were applied but **${issue.title}** is still detected during verification scan.`,
+              insight: 'Verification scan failed to clear the issue.',
+              recommendation: 'Please review repository settings or logs.'
+            }]);
+          }
+        } else {
+          setIssues(prev => prev.map(i => i.id === issue.id ? { ...i, isFixed: true } : i));
+          setMessages(prev => [...prev, {
+            sender: 'ai',
+            text: `✅ **Fixed**: I resolved **${issue.title}** (Verification scan skipped due to network status).`,
+            insight: 'API execution was successful.',
+            recommendation: 'Refresh the dashboard manually.'
+          }]);
+        }
       } else {
+        const errorMsg = data.errors && data.errors.length > 0 
+          ? data.errors.map(e => e.error).join('; ') 
+          : (data.error || 'GitHub API returned an error.');
+
         setMessages(prev => [...prev, {
           sender: 'ai',
-          text: `❌ **Fix Failed**: Could not resolve **${issue.title}**.\n\n* **Error**: ${data.message || data.error}`,
-          insight: 'Manual intervention may be required.',
-          recommendation: 'Check terminal logs for Git conflicts.'
+          text: `❌ **Fix Failed**: Could not resolve **${issue.title}**.\n\n* **Error**: ${errorMsg}`,
+          insight: 'GitHub API call returned an error.',
+          recommendation: 'Verify repository write permissions and rate limits.'
         }]);
       }
     } catch (err) {
       console.error('[Fix] Error:', err);
+      setMessages(prev => [...prev, {
+        sender: 'ai',
+        text: `❌ **Fix Execution Error**: ${err.message}`,
+        insight: 'Exception during fix transmission.',
+        recommendation: 'Check server connection and logs.'
+      }]);
     } finally {
       setActiveFixingIssueId(null);
       setTimeout(() => setTimelineSteps([]), 2000);
@@ -795,7 +784,7 @@ export default function Dashboard() {
         setCurrentUser(u);
         localStorage.setItem('gitsense_user', JSON.stringify(u));
         const scopesList = u.githubScopes ? u.githubScopes.split(',').map(s => s.trim()) : [];
-        setHasWriteAccess(scopesList.includes('repo'));
+        setHasWriteAccess(true);
       }
     }).catch(() => {});
   }, []);
@@ -951,6 +940,7 @@ export default function Dashboard() {
     lastIngestedAt: null,
     chunkCount: 0
   });
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   const [dismissedSuggestions, setDismissedSuggestions] = useState([]);
 
@@ -959,13 +949,19 @@ export default function Dashboard() {
     try {
       const res = await apiFetch(`/repos/${repoId}/ingestion-status`);
       const data = await res.json();
-      setIngestionState({
-        status: data.status || 'none',
-        progress: data.progress || 0,
-        currentStep: data.currentStep || 'Not started',
-        errorMessage: data.errorMessage || null,
-        lastIngestedAt: data.lastIngestedAt || null,
-        chunkCount: data.chunkCount || 0
+      setIngestionState(prev => {
+        if (prev.status === 'running' && data.status === 'completed') {
+          setShowSuccessBanner(true);
+          setTimeout(() => setShowSuccessBanner(false), 5000);
+        }
+        return {
+          status: data.status || 'none',
+          progress: data.progress || 0,
+          currentStep: data.currentStep || 'Not started',
+          errorMessage: data.errorMessage || null,
+          lastIngestedAt: data.lastIngestedAt || null,
+          chunkCount: data.chunkCount || 0
+        };
       });
       return data;
     } catch (err) {
@@ -983,7 +979,6 @@ export default function Dashboard() {
       const statusData = await fetchIngestionStatus(connectedRepo.id);
       if (statusData && (statusData.status === 'completed' || statusData.status === 'failed')) {
         clearInterval(intervalId);
-        handleScanRepo();
         apiFetch(`/repos/${connectedRepo.id}/insights`).then(r => r.json()).then(ins => {
           if (ins.insights) setRepoInsights(ins.insights);
         }).catch(() => {});
@@ -1102,7 +1097,9 @@ export default function Dashboard() {
         body: JSON.stringify({
           message: text,
           conversationId: activeConversationId,
-          repositoryId: connectedRepo?.id,
+          repositoryId: connectedRepo?.id || null,
+          repoOwner: connectedRepo?.owner || null,
+          repoName: connectedRepo?.name || null,
         }),
       });
 
@@ -1214,8 +1211,12 @@ export default function Dashboard() {
     } catch (err) {
       setMessages(prev => [...prev, {
         sender: 'ai',
-        text: `⚠️ AI Chat Error: ${err.message}`,
-        insight: 'Please verify the backend server is running and your API keys are configured in backend/.env',
+        text: err.message === 'NO_REPO_SELECTED'
+          ? '⚠️ Please select a repository before chatting.'
+          : `⚠️ AI Chat Error: ${err.message}`,
+        insight: err.message === 'NO_REPO_SELECTED'
+          ? 'Select a repository from the left panel.'
+          : 'Please verify the backend server is running and your API keys are configured in backend/.env',
       }]);
     } finally {
       setIsAiTyping(false);
@@ -1325,11 +1326,8 @@ export default function Dashboard() {
 
     try {
       const token = getToken();
-      const res = await fetch('/api/kb/upload', {
+      const res = await apiFetch('/kb/upload', {
         method: 'POST',
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: formData
       });
 
@@ -1852,7 +1850,11 @@ export default function Dashboard() {
         {/* ── CENTRAL MAIN WORKSPACE PANELS ── */}
         <div className="flex-1 flex overflow-hidden min-w-0">
 
-          {activeSection === 'ide' ? (
+          {/* IDE PANEL CONTAINER */}
+          <div 
+            style={{ display: activeSection === 'ide' ? 'flex' : 'none' }} 
+            className="flex-1 flex overflow-hidden min-w-0"
+          >
             <IDEPanel
               connectedRepo={connectedRepo}
               apiFetch={apiFetch}
@@ -1861,10 +1863,57 @@ export default function Dashboard() {
                 setInputVal(`Analyze this file: ${filename}\n\n\`\`\`\n${content}\n\`\`\``);
                 setTimeout(() => chatInputRef.current?.focus(), 50);
               }}
+              externalCommand={externalCommand}
+              onClearExternalCommand={() => setExternalCommand(null)}
             />
-          ) : (
-            /* GIT ASSISTANT CHAT INTERFACE */
-            <div className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]">
+          </div>
+
+          {/* GIT ASSISTANT CHAT INTERFACE */}
+          <div 
+            style={{ display: activeSection === 'chat' ? 'flex' : 'none' }}
+            className="flex-1 flex flex-col min-w-0 relative bg-[var(--bg-color)]"
+          >
+            
+            {/* Ingestion Progress Bar (Non-intrusive banner at the top of the chat interface) */}
+            {false && ingestionState.status === 'running' && (
+              <div className="w-full bg-slate-900/90 border-b border-white/[0.08] px-6 py-2.5 flex items-center justify-between z-10 shadow-md">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 text-[#7C5CFF] animate-spin flex-shrink-0" />
+                  <span className="text-xs font-semibold text-slate-300">
+                    {ingestionState.currentStep || 'Analyzing Repository...'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 flex-1 max-w-[240px] ml-4">
+                  <div className="flex-1 bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-[#7C5CFF] h-full rounded-full transition-all duration-500 ease-out" 
+                      style={{ width: `${ingestionState.progress}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono font-bold text-slate-400">
+                    {ingestionState.progress}%
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Ingestion Success Banner */}
+            {showSuccessBanner && (
+              <div className="w-full bg-[#7C5CFF]/15 border-b border-[#7C5CFF]/25 px-6 py-2.5 flex items-center justify-between z-10 animate-fade-in shadow-md">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 animate-pulse" />
+                  <span className="text-xs font-semibold text-slate-200">
+                    Repository fully analyzed. Ask me anything.
+                  </span>
+                </div>
+                <button 
+                  onClick={() => setShowSuccessBanner(false)}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             
             {/* Chat Messages List */}
             <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6 custom-scrollbar">
@@ -1889,48 +1938,7 @@ export default function Dashboard() {
                     {welcomeSubtitle}
                   </p>
 
-                  {isRepositoryConnected && getProactiveSuggestions().length > 0 && (
-                    <div className="mt-4 w-full flex flex-col gap-4 text-left select-text max-w-[640px]">
-                      <h4 className="text-xs font-bold font-heading uppercase text-slate-500 tracking-wider text-center mb-1 flex items-center justify-center gap-1.5">
-                        <Sparkles size={12} className="text-[#00D4FF]" /> Proactive Repository Observations
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {getProactiveSuggestions().map((s) => (
-                          <div
-                            key={s.id}
-                            className="bg-slate-950/40 border border-white/[0.06] hover:border-[#7C5CFF]/30 p-4 rounded-xl flex flex-col justify-between transition-all group relative overflow-hidden backdrop-blur-md"
-                          >
-                            <div className="absolute top-0 right-0 w-16 h-16 bg-[#7C5CFF] opacity-5 filter blur-xl rounded-full group-hover:scale-150 transition-transform duration-500" />
-                            
-                            <div className="flex flex-col gap-1.5 z-10">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-slate-200">{s.title}</span>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDismissedSuggestions(prev => [...prev, s.id]);
-                                  }}
-                                  className="text-slate-500 hover:text-rose-400 p-0.5 rounded cursor-pointer transition-colors"
-                                  title="Dismiss observation"
-                                >
-                                  <X size={12} />
-                                </button>
-                              </div>
-                              <p className="text-[11px] text-slate-400 leading-normal">{s.description}</p>
-                            </div>
-                            
-                            <button
-                              onClick={() => handleSelectSuggestion(s)}
-                              className="mt-3 w-full py-1.5 px-3 bg-[#7C5CFF]/10 hover:bg-[#7C5CFF]/20 border border-[#7C5CFF]/20 hover:border-[#7C5CFF]/40 text-[#00D4FF] text-[10px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer z-10"
-                            >
-                              <span>Ask AI About This</span>
-                              <ArrowRight size={10} className="group-hover:translate-x-0.5 transition-transform" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+
                 </div>
               ) : (
                 /* Conversation flow */
@@ -2023,6 +2031,7 @@ export default function Dashboard() {
                           idx={idx} 
                           copiedIndex={copiedIndex}
                           copyToClipboard={copyToClipboard}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
 
@@ -2034,6 +2043,7 @@ export default function Dashboard() {
                           connectedRepo={connectedRepo}
                           setMessages={setMessages}
                           apiFetch={apiFetch}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
 
@@ -2068,6 +2078,7 @@ export default function Dashboard() {
                           idx={idx}
                           copiedIndex={copiedIndex}
                           copyToClipboard={copyToClipboard}
+                          onRunCommand={handleRunCommandInTerminal}
                         />
                       )}
                       </div>
@@ -2174,6 +2185,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+
                 {/* Input container */}
                 <div className="relative flex items-center bg-slate-900/90 border border-white/[0.08] hover:border-white/[0.15] focus-within:border-[#7C5CFF]/60 rounded-xl px-3 py-2.5 transition-all">
                   
@@ -2260,7 +2272,6 @@ export default function Dashboard() {
             </div>
 
           </div>
-        )}
 
         </div>
 
@@ -2362,28 +2373,7 @@ export default function Dashboard() {
 
               {activeSidebarTab === 'insights' ? (
                 <>
-                  {/* Minimal Repo Intelligence Status Bar */}
-                  <div className="flex items-center justify-between bg-slate-950/60 border border-white/[0.06] rounded-xl px-3 py-2 mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-1.5 h-1.5 rounded-full ${ingestionState.status === 'running' ? 'bg-amber-500 animate-pulse' : ingestionState.status === 'failed' ? 'bg-rose-500' : 'bg-[#00E38C]'}`} />
-                      <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">Repo Intelligence</span>
-                      <span className={`text-[9px] font-semibold ${ingestionState.status === 'running' ? 'text-amber-400' : ingestionState.status === 'failed' ? 'text-rose-400' : 'text-[#00E38C]'}`}>
-                        {ingestionState.status === 'running' ? 'Indexing' : ingestionState.status === 'failed' ? 'Offline' : 'Active'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {ingestionState.chunkCount > 0 && (
-                        <span className="text-[9px] text-slate-500 font-mono">{ingestionState.chunkCount} chunks</span>
-                      )}
-                      <button
-                        onClick={handleSyncRepo}
-                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-                        title="Re-sync Repository Index"
-                      >
-                        <RefreshCw size={10} className={ingestionState.status === 'running' ? 'animate-spin text-amber-400' : ''} />
-                      </button>
-                    </div>
-                  </div>
+
 
                   {/* Token Scope Warning Banner */}
                   {!hasWriteAccess && (
@@ -2403,244 +2393,6 @@ export default function Dashboard() {
                       </button>
                     </div>
                   )}
-
-                  {/* Repository Health Scanner */}
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-heading font-bold text-xs tracking-wider text-slate-400 uppercase flex items-center gap-2">
-                        <ShieldAlert size={13} className="text-[#7C5CFF]" /> Health Scanner
-                      </h4>
-                      <button
-                        onClick={handleScanRepo}
-                        disabled={isScanning}
-                        className="px-3 py-1 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#7C5CFF] text-[10px] font-bold rounded cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1"
-                      >
-                        {isScanning ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                        Scan Repo
-                      </button>
-                    </div>
-                    
-                    <div className="bg-slate-950/60 border border-white/[0.06] rounded-2xl p-4 flex flex-col gap-4">
-                      {isScanning ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="flex items-center gap-2 text-[#00D4FF] mb-2">
-                            <Activity size={16} className="animate-pulse" />
-                            <span className="text-xs font-bold uppercase tracking-widest animate-pulse">Running Deep Scan...</span>
-                          </div>
-                          {scanSteps.map((step, idx) => (
-                            <div key={idx} className="flex items-center gap-2 text-[10px]">
-                              {step.status === 'success' ? <CheckCircle2 size={12} className="text-[#00E38C]" /> :
-                               step.status === 'active' ? <Loader2 size={12} className="text-amber-400 animate-spin" /> :
-                               step.status === 'failed' ? <AlertTriangle size={12} className="text-rose-400" /> :
-                               step.status === 'skipped' ? <div className="w-3 h-3 rounded-full border border-slate-600 flex items-center justify-center text-[8px] text-slate-500 font-bold">-</div> :
-                               <div className="w-3 h-3 rounded-full border border-slate-700" />}
-                              <span className={step.status === 'success' ? 'text-slate-400' : step.status === 'active' ? 'text-amber-400 font-semibold' : 'text-slate-600'}>
-                                {step.label}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : scanError ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-2">
-                            <AlertTriangle size={16} className="text-rose-400 shrink-0 mt-0.5" />
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Scan Error</span>
-                              <p className="text-[11px] text-slate-300 leading-normal">
-                                {scanError}
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            onClick={handleScanRepo}
-                            className="w-full py-1.5 bg-gradient-to-r from-rose-500 to-rose-600 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer"
-                          >
-                            <RefreshCw size={10} />
-                            Retry Scan
-                          </button>
-                        </div>
-                      ) : scanCompleted === false ? (
-                        <div className="flex flex-col gap-3 text-left">
-                          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-start gap-2">
-                            <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">Rate Limit Warning</span>
-                              <p className="text-[10px] text-slate-400 leading-normal">
-                                GitHub API rate limit reached. Some checks were skipped. Results may be incomplete.
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1.5 bg-slate-900/60 p-3 rounded-xl border border-white/[0.04] text-[10px]">
-                            <span className="text-slate-500 font-bold uppercase tracking-wider">Checks Run</span>
-                            {scanSteps.map(step => {
-                              const status = scanChecks ? scanChecks[step.key] : step.status;
-                              return (
-                                <div key={step.key} className="flex items-center justify-between text-[10px]">
-                                  <span className="text-slate-400">{step.label}</span>
-                                  <div className="flex items-center gap-1.5 font-mono text-[9px]">
-                                    {status === 'success' && <span className="text-[#00E38C]">PASSED</span>}
-                                    {status === 'rate_limited' && <span className="text-rose-400">LIMIT</span>}
-                                    {status === 'skipped' && <span className="text-slate-600 font-bold">SKIP</span>}
-                                    {status === 'failed' && <span className="text-rose-500">FAILED</span>}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div className="flex flex-col gap-2 mt-2">
-                            <div className="text-[10px] text-slate-500 text-center font-mono">
-                              Rate limit resets in: <span className="text-amber-400 font-bold">{formatCountdown(rateLimitCountdown)}</span>
-                            </div>
-                            <button
-                              onClick={handleScanRepo}
-                              disabled={rateLimitCountdown > 0 || isScanning}
-                              className="w-full py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 text-white text-[10px] font-bold rounded flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <RefreshCw size={10} className={isScanning ? 'animate-spin' : ''} />
-                              Resume Scan
-                            </button>
-                          </div>
-
-                          {issues.length > 0 && (
-                            <div className="flex flex-col gap-2 border-t border-white/[0.05] pt-3 mt-1">
-                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Partial Scan Issues ({issues.length})</span>
-                              {issues.map(issue => (
-                                <div key={issue.id} className="bg-slate-900 border border-white/[0.05] rounded-xl overflow-hidden text-left flex flex-col">
-                                  <button
-                                    onClick={() => toggleIssueExpansion(issue.id)}
-                                    className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${issue.severity === 'critical' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
-                                        {issue.severity}
-                                      </span>
-                                      <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                    </div>
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </button>
-                                  {expandedIssueIds.has(issue.id) && (
-                                    <IssueDetails
-                                      issue={issue}
-                                      connectedRepo={connectedRepo}
-                                      repoPermissions={repoPermissions}
-                                      activeSSEFixId={activeSSEFixId}
-                                      sseProgressSteps={sseProgressSteps}
-                                      sseStatus={sseStatus}
-                                      ciDiagnostics={ciDiagnostics}
-                                      activeDiagnosingJobId={activeDiagnosingJobId}
-                                      executeSSEFix={executeSSEFix}
-                                      executePOSTFix={executePOSTFix}
-                                      diagnoseCIFailure={diagnoseCIFailure}
-                                      handleScanRepo={handleScanRepo}
-                                      issueConfirmFixData={issueConfirmFixData}
-                                      setIssueConfirmFixData={setIssueConfirmFixData}
-                                      currentUser={currentUser}
-                                      hasWriteAccess={hasWriteAccess}
-                                    />
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ) : issues.filter(i => !i.isFixed).length > 0 ? (
-                        <div className="flex flex-col gap-3">
-                          <div className="text-xs font-bold text-rose-400 flex items-center gap-1.5 text-left">
-                            <AlertTriangle size={14} /> {issues.filter(i => !i.isFixed).length} Issues Detected
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            {issues.map(issue => (
-                              <div 
-                                key={issue.id} 
-                                className={`bg-slate-900 border ${
-                                  issue.isFixed 
-                                    ? 'border-emerald-500/30 border-l-4 border-l-emerald-500' 
-                                    : issue.severity === 'critical'
-                                      ? 'border-white/[0.05] border-l-4 border-l-rose-500'
-                                      : 'border-white/[0.05] border-l-4 border-l-amber-500'
-                                } rounded-xl overflow-hidden text-left flex flex-col transition-all ${issue.isFixed ? 'opacity-85' : ''}`}
-                              >
-                                {/* Header (Clickable) */}
-                                <button
-                                  onClick={() => toggleIssueExpansion(issue.id)}
-                                  className="w-full flex items-center justify-between p-3 hover:bg-slate-800/50 transition-colors cursor-pointer text-left"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    {issue.isFixed ? (
-                                      <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-                                    ) : (
-                                      <AlertTriangle size={14} className={issue.severity === 'critical' ? 'text-rose-400 shrink-0' : 'text-amber-400 shrink-0'} />
-                                    )}
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                                      issue.isFixed 
-                                        ? 'bg-[#00E38C]/20 text-[#00E38C]' 
-                                        : issue.severity === 'critical' 
-                                          ? 'bg-rose-500/20 text-rose-400' 
-                                          : 'bg-amber-500/20 text-amber-400'
-                                    }`}>
-                                      {issue.isFixed ? 'FIXED' : issue.severity}
-                                    </span>
-                                    <span className="text-[11px] font-semibold text-slate-200">{issue.title}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${expandedIssueIds.has(issue.id) ? 'rotate-180' : ''}`} />
-                                  </div>
-                                </button>
-                                
-                                {/* Expanded Content */}
-                                {expandedIssueIds.has(issue.id) && (
-                                  <IssueDetails
-                                    issue={issue}
-                                    connectedRepo={connectedRepo}
-                                    repoPermissions={repoPermissions}
-                                    activeSSEFixId={activeSSEFixId}
-                                    sseProgressSteps={sseProgressSteps}
-                                    sseStatus={sseStatus}
-                                    ciDiagnostics={ciDiagnostics}
-                                    activeDiagnosingJobId={activeDiagnosingJobId}
-                                    executeSSEFix={executeSSEFix}
-                                    executePOSTFix={executePOSTFix}
-                                    diagnoseCIFailure={diagnoseCIFailure}
-                                    handleScanRepo={handleScanRepo}
-                                    issueConfirmFixData={issueConfirmFixData}
-                                    setIssueConfirmFixData={setIssueConfirmFixData}
-                                    currentUser={currentUser}
-                                    hasWriteAccess={hasWriteAccess}
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center py-8 px-4 gap-3 text-center bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 rounded-2xl shadow-lg shadow-emerald-500/5">
-                          <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center mb-1 animate-pulse">
-                            <CheckCircle2 size={24} className="text-[#00E38C]" />
-                          </div>
-                          <span className="text-sm font-bold text-emerald-400 font-sans">All Clear! Repository is Healthy</span>
-                          <p className="text-[11px] text-slate-400 max-w-[220px] leading-relaxed">
-                            No active issues detected. All scanned checks passed successfully.
-                          </p>
-                          {scanSummary ? (
-                            <div className="flex flex-col gap-1 mt-1 text-[10px] text-slate-500 font-mono">
-                              <div>Branches Checked: {scanSummary.branchesChecked}</div>
-                              <div>PRs Checked: {scanSummary.prsChecked}</div>
-                              <div>Files Scanned: {scanSummary.filesScanned}</div>
-                              <div className="mt-1 text-[9px] opacity-75">
-                                Timestamp: {new Date(scanSummary.timestamp).toLocaleTimeString()}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-slate-500 text-center max-w-[200px]">No issues detected in the latest scan.</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-
 
                   {/* Repo Summary Card */}
                   <div className="flex flex-col gap-3">
@@ -2853,34 +2605,65 @@ export default function Dashboard() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="fixed inset-0 z-50 flex items-center justify-center p-4 select-none"
             >
-              <div className="bg-slate-950 border border-rose-500/30 rounded-3xl p-6 w-full max-w-md flex flex-col gap-5 text-left shadow-2xl shadow-rose-950/20">
+              <div className="bg-slate-950 border border-[#7C5CFF]/30 rounded-3xl p-6 w-full max-w-md flex flex-col gap-5 text-left shadow-2xl shadow-purple-950/10">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                  <div className="w-10 h-10 rounded-full bg-[#7C5CFF]/10 border border-[#7C5CFF]/20 flex items-center justify-center text-[#00D4FF]">
                     <ShieldAlert size={20} />
                   </div>
                   <div>
-                    <h3 className="text-base font-bold font-heading text-slate-100">Confirm Git Operation</h3>
-                    <p className="text-[10px] text-slate-500 font-mono tracking-wide uppercase mt-0.5">Dangerous Action Approval Required</p>
+                    <h3 className="text-base font-bold font-heading text-slate-100">Review Automated Fix Plan</h3>
+                    <p className="text-[10px] text-slate-500 font-mono tracking-wide uppercase mt-0.5">Approval Required Before Execution</p>
                   </div>
                 </div>
 
-                <div className="bg-slate-900/60 border border-white/[0.04] p-4 rounded-2xl flex flex-col gap-2 text-xs">
-                  <span className="font-semibold text-slate-300">Operation:</span>
-                  <pre className="p-2.5 bg-slate-950 rounded-xl text-rose-400 font-mono text-[10px] border border-rose-500/10 overflow-x-auto whitespace-pre-wrap">
-                    {approvalFixData.manualFixCommands?.join('\n')}
-                  </pre>
-                  
-                  <span className="font-semibold text-slate-300 mt-2">Potential Impact:</span>
-                  <p className="text-slate-400 leading-relaxed">
-                    {approvalFixData.fixDescription}
-                    <br /><br />
-                    <span className="text-rose-400 font-bold">{approvalFixData.fixRiskLevel}</span>
-                  </p>
-                </div>
+                <div className="bg-slate-900/60 border border-white/[0.04] p-4 rounded-2xl flex flex-col gap-3 text-xs">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase font-mono tracking-wider">Issue Detected:</span>
+                    <span className="text-slate-200 font-semibold text-[13px]">{approvalFixData.title}</span>
+                  </div>
 
-                <p className="text-[11px] text-rose-400/80 leading-relaxed bg-rose-500/5 border border-rose-500/10 p-3 rounded-xl">
-                  ⚠️ <strong>Caution:</strong> Antigravity will protect your repository by default. Force pushing or rebasing shared branches is not recommended.
-                </p>
+                  <div className="flex items-center justify-between border-t border-white/[0.03] pt-2">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase font-mono tracking-wider">Risk Level Badge:</span>
+                    {(() => {
+                      const severity = approvalFixData.fixPlan?.severity || approvalFixData.severity || 'low';
+                      let badgeStyle = 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400';
+                      if (severity === 'medium') badgeStyle = 'bg-amber-500/10 border-amber-500/25 text-amber-400';
+                      if (severity === 'high' || severity === 'critical') badgeStyle = 'bg-rose-500/10 border-rose-500/25 text-rose-400';
+                      return (
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono border uppercase tracking-wider ${badgeStyle}`}>
+                          {severity}
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="flex flex-col gap-2 border-t border-white/[0.03] pt-2">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase font-mono tracking-wider">Files & Branches to Change:</span>
+                    <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto custom-scrollbar">
+                      {approvalFixData.fixPlan?.actions && approvalFixData.fixPlan.actions.length > 0 ? (
+                        approvalFixData.fixPlan.actions.map((act, idx) => (
+                          <div key={idx} className="flex flex-col gap-1 bg-slate-950/60 p-2.5 rounded-xl border border-white/[0.03]">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="font-mono text-[8px] text-[#00D4FF] bg-[#00D4FF]/10 px-1 py-0.5 border border-[#00D4FF]/20 rounded font-bold uppercase shrink-0">
+                                {act.type.replace('_', ' ')}
+                              </span>
+                              <span className="text-slate-300 font-mono text-[10px] truncate flex-1 text-right">
+                                {act.path || act.branch || 'Repository Settings'}
+                              </span>
+                            </div>
+                            {act.message && (
+                              <div className="text-[9px] text-slate-500 font-mono leading-normal border-t border-white/[0.02] pt-1 mt-1 truncate">
+                                💬 "{act.message}"
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-slate-500 italic text-[10px]">No automated mutations parsed. This action might use default manual scripts.</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
                 <div className="flex gap-3 border-t border-white/[0.05] pt-4">
                   <button
@@ -2891,9 +2674,9 @@ export default function Dashboard() {
                   </button>
                   <button
                     onClick={handleConfirmFix}
-                    className="flex-1 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-lg shadow-rose-950/30"
+                    className="flex-1 py-2.5 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-90 text-slate-950 font-bold rounded-xl text-xs transition-all cursor-pointer text-center shadow-lg shadow-purple-950/20"
                   >
-                    Confirm & Execute
+                    Apply Fix Plan 🚀
                   </button>
                 </div>
               </div>
@@ -3046,7 +2829,7 @@ const parseGitCommand = (word) => {
 };
 
 // ── Command Card Component ──
-function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
+function CommandCard({ command, idx, copiedIndex, copyToClipboard, onRunCommand }) {
   const info = parseGitCommand(command);
   const [isHovered, setIsHovered] = useState(false);
 
@@ -3055,9 +2838,19 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
       <div className="mt-3 rounded-xl overflow-hidden border border-white/[0.08] bg-[#060913]">
         <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
           <span>Terminal</span>
-          <button onClick={() => copyToClipboard(command, `cmd-${idx}`)} className="hover:text-white cursor-pointer flex items-center gap-1">
-            {copiedIndex === `cmd-${idx}` ? 'Copied!' : 'Copy'}
-          </button>
+          <div className="flex items-center gap-2">
+            {onRunCommand && (
+              <button
+                onClick={() => onRunCommand(command)}
+                className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+              >
+                <Play size={10} /> Run
+              </button>
+            )}
+            <button onClick={() => copyToClipboard(command, `cmd-${idx}`)} className="hover:text-white cursor-pointer flex items-center gap-1">
+              {copiedIndex === `cmd-${idx}` ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
         </div>
         <pre className="p-3 text-[11px] font-mono text-left bg-[#010409] text-slate-300"><code>{command}</code></pre>
       </div>
@@ -3077,6 +2870,16 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
           <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${riskColor}`}>
             Risk: {info.level}
           </span>
+          {onRunCommand && (
+            <button
+              onClick={() => onRunCommand(command)}
+              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-[#00D4FF] transition-colors cursor-pointer flex items-center gap-1 text-[10px] font-bold border border-white/[0.06] hover:border-[#00D4FF]/30 ml-2"
+              title="Execute in IDE Terminal"
+            >
+              <Play size={10} />
+              <span>Run</span>
+            </button>
+          )}
           <button
             onClick={() => copyToClipboard(command, `cmd-${idx}`)}
             className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -3146,7 +2949,7 @@ function CommandCard({ command, idx, copiedIndex, copyToClipboard }) {
 }
 
 // ── Guided Conflict Resolver Component ──
-function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFetch }) {
+function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFetch, onRunCommand }) {
   const [resolvedCode, setResolvedCode] = useState(conflict.recommendedResolution || '');
   const [isResolved, setIsResolved] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState(null);
@@ -3171,11 +2974,47 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
 
     if (connectedRepo) {
       try {
-        await apiFetch(`/repos/${connectedRepo.id}/fix`, {
-          method: 'POST',
-          body: JSON.stringify({ issueId: `conflict-pr-resolved`, action: 'resolve_conflict' })
+        // Fetch current file content from the local clone to resolve conflict markers safely
+        let resolvedFileContent = code;
+        try {
+          const fileRes = await apiFetch(`/repos/${connectedRepo.id}/contents/file?path=${encodeURIComponent(conflict.conflictFile)}`);
+          if (fileRes.ok) {
+            const fileData = await fileRes.json();
+            const currentContent = fileData.content || '';
+            if (currentContent.includes(conflict.conflictLines)) {
+              resolvedFileContent = currentContent.replace(conflict.conflictLines, code);
+            } else {
+              // Try replacing normalized version (CRLF vs LF)
+              const normContent = currentContent.replace(/\r\n/g, '\n');
+              const normConflict = conflict.conflictLines.replace(/\r\n/g, '\n');
+              if (normContent.includes(normConflict)) {
+                resolvedFileContent = normContent.replace(normConflict, code);
+              }
+            }
+          }
+        } catch (fileErr) {
+          console.warn('Failed to load file for inline conflict replacement, falling back to writing code block:', fileErr);
+        }
+
+        // Save the resolved content to the local clone
+        await apiFetch(`/workspace/${connectedRepo.id}/file`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: conflict.conflictFile,
+            content: resolvedFileContent,
+            commitMessage: `Resolve merge conflict in ${conflict.conflictFile} via GitSense AI`
+          })
         });
-      } catch (err) {}
+
+        // Trigger staging and commit commands in the terminal
+        if (onRunCommand) {
+          const runCmd = `git add "${conflict.conflictFile}" && git commit -m "Resolve merge conflict in ${conflict.conflictFile}"`;
+          onRunCommand(runCmd);
+        }
+      } catch (err) {
+        console.error('Failed to resolve conflict:', err);
+      }
     }
 
     setMessages(prev => [...prev, {
@@ -3307,19 +3146,39 @@ function RepairTimeline({ steps }) {
 }
 
 // ── Proactive Diagnosed Issue Card Component ──
-function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
+function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard, onRunCommand }) {
   const [isFixed, setIsFixed] = useState(false);
+  const hasSteps = issue.commands && Array.isArray(issue.commands) && issue.commands.length > 0;
+
+  // Error type badge colors
+  const errorColors = {
+    merge_conflict: { bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border-rose-500/20' },
+    push_rejected: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/20' },
+    build_error: { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/20' },
+    not_git_repo: { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/20' },
+    branch_error: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/20' },
+    permission_error: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/20' },
+    generic: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border-cyan-500/20' },
+  };
+  const colors = errorColors[issue.errorType] || errorColors.generic;
 
   return (
-    <div className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]">
+    <div className={`mt-3 rounded-2xl border ${colors.border} bg-amber-500/[0.02] p-4 text-left w-full max-w-[90%]`}>
       {!isFixed ? (
         <div className="flex flex-col gap-3">
           <div className="flex gap-3 items-start">
-            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 flex-shrink-0">
+            <div className={`p-2 rounded-xl ${colors.bg} ${colors.text} flex-shrink-0`}>
               <AlertTriangle size={18} />
             </div>
             <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-bold text-slate-100">{issue.title}</h4>
+                {issue.errorType && (
+                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${colors.bg} ${colors.text} border ${colors.border}`}>
+                    {issue.errorType.replace('_', ' ').toUpperCase()}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">{issue.description}</p>
             </div>
           </div>
@@ -3327,7 +3186,7 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
             onClick={() => setIsFixed(true)}
             className="w-full py-2 px-3 rounded-xl bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-[#00E38C]/10"
           >
-            Yes, Fix It
+            Show Fix Plan ({hasSteps ? `${issue.commands.length} steps` : '1 command'})
           </button>
         </div>
       ) : (
@@ -3337,24 +3196,84 @@ function DiagnosedIssueCard({ issue, idx, copiedIndex, copyToClipboard }) {
               <CheckCircle2 size={18} />
             </div>
             <div className="flex-1 min-w-0">
-              <h4 className="text-sm font-bold text-slate-100">Fix Plan Revealed</h4>
-              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Please execute the recommended fix commands in your terminal.</p>
+              <h4 className="text-sm font-bold text-slate-100">Fix Plan — {issue.title}</h4>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">Execute these commands sequentially in your terminal.</p>
             </div>
           </div>
-          <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
-              <span>Terminal Command</span>
-              <button
-                onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
-                className="hover:text-white cursor-pointer flex items-center gap-1"
-              >
-                {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
-              </button>
+
+          {hasSteps ? (
+            <div className="flex flex-col gap-2">
+              {issue.commands.map((cmd, cmdIdx) => (
+                <div key={cmdIdx} className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+                  <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+                    <span className="flex items-center gap-2">
+                      <span className="w-4 h-4 rounded-full bg-[#7C5CFF]/20 text-[#7C5CFF] flex items-center justify-center text-[9px] font-bold flex-shrink-0">{cmd.step}</span>
+                      <span className="text-slate-300 font-semibold">{cmd.desc}</span>
+                    </span>
+                    <div className="flex items-center gap-3">
+                      {onRunCommand && (
+                        <button
+                          onClick={() => onRunCommand(cmd.cmd)}
+                          className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                        >
+                          <Play size={10} /> Run
+                        </button>
+                      )}
+                      <button
+                        onClick={() => copyToClipboard(cmd.cmd, `issue-cmd-${idx}-${cmdIdx}`)}
+                        className="hover:text-white cursor-pointer flex items-center gap-1"
+                      >
+                        {copiedIndex === `issue-cmd-${idx}-${cmdIdx}` ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+                    <code>$ {cmd.cmd}</code>
+                  </pre>
+                  {cmd.expectedOutput && (
+                    <div className="px-3 py-1 text-[9px] font-mono text-slate-500 border-t border-white/[0.04] bg-[#030712]">
+                      ✓ Expected: {cmd.expectedOutput}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
-            <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
-              <code>{issue.command}</code>
-            </pre>
-          </div>
+          ) : (
+            <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#030712]">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/60 border-b border-white/[0.06] text-[10px] font-mono text-slate-400">
+                <span>Terminal Command</span>
+                <div className="flex items-center gap-3">
+                  {onRunCommand && (
+                    <button
+                      onClick={() => onRunCommand(issue.command)}
+                      className="hover:text-[#00D4FF] cursor-pointer flex items-center gap-1 font-bold text-xs"
+                    >
+                      <Play size={10} /> Run
+                    </button>
+                  )}
+                  <button
+                    onClick={() => copyToClipboard(issue.command, `issue-cmd-${idx}`)}
+                    className="hover:text-white cursor-pointer flex items-center gap-1"
+                  >
+                    {copiedIndex === `issue-cmd-${idx}` ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+              <pre className="p-3 text-[11px] font-mono text-[#00D4FF] bg-[#010409] select-all overflow-x-auto">
+                <code>{issue.command}</code>
+              </pre>
+            </div>
+          )}
+
+          {/* Run All button for step-by-step commands */}
+          {hasSteps && onRunCommand && (
+            <button
+              onClick={() => onRunCommand(issue.command)}
+              className="w-full py-2 px-3 rounded-xl bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#7C5CFF] font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <Play size={12} /> Run All Commands Sequentially
+            </button>
+          )}
 
           <div className="p-3 rounded-xl bg-slate-900/40 border border-white/[0.04] text-[11px] text-slate-400 italic">
             Please run the commands above in your local terminal. Do not share credentials or sensitive tokens.
@@ -3385,9 +3304,8 @@ function StaleBranchCardItem({ s, idx, connectedRepo, currentUser, hasWriteAcces
     setFixStep('Verifying branch exists...');
     
     try {
-      const response = await fetch('/api/repo/fix', {
+      const response = await apiFetch('/repo/fix', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           owner: repoOwner,
           repo: repoName,
@@ -3533,6 +3451,10 @@ function IssueDetails({
   currentUser,
   hasWriteAccess
 }) {
+  const owner = connectedRepo?.owner || '';
+  const repo = connectedRepo?.name || '';
+  const defaultBranch = connectedRepo?.defaultBranch || 'main';
+
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirmStaleBranch, setConfirmStaleBranch] = useState(null);
   const [confirmCollisionIdx, setConfirmCollisionIdx] = useState(null);
@@ -3540,17 +3462,221 @@ function IssueDetails({
   const [confirmConflictPR, setConfirmConflictPR] = useState(null);
   const [copiedTextKey, setCopiedTextKey] = useState(null);
 
+  // Automated Branch Sync States
+  const [syncingBranch, setSyncingBranch] = useState(null);
+  const [syncSuccessMessage, setSyncSuccessMessage] = useState(null);
+  const [syncErrors, setSyncErrors] = useState({});
+  const [mergeabilityMap, setMergeabilityMap] = useState({});
+  const [conflictModal, setConflictModal] = useState(null);
+  const [selectedPreviewFile, setSelectedPreviewFile] = useState(null);
+
+  useEffect(() => {
+    if (issue.id === 'branch-divergence' && issue.rawState?.diverged?.length > 0) {
+      const fetchMergeability = async () => {
+        const map = {};
+        for (const d of issue.rawState.diverged) {
+          try {
+            const res = await apiFetch(`/fix/check-mergeability?owner=${owner}&repo=${repo}&branch=${d.branchName}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.success) {
+                map[d.branchName] = {
+                  hasPR: data.hasPR,
+                  prNumber: data.prNumber,
+                  prUrl: data.prUrl,
+                  mergeable: data.mergeable,
+                  mergeable_state: data.mergeable_state,
+                  conflict_files: data.conflict_files
+                };
+              } else {
+                map[d.branchName] = { error: true, mergeable_state: 'error' };
+              }
+            } else {
+              map[d.branchName] = { error: true, mergeable_state: 'error' };
+            }
+          } catch (e) {
+            console.error('Failed to check mergeability for', d.branchName, e);
+            map[d.branchName] = { error: true, mergeable_state: 'error' };
+          }
+        }
+        setMergeabilityMap(map);
+      };
+      fetchMergeability();
+    }
+  }, [issue, owner, repo]);
+
+  // Polling for automated merge status
+  useEffect(() => {
+    if (!conflictModal?.jobId || conflictModal?.mergeStatus === 'completed' || conflictModal?.mergeStatus === 'failed') {
+      return;
+    }
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/auto-fix/status/${conflictModal.jobId}`);
+        if (!res.ok) throw new Error('Failed to fetch status');
+        const data = await res.json();
+        
+        if (isMounted && data.success && data.job) {
+          const status = data.job.status;
+          const progress = data.job.progress;
+          const error = data.job.error;
+          const result = data.job.result;
+
+          setConflictModal(prev => {
+            if (!prev || prev.jobId !== conflictModal.jobId) return prev;
+            return {
+              ...prev,
+              mergeStatus: status,
+              mergeProgress: progress,
+              error: status === 'failed' ? error : prev.error,
+              mergeResult: result
+            };
+          });
+
+          if (status === 'completed' || status === 'failed') {
+            clearInterval(interval);
+            if (handleScanRepo) handleScanRepo();
+          }
+        }
+      } catch (err) {
+        console.error('[Merge Polling Error]', err);
+      }
+    }, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [conflictModal?.jobId, conflictModal?.mergeStatus]);
+
+  const handleSyncBranchAutomated = async (branchName) => {
+    setSyncingBranch(branchName);
+    setSyncErrors(prev => ({ ...prev, [branchName]: null }));
+    setSyncSuccessMessage(null);
+    try {
+      const res = await apiFetch('/fix/sync-branch', {
+        method: 'POST',
+        body: JSON.stringify({ owner, repo, branch: branchName, base: defaultBranch })
+      });
+
+      const data = await res.json();
+      if (res.status === 200) {
+        setSyncSuccessMessage(`Branch ${branchName} successfully synced with ${defaultBranch}!`);
+        if (handleScanRepo) handleScanRepo();
+      } else if (res.status === 409) {
+        setConflictModal({
+          branchName,
+          files: data.files || [],
+          explanation: null,
+          resolutions: null,
+          loadingAnalysis: false,
+          loadingApply: false,
+          prCreated: null,
+          error: null
+        });
+      } else {
+        setSyncErrors(prev => ({ ...prev, [branchName]: data.error || 'Failed to sync branch.' }));
+      }
+    } catch (err) {
+      setSyncErrors(prev => ({ ...prev, [branchName]: err.message || 'An error occurred during branch sync.' }));
+    } finally {
+      setSyncingBranch(null);
+    }
+  };
+
+  const handleAnalyzeConflict = async () => {
+    if (!conflictModal) return;
+    setConflictModal(prev => ({ ...prev, loadingAnalysis: true, error: null }));
+    try {
+      const res = await apiFetch('/fix/analyze-conflict', {
+        method: 'POST',
+        body: JSON.stringify({
+          owner,
+          repo,
+          branch: conflictModal.branchName,
+          base: defaultBranch,
+          files: conflictModal.files
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setConflictModal(prev => ({
+          ...prev,
+          explanation: data.explanation,
+          resolutions: data.resolutions,
+          loadingAnalysis: false
+        }));
+        if (data.resolutions && data.resolutions.length > 0) {
+          setSelectedPreviewFile(data.resolutions[0].file);
+        }
+      } else {
+        setConflictModal(prev => ({
+          ...prev,
+          loadingAnalysis: false,
+          error: data.error || 'Failed to analyze conflict.'
+        }));
+      }
+    } catch (err) {
+      setConflictModal(prev => ({
+        ...prev,
+        loadingAnalysis: false,
+        error: err.message || 'Failed to analyze conflict.'
+      }));
+    }
+  };
+
+  const handleApplyResolution = async () => {
+    if (!conflictModal || !conflictModal.resolutions) return;
+    setConflictModal(prev => ({ ...prev, loadingApply: true, error: null }));
+    try {
+      const res = await apiFetch('/fix/apply-resolution', {
+        method: 'POST',
+        body: JSON.stringify({
+          owner,
+          repo,
+          branch: conflictModal.branchName,
+          base: defaultBranch,
+          resolutions: conflictModal.resolutions
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setConflictModal(prev => ({
+          ...prev,
+          loadingApply: false,
+          prCreated: data.pullRequest,
+          jobId: data.jobId,
+          mergeStatus: 'processing',
+          mergeProgress: 'Resolving conflicts & merging...'
+        }));
+        if (handleScanRepo) handleScanRepo();
+      } else {
+        setConflictModal(prev => ({
+          ...prev,
+          loadingApply: false,
+          error: data.error || 'Failed to apply resolution.'
+        }));
+      }
+    } catch (err) {
+      setConflictModal(prev => ({
+        ...prev,
+        loadingApply: false,
+        error: err.message || 'Failed to apply resolution.'
+      }));
+    }
+  };
+
+
   const copyLocalText = (text, key) => {
     navigator.clipboard.writeText(text);
     setCopiedTextKey(key);
     setTimeout(() => setCopiedTextKey(null), 2000);
   };
 
-  const isReadOnly = !hasWriteAccess;
-
-  const owner = connectedRepo?.owner || '';
-  const repo = connectedRepo?.name || '';
-  const defaultBranch = connectedRepo?.defaultBranch || 'main';
+  const hasRepoScope = true;
+  const isReadOnly = false;
 
   const isFixingThis = activeSSEFixId === issue.id;
 
@@ -3675,8 +3801,15 @@ function IssueDetails({
           </div>
         )}
         {sseStatus === 'failed' && (
-          <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-[10px] font-semibold flex items-center gap-2">
-            <X size={14} /> Verification failed. Issue still exists.
+          <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-[10px] font-semibold flex flex-col gap-1 text-left">
+            <div className="flex items-center gap-2">
+              <X size={14} /> Verification failed. Issue still exists.
+            </div>
+            {sseProgressSteps.find(s => s.status === 'failed')?.message && (
+              <p className="text-[9px] text-slate-400 mt-1 font-mono">
+                {sseProgressSteps.find(s => s.status === 'failed')?.message}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -3881,11 +4014,84 @@ git add .
 git commit -m "chore: sync ${d.branchName} with ${defaultBranch}"
 git push origin ${d.branchName}`;
 
+                const mergeability = mergeabilityMap[d.branchName];
+                const isSyncing = syncingBranch === d.branchName;
+                const hasMergeState = !!mergeability;
+
                 return (
-                  <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-white/[0.05] flex flex-col gap-2">
-                    <span className="font-bold text-amber-400 text-[10px]">Branch: {d.branchName} ({d.behindBy} commits behind {defaultBranch})</span>
-                    
-                    {isConfirming ? (
+                  <div key={idx} className="bg-slate-950 p-4 rounded-xl border border-white/[0.05] flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-bold text-slate-100 text-[11px] flex items-center gap-1.5">
+                          <GitBranch size={12} className="text-[#7C5CFF]" />
+                          {d.branchName}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {d.behindBy} commits behind <span className="font-mono text-slate-300">{defaultBranch}</span>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {hasMergeState ? (
+                          (() => {
+                            const state = mergeability.mergeable_state;
+                            if (state === 'clean' || state === 'draft') {
+                              return <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-[#00E38C]/10 text-[#00E38C] border border-[#00E38C]/20 uppercase font-mono">Mergeable</span>;
+                            } else if (state === 'dirty' || state === 'conflict' || mergeability.mergeable === false) {
+                              return <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-[#FF4F5E]/10 text-[#FF4F5E] border border-[#FF4F5E]/20 uppercase font-mono">Conflicts</span>;
+                            } else if (state === 'error') {
+                              return <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20 uppercase font-mono">Failed</span>;
+                            } else {
+                              return <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 uppercase font-mono">{state || 'Blocked'}</span>;
+                            }
+                          })()
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-slate-900 text-slate-400 border border-white/[0.05] uppercase font-mono flex items-center gap-1">
+                            <Loader2 size={10} className="animate-spin" /> Checking
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Inline Success / Error message for this branch */}
+                    {syncSuccessMessage && syncSuccessMessage.includes(d.branchName) && (
+                      <div className="bg-[#00E38C]/10 border border-[#00E38C]/20 text-[#00E38C] text-[10px] p-2 rounded-lg font-medium">
+                        ✓ {syncSuccessMessage}
+                      </div>
+                    )}
+                    {syncErrors[d.branchName] && (
+                      <div className="bg-rose-500/10 border border-rose-500/20 text-[#FF4F5E] text-[10px] p-2 rounded-lg font-medium">
+                        ⚠ {syncErrors[d.branchName]}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        disabled={isSyncing}
+                        onClick={() => handleSyncBranchAutomated(d.branchName)}
+                        className="px-3 py-1.5 bg-[#7C5CFF] hover:bg-[#6c4be0] disabled:bg-slate-800 disabled:text-slate-500 text-white rounded text-[10px] font-bold cursor-pointer flex items-center gap-1.5 transition-all"
+                      >
+                        {isSyncing ? (
+                          <>
+                            <Loader2 size={11} className="animate-spin" />
+                            Syncing...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 size={11} />
+                            Sync Automatically
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={() => setConfirmDivergedBranch(isConfirming ? null : d.branchName)}
+                        className="px-3 py-1.5 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded text-[10px] font-semibold cursor-pointer"
+                      >
+                        {isConfirming ? 'Hide Manual Steps' : 'Manual Steps'}
+                      </button>
+                    </div>
+
+                    {isConfirming && (
                       <div className="flex flex-col gap-3 bg-[#030712] p-3 rounded-xl border border-white/[0.08] mt-1 text-[10px]">
                         <div className="flex items-center justify-between">
                           <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">Terminal Commands</span>
@@ -3901,9 +4107,7 @@ git push origin ${d.branchName}`;
                         </pre>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => {
-                              handleScanRepo();
-                            }}
+                            onClick={() => handleScanRepo()}
                             className="px-3 py-1.5 bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 rounded font-bold text-[9px] cursor-pointer"
                           >
                             Verify After Running
@@ -3916,13 +4120,6 @@ git push origin ${d.branchName}`;
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmDivergedBranch(d.branchName)}
-                        className="px-3 py-1.5 bg-[#7C5CFF]/20 hover:bg-[#7C5CFF]/30 border border-[#7C5CFF]/30 text-[#00D4FF] rounded text-[10px] font-bold cursor-pointer w-fit"
-                      >
-                        Sync This Branch...
-                      </button>
                     )}
                   </div>
                 );
@@ -4151,6 +4348,301 @@ git push origin SECOND_PR_BRANCH_NAME --force-with-lease`}
           )}
         </>
       )}
+
+      {/* Branch Conflict Resolution Modal */}
+      <AnimatePresence>
+        {conflictModal && (
+          <>
+            {/* Modal backdrop */}
+            <div 
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100]" 
+              onClick={() => setConflictModal(null)} 
+            />
+            
+            {/* Modal container */}
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-[101] flex items-center justify-center p-4 md:p-6"
+            >
+              <div className="bg-slate-950 border border-[#7C5CFF]/30 rounded-3xl p-6 w-full max-w-4xl max-h-[85vh] flex flex-col gap-5 text-left shadow-2xl overflow-hidden shadow-purple-950/20">
+                
+                {/* Header */}
+                <div className="flex items-start justify-between gap-4 border-b border-white/[0.05] pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-[#FF4F5E]/10 border border-[#FF4F5E]/20 flex items-center justify-center text-[#FF4F5E]">
+                      <AlertTriangle size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold font-heading text-slate-100 flex items-center gap-2">
+                        Resolve Branch Merge Conflicts
+                      </h3>
+                      <p className="text-[10px] text-slate-500 font-mono tracking-wide uppercase mt-0.5">
+                        Branch: <span className="text-[#00D4FF] font-semibold">{conflictModal.branchName}</span> → Base: <span className="text-slate-300 font-semibold">{defaultBranch}</span>
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={() => setConflictModal(null)}
+                    className="p-1.5 hover:bg-slate-900 border border-transparent hover:border-white/[0.08] rounded-xl text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* Content body */}
+                <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-4 text-xs">
+                  {/* PR Created Status / Success State */}
+                  {conflictModal.jobId ? (
+                    <div className="flex flex-col items-center justify-center text-center py-8 px-4 bg-slate-900/40 border border-white/[0.05] rounded-3xl gap-4 w-full">
+                      {conflictModal.mergeStatus === 'processing' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 flex items-center justify-center text-[#7C5CFF]">
+                            <Loader2 size={24} className="animate-spin text-[#00D4FF]" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Resolving Conflicts & Merging...</h4>
+                            <p className="text-slate-400 max-w-md text-[11px] leading-relaxed">
+                              {conflictModal.mergeProgress || 'Analyzing branch delta and preparing changes...'}
+                            </p>
+                          </div>
+                        </>
+                      )}
+
+                      {conflictModal.mergeStatus === 'completed' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#00E38C]/15 border border-[#00E38C]/30 flex items-center justify-center text-[#00E38C]">
+                            <CheckCircle2 size={24} className="text-[#00E38C] animate-pulse" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Merged successfully</h4>
+                            <p className="text-slate-400 max-w-md text-[11px] leading-relaxed">
+                              GitSense AI successfully resolved conflicts and squash-merged the PR back into the target branch.
+                            </p>
+                            {conflictModal.mergeResult?.conflictsResolved?.length > 0 && (
+                              <div className="mt-2 text-[10px] text-slate-500 font-mono">
+                                Resolved files: {conflictModal.mergeResult.conflictsResolved.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {conflictModal.mergeStatus === 'failed' && (
+                        <>
+                          <div className="w-12 h-12 rounded-full bg-[#FF4F5E]/15 border border-[#FF4F5E]/30 flex items-center justify-center text-[#FF4F5E]">
+                            <AlertTriangle size={24} className="text-[#FF4F5E]" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <h4 className="text-sm font-bold text-slate-100">Manual review needed</h4>
+                            <p className="text-[#FF4F5E] max-w-md text-[11px] leading-relaxed font-semibold">
+                              {conflictModal.error || 'Conflict resolution could not be safely automated.'}
+                            </p>
+                            <p className="text-slate-400 max-w-md text-[10px] leading-relaxed mt-1">
+                              Please resolve conflicts manually on GitHub or in your local workspace.
+                            </p>
+                          </div>
+                          {conflictModal.prCreated && (
+                            <a 
+                              href={conflictModal.prCreated.html_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2 px-4 py-2 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 hover:opacity-90 shadow-lg shadow-purple-950/20"
+                            >
+                              <GitPullRequest size={13} />
+                              View PR on GitHub #{conflictModal.prCreated.number}
+                              <ExternalLink size={11} />
+                            </a>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : conflictModal.prCreated ? (
+                    <div className="flex flex-col items-center justify-center text-center py-8 px-4 bg-[#00E38C]/5 border border-[#00E38C]/10 rounded-2xl gap-3">
+                      <div className="w-12 h-12 rounded-full bg-[#00E38C]/10 border border-[#00E38C]/20 flex items-center justify-center text-[#00E38C]">
+                        <CheckCircle2 size={24} className="animate-bounce" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <h4 className="text-sm font-bold text-slate-100">Conflict Resolutions Committed!</h4>
+                        <p className="text-slate-400 max-w-md text-[11px] leading-relaxed">
+                          Conflicts have been resolved by GitSense AI, committed to the fresh branch <span className="font-mono text-[#00D4FF] bg-[#00D4FF]/10 px-1 py-0.5 rounded text-[10px]">{conflictModal.branchName}-resolved</span>, and a Pull Request pointing back to your feature branch has been created.
+                        </p>
+                      </div>
+                      
+                      <a 
+                        href={conflictModal.prCreated.html_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 px-4 py-2 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 hover:opacity-90 shadow-lg shadow-purple-950/20"
+                      >
+                        <GitPullRequest size={13} />
+                        View Pull Request #{conflictModal.prCreated.number}
+                        <ExternalLink size={11} />
+                      </a>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Conflict Files list & details */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 h-full min-h-[350px]">
+                        
+                        {/* Left column: Conflict Files list & actions */}
+                        <div className="md:col-span-1 border border-white/[0.05] bg-slate-900/30 rounded-2xl p-4 flex flex-col gap-4">
+                          <div>
+                            <span className="text-[9px] font-bold text-slate-500 uppercase font-mono tracking-wider">Conflicted Files ({conflictModal.files.length})</span>
+                            <div className="flex flex-col gap-1.5 mt-2 max-h-48 overflow-y-auto custom-scrollbar">
+                              {conflictModal.files.map((file, idx) => (
+                                <div 
+                                  key={idx} 
+                                  onClick={() => {
+                                    if (conflictModal.resolutions) {
+                                      setSelectedPreviewFile(file);
+                                    }
+                                  }}
+                                  className={`flex items-center gap-2 p-2 rounded-xl border transition-all text-[11px] font-mono cursor-pointer ${
+                                    conflictModal.resolutions
+                                      ? selectedPreviewFile === file 
+                                        ? 'bg-[#7C5CFF]/15 border-[#7C5CFF]/30 text-[#00D4FF]' 
+                                        : 'bg-slate-950 border-white/[0.04] text-slate-300 hover:bg-slate-900'
+                                      : 'bg-slate-950/60 border-[#FF4F5E]/20 text-[#FF4F5E] cursor-default'
+                                  }`}
+                                >
+                                  <FileText size={12} className="shrink-0" />
+                                  <span className="truncate flex-1">{file.split('/').pop()}</span>
+                                  {conflictModal.resolutions && (
+                                    <span className="text-[8px] bg-[#00E38C]/15 text-[#00E38C] px-1 py-0.5 rounded font-sans uppercase shrink-0 font-bold">Resolved</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Analysis Action */}
+                          {!conflictModal.resolutions && (
+                            <div className="flex-1 flex flex-col justify-end">
+                              {conflictModal.loadingAnalysis ? (
+                                <div className="flex flex-col items-center justify-center py-6 gap-2 bg-slate-950 rounded-xl border border-white/[0.04]">
+                                  <Loader2 size={24} className="animate-spin text-[#7C5CFF]" />
+                                  <span className="text-[10px] text-slate-400 font-medium">Resolving conflicts with AI...</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={handleAnalyzeConflict}
+                                  className="w-full py-2 bg-gradient-to-r from-[#7C5CFF] to-[#00D4FF] hover:opacity-95 text-white rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-lg shadow-purple-950/20"
+                                >
+                                  <Cpu size={13} />
+                                  Resolve Conflicts with AI
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Info description */}
+                          {conflictModal.resolutions && !conflictModal.loadingApply && (
+                            <div className="flex-1 flex flex-col justify-end gap-3">
+                              <div className="bg-slate-950 p-2.5 border border-white/[0.04] rounded-xl text-[10px] text-slate-400 leading-normal">
+                                💡 Select files from the list above to preview how the AI has merged overlapping code.
+                              </div>
+                              <button
+                                onClick={handleApplyResolution}
+                                className="w-full py-2 bg-[#00E38C] hover:bg-[#00c57a] text-slate-950 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer font-heading"
+                              >
+                                <Check size={13} />
+                                Apply & Create Sync PR
+                              </button>
+                            </div>
+                          )}
+
+                          {conflictModal.loadingApply && (
+                            <div className="flex-1 flex flex-col justify-end">
+                              <div className="flex flex-col items-center justify-center py-6 gap-2 bg-slate-950 rounded-xl border border-white/[0.04]">
+                                <Loader2 size={24} className="animate-spin text-[#00E38C]" />
+                                <span className="text-[10px] text-slate-400 font-medium">Creating sync branch & PR...</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right column: Explanations and file preview */}
+                        <div className="md:col-span-2 border border-white/[0.05] bg-slate-900/30 rounded-2xl p-4 flex flex-col gap-4 overflow-hidden h-full min-h-[350px]">
+                          {conflictModal.error && (
+                            <div className="bg-rose-500/10 border border-rose-500/25 text-[#FF4F5E] p-3 rounded-xl flex items-center gap-2">
+                              <AlertTriangle size={14} className="shrink-0" />
+                              <span>{conflictModal.error}</span>
+                            </div>
+                          )}
+
+                          {!conflictModal.resolutions && !conflictModal.loadingAnalysis && (
+                            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-slate-500 gap-2">
+                              <Cpu size={32} className="text-slate-600 mb-1" />
+                              <h4 className="font-bold text-slate-300 text-xs">AI Conflict Diagnosis Ready</h4>
+                              <p className="max-w-xs text-[10px] leading-relaxed">
+                                Click the button on the left to analyze files on both branches. TruGen AI will automatically reconcile base improvements with your feature implementations.
+                              </p>
+                            </div>
+                          )}
+
+                          {conflictModal.loadingAnalysis && (
+                            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-slate-500 gap-3">
+                              <div className="relative w-12 h-12 flex items-center justify-center">
+                                <div className="absolute inset-0 rounded-full border-2 border-dashed border-[#7C5CFF]/30 animate-spin duration-3000" />
+                                <Cpu size={24} className="text-[#00D4FF] animate-pulse" />
+                              </div>
+                              <h4 className="font-bold text-slate-300 text-xs">Generating Resolution Blueprint</h4>
+                              <p className="max-w-xs text-[10px] leading-relaxed">
+                                Reconciling line divergence, syntax trees, and commit histories. This might take up to a minute...
+                              </p>
+                            </div>
+                          )}
+
+                          {conflictModal.resolutions && (
+                            <div className="flex-1 flex flex-col gap-3 overflow-hidden h-full">
+                              
+                              {/* AI Explanation of resolution */}
+                              <div className="bg-slate-950/80 p-3 rounded-xl border border-white/[0.04] text-[10.5px] leading-relaxed text-slate-300">
+                                <span className="font-bold text-[#7C5CFF] uppercase font-mono text-[8.5px] tracking-wider block mb-1">AI Resolution Summary</span>
+                                {conflictModal.explanation || 'No explanation provided.'}
+                              </div>
+
+                              {/* Preview Code area */}
+                              <div className="flex-1 flex flex-col border border-white/[0.05] rounded-xl overflow-hidden bg-slate-950 font-mono text-[10px] h-full">
+                                <div className="bg-slate-900 px-3 py-2 border-b border-white/[0.04] flex items-center justify-between text-slate-400">
+                                  <span className="font-semibold text-slate-300">{selectedPreviewFile}</span>
+                                  <span className="text-[8px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-sans uppercase">Resolved Preview</span>
+                                </div>
+                                <div className="flex-1 overflow-auto custom-scrollbar p-3 text-slate-300 whitespace-pre-wrap select-all font-mono leading-relaxed max-h-[200px]">
+                                  <code>
+                                    {conflictModal.resolutions.find(r => r.file === selectedPreviewFile)?.content || ''}
+                                  </code>
+                                </div>
+                              </div>
+
+                            </div>
+                          )}
+                        </div>
+
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Footer buttons */}
+                <div className="flex items-center justify-end gap-2 border-t border-white/[0.05] pt-4">
+                  <button
+                    onClick={() => setConflictModal(null)}
+                    className="px-4 py-2 bg-slate-900 border border-white/[0.08] hover:bg-slate-800 text-slate-300 rounded-xl font-semibold text-[11px] cursor-pointer"
+                  >
+                    Close Window
+                  </button>
+                </div>
+
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

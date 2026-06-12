@@ -131,7 +131,7 @@ build/`;
     }
 
     logStep('verify_file', 'running', 'Verifying file exists');
-    const verifyIssue = await detectMissingGitignore(owner, repo, token);
+    const verifyIssue = await detectMissingGitignore(owner, repo, token, defaultBranch);
     
     if (verifyIssue === null) {
       logStep('complete', 'complete', 'Complete');

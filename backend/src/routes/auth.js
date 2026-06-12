@@ -191,6 +191,10 @@ router.get('/github/callback', async (req, res) => {
       },
     });
 
+    req.session = req.session || {};
+    req.session.githubToken = accessToken;
+    req.session.save();
+
     const token = generateToken(user);
 
     // Redirect back to frontend with token
