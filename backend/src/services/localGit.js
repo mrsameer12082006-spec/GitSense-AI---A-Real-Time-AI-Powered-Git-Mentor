@@ -172,6 +172,114 @@ class LocalGitService {
     await execAsync(`git commit -m "chore: remove large file ${filePath} and ignore"`, { cwd: repoPath });
     // Note: We're not pushing here unless requested, maybe user wants to push later.
   }
+
+  async abortMerge(repositoryId) {
+    const repoPath = this.getRepoPath(repositoryId);
+    try {
+      await execAsync('git merge --abort', { cwd: repoPath });
+    } catch {}
+    try {
+      await execAsync('git checkout .', { cwd: repoPath });
+    } catch {}
+    try {
+      await execAsync('git clean -fd', { cwd: repoPath });
+    } catch {}
+  }
+
+  async findClosestBranch(repositoryId, branchName) {
+    const repoPath = this.getRepoPath(repositoryId);
+    try {
+      const { stdout } = await execAsync('git branch -a', { cwd: repoPath });
+      const branches = stdout.split('\n')
+        .map(b => b.replace(/^\*?\s+/, '').trim())
+        .filter(Boolean);
+      
+      const cleanBranchName = branchName.toLowerCase().trim();
+
+      // 1. Exact match (stripping remotes/origin/)
+      for (const b of branches) {
+        const simpleName = b.replace(/^remotes\/origin\//, '');
+        if (simpleName.toLowerCase() === cleanBranchName) {
+          return { name: simpleName, isRemote: b.startsWith('remotes/') };
+        }
+      }
+
+      // 2. Fuzzy match: check if the branch contains the cleanBranchName or vice versa
+      for (const b of branches) {
+        const simpleName = b.replace(/^remotes\/origin\//, '');
+        if (simpleName.toLowerCase().includes(cleanBranchName) || cleanBranchName.includes(simpleName.toLowerCase())) {
+          return { name: simpleName, isRemote: b.startsWith('remotes/') };
+        }
+      }
+    } catch (err) {
+      console.error('[LocalGit] findClosestBranch error:', err.message);
+    }
+    return null;
+  }
+
+  async mergeBranches(repositoryId, owner, repoName, sourceBranch, targetBranch, token) {
+    const repoPath = await this.ensureClone(repositoryId, owner, repoName, token);
+
+    // 1. Clean up any stuck state first
+    await this.abortMerge(repositoryId);
+
+    // 2. Fetch origin
+    await execAsync('git fetch origin', { cwd: repoPath });
+
+    // 3. Resolve actual branch names in the local/remote repository
+    const resolvedTarget = await this.findClosestBranch(repositoryId, targetBranch);
+    const resolvedSource = await this.findClosestBranch(repositoryId, sourceBranch);
+
+    const actualTarget = resolvedTarget ? resolvedTarget.name : targetBranch;
+    const actualSource = resolvedSource ? resolvedSource.name : sourceBranch;
+    const isSourceRemote = resolvedSource ? resolvedSource.isRemote : true;
+
+    console.log(`[LocalGit] Resolved merge branches: source="${sourceBranch}" -> "${actualSource}" (remote: ${isSourceRemote}), target="${targetBranch}" -> "${actualTarget}"`);
+
+    // 4. Checkout target branch and sync with origin
+    try {
+      await execAsync(`git checkout ${actualTarget}`, { cwd: repoPath });
+    } catch (checkoutErr) {
+      // If target branch doesn't exist locally, create it tracking origin
+      await execAsync(`git checkout -b ${actualTarget} origin/${actualTarget}`, { cwd: repoPath });
+    }
+    await execAsync(`git reset --hard origin/${actualTarget}`, { cwd: repoPath }).catch(() => {});
+
+    // 5. Try merging source branch
+    const mergeCmd = isSourceRemote ? `git merge origin/${actualSource}` : `git merge ${actualSource}`;
+    try {
+      await execAsync(mergeCmd, { cwd: repoPath });
+      return { success: true, merged: true, actualSource, actualTarget };
+    } catch (err) {
+      if (err.message.includes('CONFLICT') || err.message.includes('conflict') || err.message.includes('Conflict')) {
+        const { stdout } = await execAsync('git diff --name-only --diff-filter=U', { cwd: repoPath });
+        const conflictingFiles = stdout.trim().split('\n').filter(Boolean);
+        return { success: false, conflicts: conflictingFiles, actualSource, actualTarget };
+      }
+      throw err;
+    }
+  }
+
+  async pushBranch(repositoryId, owner, repoName, branchName, token) {
+    const repoPath = this.getRepoPath(repositoryId);
+    if (token) {
+      const remoteUrl = `https://${token}@github.com/${owner}/${repoName}.git`;
+      await execAsync(`git remote set-url origin "${remoteUrl}"`, { cwd: repoPath });
+      await execAsync(`git push origin ${branchName}`, { cwd: repoPath });
+      return true;
+    }
+    return false;
+  }
+
+  async commitMerge(repositoryId, message) {
+    const repoPath = this.getRepoPath(repositoryId);
+    await execAsync(`git -c user.name="GitSense AI" -c user.email="gitsense@ai.com" commit -m "${message}"`, { cwd: repoPath });
+  }
+
+  async addFile(repositoryId, filePath) {
+    const repoPath = this.getRepoPath(repositoryId);
+    await execAsync(`git add "${filePath}"`, { cwd: repoPath });
+  }
 }
 
 export default new LocalGitService();

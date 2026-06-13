@@ -1010,6 +1010,26 @@ export default function Dashboard() {
 
   useEffect(() => { loadChatHistory(); }, [loadChatHistory]);
 
+  useEffect(() => {
+    const pendingConvId = localStorage.getItem('gitsense_open_conversation_id');
+    if (pendingConvId) {
+      localStorage.removeItem('gitsense_open_conversation_id');
+      setActiveConversationId(pendingConvId);
+      apiFetch(`/conversations/${pendingConvId}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.messages) {
+            setMessages(data.messages.map(m => ({
+              sender: m.role === 'user' ? 'user' : 'ai',
+              text: m.content,
+              ...(m.metadata || {}),
+            })));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [apiFetch]);
+
   // ── Refresh insights periodically ──
   useEffect(() => {
     if (!connectedRepo) return;
@@ -1567,6 +1587,14 @@ export default function Dashboard() {
             >
               <Activity size={16} className="text-slate-400" />
               <span>Visualization Graph</span>
+            </button>
+
+            <button
+              onClick={() => window.location.hash = '#merge-control'}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50"
+            >
+              <GitBranch size={16} className="text-slate-400" />
+              <span>Merge & Resolve</span>
             </button>
           </div>
 
@@ -3204,11 +3232,11 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
     let code = '';
     if (branchOption === 'A') {
       const lines = conflict.conflictLines || '';
-      const match = lines.match(/<<<<<<<[\s\S]*?\n([\s\S]*?)=======/);
+      const match = lines.match(/<<<<<<<[^\n]*\n([\s\S]*?)\n=======/);
       code = match ? match[1].trim() : 'Branch A content';
     } else if (branchOption === 'B') {
       const lines = conflict.conflictLines || '';
-      const match = lines.match(/=======[\s\S]*?\n([\s\S]*?)>>>>>>>/);
+      const match = lines.match(/\n=======[\s\S]*?\n([\s\S]*?)\n>>>>>>>/);
       code = match ? match[1].trim() : 'Branch B content';
     } else {
       code = conflict.recommendedResolution;
@@ -3219,36 +3247,19 @@ function ConflictResolverCard({ conflict, idx, connectedRepo, setMessages, apiFe
 
     if (connectedRepo) {
       try {
-        // Fetch current file content from the local clone to resolve conflict markers safely
-        let resolvedFileContent = code;
-        try {
-          const fileRes = await apiFetch(`/repos/${connectedRepo.id}/contents/file?path=${encodeURIComponent(conflict.conflictFile)}`);
-          if (fileRes.ok) {
-            const fileData = await fileRes.json();
-            const currentContent = fileData.content || '';
-            if (currentContent.includes(conflict.conflictLines)) {
-              resolvedFileContent = currentContent.replace(conflict.conflictLines, code);
-            } else {
-              // Try replacing normalized version (CRLF vs LF)
-              const normContent = currentContent.replace(/\r\n/g, '\n');
-              const normConflict = conflict.conflictLines.replace(/\r\n/g, '\n');
-              if (normContent.includes(normConflict)) {
-                resolvedFileContent = normContent.replace(normConflict, code);
-              }
-            }
-          }
-        } catch (fileErr) {
-          console.warn('Failed to load file for inline conflict replacement, falling back to writing code block:', fileErr);
-        }
-
-        // Save the resolved content to the local clone
-        await apiFetch(`/workspace/${connectedRepo.id}/file`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+        await apiFetch(`/repos/${connectedRepo.id}/fix`, {
+          method: 'POST',
           body: JSON.stringify({
-            path: conflict.conflictFile,
-            content: resolvedFileContent,
-            commitMessage: `Resolve merge conflict in ${conflict.conflictFile} via GitSense AI`
+            issueId: `conflict-pr-resolved`,
+            fixType: 'resolve_conflict',
+            action: 'resolve_conflict',
+            rawState: {
+              conflictFile: conflict.conflictFile,
+              branchA: conflict.branchA,
+              branchB: conflict.branchB,
+              branchOption: branchOption,
+              recommendedResolution: conflict.recommendedResolution
+            }
           })
         });
 

@@ -6,6 +6,8 @@ import util from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import axios from 'axios';
+import githubService from '../services/github.js';
+import aiService from '../services/ai.js';
 
 const execAsync = util.promisify(exec);
 const execFileAsync = util.promisify(execFile);
@@ -672,6 +674,319 @@ router.post('/:repoId/kill', async (req, res) => {
     res.json({ success: true, message: 'Process terminated.' });
   } catch (err) {
     console.error('[Workspace] kill error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/merge-check
+// Trial merge source branch into target branch to check for conflicts
+// Body: { sourceBranch: "...", targetBranch: "..." }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/merge-check', async (req, res) => {
+  let tempBranch = `gs-temp-check-${Date.now()}`;
+  let context;
+  try {
+    const { sourceBranch, targetBranch } = req.body;
+    if (!sourceBranch || !targetBranch) {
+      return res.status(400).json({ error: 'Source and target branches are required.' });
+    }
+
+    context = await getRepoContext(req);
+    const { repoPath } = context;
+
+    // 1. Fetch origin to make sure we are up to date
+    await runGitCmd(['fetch', 'origin'], repoPath);
+
+    // 2. Checkout target branch and sync
+    await runGitCmd(['checkout', targetBranch], repoPath);
+    await runGitCmd(['reset', '--hard', `origin/${targetBranch}`], repoPath).catch(() => {});
+
+    // 3. Create a temp branch off target branch
+    await runGitCmd(['checkout', '-b', tempBranch], repoPath);
+
+    // 4. Try merging source branch
+    const mergeRes = await runGitCmd(['merge', `origin/${sourceBranch}`], repoPath);
+
+    if (mergeRes.exitCode === 0) {
+      res.json({ success: true, hasConflicts: false });
+    } else {
+      // Check if it's a conflict
+      const diffRes = await runGitCmd(['diff', '--name-only', '--diff-filter=U'], repoPath);
+      const conflicts = diffRes.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+      if (conflicts.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: mergeRes.stderr || mergeRes.stdout || 'Merge failed for a non-conflict reason.'
+        });
+      }
+      res.json({ success: true, hasConflicts: true, conflicts });
+    }
+  } catch (err) {
+    console.error('[Workspace] merge-check error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (context) {
+      const { repoPath, repository } = context;
+      // Abort any active merge on the temp branch
+      await runGitCmd(['merge', '--abort'], repoPath).catch(() => {});
+      // Switch back to target/default branch
+      await runGitCmd(['checkout', repository.defaultBranch || 'main'], repoPath).catch(() => {});
+      // Delete the temp branch
+      await runGitCmd(['branch', '-D', tempBranch], repoPath).catch(() => {});
+    }
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/merge-create-branch
+// Create a new resolution branch off target branch and merge source branch
+// Body: { sourceBranch: "...", targetBranch: "...", resolutionBranch: "..." }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/merge-create-branch', async (req, res) => {
+  try {
+    const { sourceBranch, targetBranch, resolutionBranch } = req.body;
+    if (!sourceBranch || !targetBranch || !resolutionBranch) {
+      return res.status(400).json({ error: 'Source, target and resolution branches are required.' });
+    }
+
+    const { repoPath } = await getRepoContext(req);
+
+    // 1. Fetch origin
+    await runGitCmd(['fetch', 'origin'], repoPath);
+
+    // 2. Checkout target branch and sync
+    await runGitCmd(['checkout', targetBranch], repoPath);
+    await runGitCmd(['reset', '--hard', `origin/${targetBranch}`], repoPath).catch(() => {});
+
+    // 3. Delete resolution branch if it already exists locally
+    await runGitCmd(['checkout', targetBranch], repoPath);
+    await runGitCmd(['branch', '-D', resolutionBranch], repoPath).catch(() => {});
+
+    // 4. Create resolution branch and check it out
+    await runGitCmd(['checkout', '-b', resolutionBranch], repoPath);
+
+    // 5. Merge source branch
+    const mergeRes = await runGitCmd(['merge', `origin/${sourceBranch}`], repoPath);
+
+    // 6. Get conflicts list
+    const diffRes = await runGitCmd(['diff', '--name-only', '--diff-filter=U'], repoPath);
+    const conflictsList = diffRes.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+
+    if (mergeRes.exitCode !== 0 && conflictsList.length === 0) {
+      await runGitCmd(['checkout', targetBranch], repoPath);
+      await runGitCmd(['branch', '-D', resolutionBranch], repoPath).catch(() => {});
+      return res.status(400).json({
+        success: false,
+        error: mergeRes.stderr || mergeRes.stdout || 'Merge failed for a non-conflict reason.'
+      });
+    }
+
+    const conflicts = [];
+    for (const file of conflictsList) {
+      const fullPath = path.join(repoPath, file);
+      let content = '';
+      try {
+        content = await fs.readFile(fullPath, 'utf8');
+      } catch (readErr) {
+        console.error(`Failed to read conflicting file ${file}:`, readErr.message);
+      }
+
+      // Extract raw conflict sections
+      const conflictBlocks = [];
+      const lines = content.split('\n');
+      let insideConflict = false;
+      let currentBlock = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('<<<<<<<')) {
+          insideConflict = true;
+          currentBlock = [line];
+        } else if (line.startsWith('>>>>>>>')) {
+          if (insideConflict) {
+            currentBlock.push(line);
+            conflictBlocks.push(currentBlock.join('\n'));
+            insideConflict = false;
+            currentBlock = [];
+          }
+        } else if (insideConflict) {
+          currentBlock.push(line);
+        }
+      }
+
+      conflicts.push({
+        file,
+        content,
+        conflictBlocks
+      });
+    }
+
+    res.json({
+      success: true,
+      mergedCleanly: mergeRes.exitCode === 0 && conflicts.length === 0,
+      conflicts
+    });
+  } catch (err) {
+    console.error('[Workspace] merge-create-branch error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/merge-resolve-ai
+// Request AI to resolve conflicts in a file
+// Body: { conflictFile: "...", rawConflictBlock: "..." }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/merge-resolve-ai', async (req, res) => {
+  try {
+    const { conflictFile, rawConflictBlock } = req.body;
+    if (!conflictFile || !rawConflictBlock) {
+      return res.status(400).json({ error: 'Conflict file and rawConflictBlock are required.' });
+    }
+
+    console.log(`[Workspace] Running AI Conflict Resolution for: ${conflictFile}`);
+
+    const aiPrompt = `You are a senior git engineer. Resolve the merge conflict in file: "${conflictFile}".
+Here is the conflicting section of the file:
+${rawConflictBlock}
+
+Analyze the conflict and recommend the best merged version of this code.
+Return a valid JSON object ONLY:
+{
+  "recommendedResolution": "complete resolved code block to replace the conflict region",
+  "explanation": "clear, concise explanation of why this resolution is correct"
+}
+Do not wrap it in markdown code blocks, just raw JSON.`;
+
+    const aiResult = await aiService.generateCompletion([
+      { role: 'system', content: aiPrompt },
+      { role: 'user', content: 'Resolve this conflict.' }
+    ], 0.2);
+
+    let parsedResolution = { recommendedResolution: '', explanation: 'No resolution generated.' };
+    try {
+      parsedResolution = JSON.parse(aiResult.replace(/```json|```/g, '').trim());
+    } catch (parseErr) {
+      console.error('[Workspace] Failed to parse AI conflict resolution response:', parseErr.message, 'Raw response:', aiResult);
+      parsedResolution = {
+        recommendedResolution: aiResult,
+        explanation: 'AI returned unformatted response, parsed directly.'
+      };
+    }
+
+    res.json({
+      success: true,
+      recommendedResolution: parsedResolution.recommendedResolution,
+      explanation: parsedResolution.explanation
+    });
+  } catch (err) {
+    console.error('[Workspace] merge-resolve-ai error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/merge-apply-resolution
+// Save resolved file, git add, and commit merge if all resolved
+// Body: { conflictFile: "...", resolutionBranch: "...", resolvedContent: "..." }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/merge-apply-resolution', async (req, res) => {
+  try {
+    const { conflictFile, resolutionBranch, resolvedContent } = req.body;
+    if (!conflictFile || !resolutionBranch || resolvedContent === undefined) {
+      return res.status(400).json({ error: 'Conflict file, resolution branch, and resolvedContent are required.' });
+    }
+
+    const { repoPath } = await getRepoContext(req);
+
+    // 1. Switch to resolution branch just to be safe
+    await runGitCmd(['checkout', resolutionBranch], repoPath);
+
+    // 2. Write resolved content to file
+    const fullPath = path.join(repoPath, conflictFile);
+    await fs.writeFile(fullPath, resolvedContent, 'utf8');
+
+    // 3. Git add the file
+    await runGitCmd(['add', conflictFile], repoPath);
+
+    // 4. Check if other files remain in conflict
+    const diffRes = await runGitCmd(['diff', '--name-only', '--diff-filter=U'], repoPath);
+    const remainingConflicts = diffRes.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+
+    let allResolved = remainingConflicts.length === 0;
+
+    if (allResolved) {
+      // 5. Commit the merge
+      await runGitCmd([
+        '-c', 'user.name=GitSense AI',
+        '-c', 'user.email=gitsense@ai.com',
+        'commit',
+        '-m', `chore: resolve merge conflicts in ${conflictFile} using GitSense AI`
+      ], repoPath);
+    }
+
+    res.json({
+      success: true,
+      allResolved,
+      remainingConflicts
+    });
+  } catch (err) {
+    console.error('[Workspace] merge-apply-resolution error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/workspace/:repoId/git/merge-push-and-finalize
+// Push resolution branch, and optionally merge & push to target branch
+// Body: { resolutionBranch: "...", targetBranch: "...", mergeIntoTarget: true/false }
+// ─────────────────────────────────────────────────────────
+router.post('/:repoId/git/merge-push-and-finalize', async (req, res) => {
+  try {
+    const { resolutionBranch, targetBranch, mergeIntoTarget } = req.body;
+    if (!resolutionBranch || !targetBranch) {
+      return res.status(400).json({ error: 'Resolution branch and target branch are required.' });
+    }
+
+    const { repository, token, repoPath } = await getRepoContext(req);
+
+    let pushedResolution = false;
+    let pushedTarget = false;
+
+    // 1. Configure remote url with token
+    if (token) {
+      const remoteUrl = `https://${token}@github.com/${repository.owner}/${repository.name}.git`;
+      await runGitCmd(['remote', 'set-url', 'origin', remoteUrl], repoPath);
+    }
+
+    // 2. Push resolution branch
+    const pushRes = await runGitCmd(['push', '-u', 'origin', resolutionBranch], repoPath);
+    pushedResolution = pushRes.exitCode === 0;
+
+    // 3. Merge into target and push target branch if requested
+    if (mergeIntoTarget) {
+      await runGitCmd(['checkout', targetBranch], repoPath);
+      const mergeRes = await runGitCmd(['merge', resolutionBranch], repoPath);
+      if (mergeRes.exitCode === 0) {
+        const pushTargetRes = await runGitCmd(['push', 'origin', targetBranch], repoPath);
+        pushedTarget = pushTargetRes.exitCode === 0;
+      }
+    }
+
+    // 4. Invalidate GitHub commits cache
+    githubService.clearCache(repository.owner, repository.name);
+
+    res.json({
+      success: true,
+      pushedResolution,
+      pushedTarget,
+      message: mergeIntoTarget 
+        ? `Merge finalized: pushed ${resolutionBranch} and merged into ${targetBranch} on GitHub.` 
+        : `Resolution branch ${resolutionBranch} pushed to GitHub.`
+    });
+  } catch (err) {
+    console.error('[Workspace] merge-push-and-finalize error:', err);
     res.status(500).json({ error: err.message });
   }
 });

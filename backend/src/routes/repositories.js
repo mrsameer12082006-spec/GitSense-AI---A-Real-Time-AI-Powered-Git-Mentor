@@ -550,6 +550,71 @@ router.post('/:id/fix', async (req, res) => {
             content: content
           })
         });
+      } else if (fixType === 'resolve_conflict' || req.body.action === 'resolve_conflict') {
+        const payloadState = rawState || req.body.rawState || {};
+        const { conflictFile, branchA, branchB, branchOption, recommendedResolution } = payloadState;
+        
+        if (!conflictFile) {
+          return res.status(400).json({ success: false, error: 'conflictFile parameter is required.' });
+        }
+
+        const repoPath = localGitService.getRepoPath(repository.id);
+        const fullFilePath = path.join(repoPath, conflictFile);
+
+        // 1. Read current conflicting file content
+        let fileContent = await fs.readFile(fullFilePath, 'utf8');
+
+        // Helper to replace the conflict markers in fileContent
+        const resolveConflictMarkers = (content, option, recResolution) => {
+          const conflictRegex = /<<<<<<<[\s\S]*?=======[\s\S]*?>>>>>>>[^\n]*/;
+          
+          if (option === 'A' || option === 'B') {
+            const globalRegex = /<<<<<<<[\s\S]*?=======[\s\S]*?>>>>>>>[^\n]*/g;
+            return content.replace(globalRegex, (match) => {
+              if (option === 'A') {
+                const innerMatch = match.match(/<<<<<<<[^\n]*\n([\s\S]*?)\n=======/);
+                return innerMatch ? innerMatch[1] : '';
+              } else {
+                const innerMatch = match.match(/\n=======[\s\S]*?\n([\s\S]*?)\n>>>>>>>/);
+                return innerMatch ? innerMatch[1] : '';
+              }
+            });
+          } else {
+            // Option is recommended AI resolution
+            return content.replace(conflictRegex, recResolution);
+          }
+        };
+
+        const resolvedContent = resolveConflictMarkers(fileContent, branchOption, recommendedResolution);
+
+        // 2. Write resolved content back to the file
+        await fs.writeFile(fullFilePath, resolvedContent, 'utf8');
+
+        // 3. Stage the file
+        await localGitService.addFile(repository.id, conflictFile);
+
+        // 4. Commit the merge
+        const commitMsg = `chore: resolve merge conflict in ${conflictFile} accepting ${
+          branchOption === 'recommended' ? 'AI recommended resolution' : `branch ${branchOption}`
+        }`;
+        await localGitService.commitMerge(repository.id, commitMsg);
+
+        // 5. Try pushing to remote
+        let pushed = false;
+        try {
+          if (token) {
+            pushed = await localGitService.pushBranch(repository.id, repository.owner, repository.name, branchA || repository.defaultBranch, token);
+          }
+        } catch (pushErr) {
+          console.warn('[Repos] Failed to push conflict resolution to origin:', pushErr.message);
+        }
+
+        result = {
+          success: true,
+          message: pushed
+            ? `Successfully resolved conflict in ${conflictFile}, completed the merge, and pushed to GitHub.`
+            : `Successfully resolved conflict in ${conflictFile} and completed the merge locally. (Remote push skipped/failed).`
+        };
       } else if (fixType === 'notify_stale_pr') {
         await fetch(`https://api.github.com/repos/${repository.owner}/${repository.name}/issues/${rawState.number}/comments`, {
           method: 'POST',

@@ -140,6 +140,18 @@ export default function SubPageLayout({ children, activeTab = '' }) {
               <Activity size={16} className={activeTab === 'visualizer' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
               <span>Visualization Graph</span>
             </button>
+
+            <button
+              onClick={() => window.location.hash = '#merge-control'}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all cursor-pointer ${
+                activeTab === 'merge-control'
+                  ? 'bg-[#7C5CFF]/15 border border-[#7C5CFF]/30 text-[#F8FAFC]'
+                  : 'border border-transparent text-slate-400 hover:text-white hover:bg-slate-900/50'
+              }`}
+            >
+              <GitBranch size={16} className={activeTab === 'merge-control' ? 'text-[#7C5CFF]' : 'text-slate-400'} />
+              <span>Merge & Resolve</span>
+            </button>
           </div>
 
           {/* Your Repository Section */}
