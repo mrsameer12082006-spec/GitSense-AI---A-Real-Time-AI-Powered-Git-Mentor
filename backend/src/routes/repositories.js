@@ -517,7 +517,7 @@ router.post('/:id/fix', async (req, res) => {
     }
 
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    const token = user?.githubToken || null;
+    const token = user?.githubToken || process.env.GITHUB_TOKEN || null;
 
     // We can use SSE, but for simpler integration, returning JSON with status
     // Or if SSE is preferred, we need res.setHeader('Content-Type', 'text/event-stream').

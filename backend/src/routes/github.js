@@ -461,11 +461,10 @@ router.post('/apply-fix', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'repoFullName, filePath, resolvedContent, and issueTitle are required.' });
     }
 
-    // Load user's GitHub OAuth token from session, body, or DB
     const token = req.session?.githubToken || req.body?.githubToken || (await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { githubToken: true }
-    }))?.githubToken;
+    }))?.githubToken || process.env.GITHUB_TOKEN;
     
     if (!token) {
       return res.status(401).json({
