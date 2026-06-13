@@ -70,8 +70,8 @@ router.post('/signup', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[Auth] Signup error:', err.message);
-    res.status(500).json({ error: 'Signup failed. Please try again.' });
+    console.error('[Auth] Signup error:', err);
+    res.status(500).json({ error: 'Signup failed: ' + err.message });
   }
 });
 
